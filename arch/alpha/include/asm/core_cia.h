@@ -293,7 +293,7 @@ struct el_CIA_sysdata_mcheck {
 
 #ifndef __EXTERN_INLINE
 /* Do not touch, this should *NOT* be static inline */
-#define __EXTERN_INLINE extern inline
+#define __EXTERN_INLINE inline
 #define __IO_EXTERN_INLINE
 #endif
 

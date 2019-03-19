@@ -1737,14 +1737,14 @@ enum ieee80211_state {
                                   IEEE80211_52GHZ_MIN_CHANNEL + 1)
 
 #if (LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,11))
-extern inline int is_multicast_ether_addr(const u8 *addr)
+inline int is_multicast_ether_addr(const u8 *addr)
 {
         return ((addr[0] != 0xff) && (0x01 & addr[0]));
 }
 #endif
 
 #if (LINUX_VERSION_CODE <= KERNEL_VERSION(2,6,13))
-extern inline int is_broadcast_ether_addr(const u8 *addr)
+inline int is_broadcast_ether_addr(const u8 *addr)
 {
 	return ((addr[0] == 0xff) && (addr[1] == 0xff) && (addr[2] == 0xff) &&   \
 		(addr[3] == 0xff) && (addr[4] == 0xff) && (addr[5] == 0xff));
@@ -2420,7 +2420,7 @@ static inline void *ieee80211_priv(struct net_device *dev)
 #endif
 }
 
-extern inline int ieee80211_is_empty_essid(const char *essid, int essid_len)
+inline int ieee80211_is_empty_essid(const char *essid, int essid_len)
 {
 	/* Single white space is for Linksys APs */
 	if (essid_len == 1 && essid[0] == ' ')
@@ -2436,7 +2436,7 @@ extern inline int ieee80211_is_empty_essid(const char *essid, int essid_len)
 	return 1;
 }
 
-extern inline int ieee80211_is_valid_mode(struct ieee80211_device *ieee, int mode)
+inline int ieee80211_is_valid_mode(struct ieee80211_device *ieee, int mode)
 {
 	/*
 	 * It is possible for both access points and our device to support
@@ -2462,7 +2462,7 @@ extern inline int ieee80211_is_valid_mode(struct ieee80211_device *ieee, int mod
 	return 0;
 }
 
-extern inline int ieee80211_get_hdrlen(u16 fc)
+inline int ieee80211_get_hdrlen(u16 fc)
 {
 	int hdrlen = IEEE80211_3ADDR_LEN;
 
@@ -2752,12 +2752,12 @@ void ieee80211_softmac_scan_syncro(struct ieee80211_device *ieee);
 
 extern const long ieee80211_wlan_frequencies[];
 
-extern inline void ieee80211_increment_scans(struct ieee80211_device *ieee)
+inline void ieee80211_increment_scans(struct ieee80211_device *ieee)
 {
 	ieee->scans++;
 }
 
-extern inline int ieee80211_get_scans(struct ieee80211_device *ieee)
+inline int ieee80211_get_scans(struct ieee80211_device *ieee)
 {
 	return ieee->scans;
 }

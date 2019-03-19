@@ -381,7 +381,7 @@ Static inline 函数相比宏来说，是好得多的选择。Static inline 函�
 
 宏只在 static inline 函数不是最优的时候[在 fast paths 里有很少的独立的
 案例]，或者不可能用 static inline 函数的时候[例如字符串分配]。
-应该用 'static inline' 而不是 'static __inline__', 'extern inline' 和
+应该用 'static inline' 而不是 'static __inline__', 'inline' 和
 'extern __inline__' 。
 
 4) 不要过度设计

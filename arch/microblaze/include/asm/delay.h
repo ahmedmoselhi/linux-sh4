@@ -13,7 +13,7 @@
 #ifndef _ASM_MICROBLAZE_DELAY_H
 #define _ASM_MICROBLAZE_DELAY_H
 
-extern inline void __delay(unsigned long loops)
+inline void __delay(unsigned long loops)
 {
 	asm volatile ("# __delay		\n\t"		\
 			"1: addi	%0, %0, -1\t\n"		\
@@ -41,7 +41,7 @@ extern inline void __delay(unsigned long loops)
 
 extern unsigned long loops_per_jiffy;
 
-extern inline void __udelay(unsigned int x)
+inline void __udelay(unsigned int x)
 {
 
 	unsigned long long tmp =

@@ -1234,7 +1234,7 @@ static inline void *ieee80211_priv(struct net_device *dev)
 	return ((struct ieee80211_device *)netdev_priv(dev))->priv;
 }
 
-extern inline int ieee80211_is_empty_essid(const char *essid, int essid_len)
+inline int ieee80211_is_empty_essid(const char *essid, int essid_len)
 {
 	/* Single white space is for Linksys APs */
 	if (essid_len == 1 && essid[0] == ' ')
@@ -1250,7 +1250,7 @@ extern inline int ieee80211_is_empty_essid(const char *essid, int essid_len)
 	return 1;
 }
 
-extern inline int ieee80211_is_valid_mode(struct ieee80211_device *ieee, int mode)
+inline int ieee80211_is_valid_mode(struct ieee80211_device *ieee, int mode)
 {
 	/*
 	 * It is possible for both access points and our device to support
@@ -1276,7 +1276,7 @@ extern inline int ieee80211_is_valid_mode(struct ieee80211_device *ieee, int mod
 	return 0;
 }
 
-extern inline int ieee80211_get_hdrlen(u16 fc)
+inline int ieee80211_get_hdrlen(u16 fc)
 {
 	int hdrlen = 24;
 
@@ -1460,12 +1460,12 @@ extern void ieee80211_sta_ps_send_null_frame(struct ieee80211_device *ieee, shor
 
 extern const long ieee80211_wlan_frequencies[];
 
-extern inline void ieee80211_increment_scans(struct ieee80211_device *ieee)
+inline void ieee80211_increment_scans(struct ieee80211_device *ieee)
 {
 	ieee->scans++;
 }
 
-extern inline int ieee80211_get_scans(struct ieee80211_device *ieee)
+inline int ieee80211_get_scans(struct ieee80211_device *ieee)
 {
 	return ieee->scans;
 }

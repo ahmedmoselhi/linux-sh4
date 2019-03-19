@@ -216,20 +216,20 @@ extern unsigned long __zero_page(void);
 })
 #endif
 
-extern inline pte_t pfn_pte(unsigned long physpfn, pgprot_t pgprot)
+inline pte_t pfn_pte(unsigned long physpfn, pgprot_t pgprot)
 { pte_t pte; pte_val(pte) = (PHYS_TWIDDLE(physpfn) << 32) | pgprot_val(pgprot); return pte; }
 
-extern inline pte_t pte_modify(pte_t pte, pgprot_t newprot)
+inline pte_t pte_modify(pte_t pte, pgprot_t newprot)
 { pte_val(pte) = (pte_val(pte) & _PAGE_CHG_MASK) | pgprot_val(newprot); return pte; }
 
-extern inline void pmd_set(pmd_t * pmdp, pte_t * ptep)
+inline void pmd_set(pmd_t * pmdp, pte_t * ptep)
 { pmd_val(*pmdp) = _PAGE_TABLE | ((((unsigned long) ptep) - PAGE_OFFSET) << (32-PAGE_SHIFT)); }
 
-extern inline void pgd_set(pgd_t * pgdp, pmd_t * pmdp)
+inline void pgd_set(pgd_t * pgdp, pmd_t * pmdp)
 { pgd_val(*pgdp) = _PAGE_TABLE | ((((unsigned long) pmdp) - PAGE_OFFSET) << (32-PAGE_SHIFT)); }
 
 
-extern inline unsigned long
+inline unsigned long
 pmd_page_vaddr(pmd_t pmd)
 {
 	return ((pmd_val(pmd) & _PFN_MASK) >> (32-PAGE_SHIFT)) + PAGE_OFFSET;
@@ -240,43 +240,43 @@ pmd_page_vaddr(pmd_t pmd)
 #define pgd_page(pgd)	(mem_map + ((pgd_val(pgd) & _PFN_MASK) >> 32))
 #endif
 
-extern inline unsigned long pgd_page_vaddr(pgd_t pgd)
+inline unsigned long pgd_page_vaddr(pgd_t pgd)
 { return PAGE_OFFSET + ((pgd_val(pgd) & _PFN_MASK) >> (32-PAGE_SHIFT)); }
 
-extern inline int pte_none(pte_t pte)		{ return !pte_val(pte); }
-extern inline int pte_present(pte_t pte)	{ return pte_val(pte) & _PAGE_VALID; }
-extern inline void pte_clear(struct mm_struct *mm, unsigned long addr, pte_t *ptep)
+inline int pte_none(pte_t pte)		{ return !pte_val(pte); }
+inline int pte_present(pte_t pte)	{ return pte_val(pte) & _PAGE_VALID; }
+inline void pte_clear(struct mm_struct *mm, unsigned long addr, pte_t *ptep)
 {
 	pte_val(*ptep) = 0;
 }
 
-extern inline int pmd_none(pmd_t pmd)		{ return !pmd_val(pmd); }
-extern inline int pmd_bad(pmd_t pmd)		{ return (pmd_val(pmd) & ~_PFN_MASK) != _PAGE_TABLE; }
-extern inline int pmd_present(pmd_t pmd)	{ return pmd_val(pmd) & _PAGE_VALID; }
-extern inline void pmd_clear(pmd_t * pmdp)	{ pmd_val(*pmdp) = 0; }
+inline int pmd_none(pmd_t pmd)		{ return !pmd_val(pmd); }
+inline int pmd_bad(pmd_t pmd)		{ return (pmd_val(pmd) & ~_PFN_MASK) != _PAGE_TABLE; }
+inline int pmd_present(pmd_t pmd)	{ return pmd_val(pmd) & _PAGE_VALID; }
+inline void pmd_clear(pmd_t * pmdp)	{ pmd_val(*pmdp) = 0; }
 
-extern inline int pgd_none(pgd_t pgd)		{ return !pgd_val(pgd); }
-extern inline int pgd_bad(pgd_t pgd)		{ return (pgd_val(pgd) & ~_PFN_MASK) != _PAGE_TABLE; }
-extern inline int pgd_present(pgd_t pgd)	{ return pgd_val(pgd) & _PAGE_VALID; }
-extern inline void pgd_clear(pgd_t * pgdp)	{ pgd_val(*pgdp) = 0; }
+inline int pgd_none(pgd_t pgd)		{ return !pgd_val(pgd); }
+inline int pgd_bad(pgd_t pgd)		{ return (pgd_val(pgd) & ~_PFN_MASK) != _PAGE_TABLE; }
+inline int pgd_present(pgd_t pgd)	{ return pgd_val(pgd) & _PAGE_VALID; }
+inline void pgd_clear(pgd_t * pgdp)	{ pgd_val(*pgdp) = 0; }
 
 /*
  * The following only work if pte_present() is true.
  * Undefined behaviour if not..
  */
-extern inline int pte_write(pte_t pte)		{ return !(pte_val(pte) & _PAGE_FOW); }
-extern inline int pte_dirty(pte_t pte)		{ return pte_val(pte) & _PAGE_DIRTY; }
-extern inline int pte_young(pte_t pte)		{ return pte_val(pte) & _PAGE_ACCESSED; }
-extern inline int pte_file(pte_t pte)		{ return pte_val(pte) & _PAGE_FILE; }
-extern inline int pte_special(pte_t pte)	{ return 0; }
+inline int pte_write(pte_t pte)		{ return !(pte_val(pte) & _PAGE_FOW); }
+inline int pte_dirty(pte_t pte)		{ return pte_val(pte) & _PAGE_DIRTY; }
+inline int pte_young(pte_t pte)		{ return pte_val(pte) & _PAGE_ACCESSED; }
+inline int pte_file(pte_t pte)		{ return pte_val(pte) & _PAGE_FILE; }
+inline int pte_special(pte_t pte)	{ return 0; }
 
-extern inline pte_t pte_wrprotect(pte_t pte)	{ pte_val(pte) |= _PAGE_FOW; return pte; }
-extern inline pte_t pte_mkclean(pte_t pte)	{ pte_val(pte) &= ~(__DIRTY_BITS); return pte; }
-extern inline pte_t pte_mkold(pte_t pte)	{ pte_val(pte) &= ~(__ACCESS_BITS); return pte; }
-extern inline pte_t pte_mkwrite(pte_t pte)	{ pte_val(pte) &= ~_PAGE_FOW; return pte; }
-extern inline pte_t pte_mkdirty(pte_t pte)	{ pte_val(pte) |= __DIRTY_BITS; return pte; }
-extern inline pte_t pte_mkyoung(pte_t pte)	{ pte_val(pte) |= __ACCESS_BITS; return pte; }
-extern inline pte_t pte_mkspecial(pte_t pte)	{ return pte; }
+inline pte_t pte_wrprotect(pte_t pte)	{ pte_val(pte) |= _PAGE_FOW; return pte; }
+inline pte_t pte_mkclean(pte_t pte)	{ pte_val(pte) &= ~(__DIRTY_BITS); return pte; }
+inline pte_t pte_mkold(pte_t pte)	{ pte_val(pte) &= ~(__ACCESS_BITS); return pte; }
+inline pte_t pte_mkwrite(pte_t pte)	{ pte_val(pte) &= ~_PAGE_FOW; return pte; }
+inline pte_t pte_mkdirty(pte_t pte)	{ pte_val(pte) |= __DIRTY_BITS; return pte; }
+inline pte_t pte_mkyoung(pte_t pte)	{ pte_val(pte) |= __ACCESS_BITS; return pte; }
+inline pte_t pte_mkspecial(pte_t pte)	{ return pte; }
 
 #define PAGE_DIR_OFFSET(tsk,address) pgd_offset((tsk),(address))
 
@@ -301,7 +301,7 @@ extern inline pte_t pte_mkspecial(pte_t pte)	{ return pte; }
  */
 
 /* Find an entry in the second-level page table.. */
-extern inline pmd_t * pmd_offset(pgd_t * dir, unsigned long address)
+inline pmd_t * pmd_offset(pgd_t * dir, unsigned long address)
 {
 	pmd_t *ret = (pmd_t *) pgd_page_vaddr(*dir) + ((address >> PMD_SHIFT) & (PTRS_PER_PAGE - 1));
 	smp_read_barrier_depends(); /* see above */
@@ -309,7 +309,7 @@ extern inline pmd_t * pmd_offset(pgd_t * dir, unsigned long address)
 }
 
 /* Find an entry in the third-level page table.. */
-extern inline pte_t * pte_offset_kernel(pmd_t * dir, unsigned long address)
+inline pte_t * pte_offset_kernel(pmd_t * dir, unsigned long address)
 {
 	pte_t *ret = (pte_t *) pmd_page_vaddr(*dir)
 		+ ((address >> PAGE_SHIFT) & (PTRS_PER_PAGE - 1));
@@ -328,7 +328,7 @@ extern pgd_t swapper_pg_dir[1024];
  * The Alpha doesn't have any external MMU info:  the kernel page
  * tables contain all the necessary information.
  */
-extern inline void update_mmu_cache(struct vm_area_struct * vma,
+inline void update_mmu_cache(struct vm_area_struct * vma,
 	unsigned long address, pte_t pte)
 {
 }
@@ -337,7 +337,7 @@ extern inline void update_mmu_cache(struct vm_area_struct * vma,
  * Non-present pages:  high 24 bits are offset, next 8 bits type,
  * low 32 bits zero.
  */
-extern inline pte_t mk_swap_pte(unsigned long type, unsigned long offset)
+inline pte_t mk_swap_pte(unsigned long type, unsigned long offset)
 { pte_t pte; pte_val(pte) = (type << 32) | (offset << 40); return pte; }
 
 #define __swp_type(x)		(((x).val >> 32) & 0xff)

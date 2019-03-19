@@ -520,7 +520,7 @@ gcc においては、マクロと同じくらい軽いです。
 いくつかの特定のケース)や「 static inline 」関数を使うことができないような
 場所(マクロの引数の文字列連結のような)にだけ使われるべきです。
 
-「 static inline 」は「 static __inline__ 」や「 extern inline 」や
+「 static inline 」は「 static __inline__ 」や「 inline 」や
 「 extern __inline__ 」よりも適切です。
 
 4) 設計に凝りすぎるな

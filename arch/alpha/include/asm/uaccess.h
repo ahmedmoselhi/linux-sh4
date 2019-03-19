@@ -354,7 +354,7 @@ __asm__ __volatile__("1: stb %r2,%1\n"				\
 
 extern void __copy_user(void);
 
-extern inline long
+inline long
 __copy_tofrom_user_nocheck(void *to, const void *from, long len)
 {
 	register void * __cu_to __asm__("$6") = to;
@@ -371,7 +371,7 @@ __copy_tofrom_user_nocheck(void *to, const void *from, long len)
 	return __cu_len;
 }
 
-extern inline long
+inline long
 __copy_tofrom_user(void *to, const void *from, long len, const void __user *validate)
 {
 	if (__access_ok((unsigned long)validate, len, get_fs()))
@@ -394,13 +394,13 @@ __copy_tofrom_user(void *to, const void *from, long len, const void __user *vali
 #define __copy_from_user_inatomic __copy_from_user
 
 
-extern inline long
+inline long
 copy_to_user(void __user *to, const void *from, long n)
 {
 	return __copy_tofrom_user((__force void *)to, from, n, to);
 }
 
-extern inline long
+inline long
 copy_from_user(void *to, const void __user *from, long n)
 {
 	return __copy_tofrom_user(to, (__force void *)from, n, from);
@@ -408,7 +408,7 @@ copy_from_user(void *to, const void __user *from, long n)
 
 extern void __do_clear_user(void);
 
-extern inline long
+inline long
 __clear_user(void __user *to, long len)
 {
 	register void __user * __cl_to __asm__("$6") = to;
@@ -422,7 +422,7 @@ __clear_user(void __user *to, long len)
 	return __cl_len;
 }
 
-extern inline long
+inline long
 clear_user(void __user *to, long len)
 {
 	if (__access_ok((unsigned long)to, len, get_fs()))
@@ -438,7 +438,7 @@ clear_user(void __user *to, long len)
 
 extern long __strncpy_from_user(char *__to, const char __user *__from, long __to_len);
 
-extern inline long
+inline long
 strncpy_from_user(char *to, const char __user *from, long n)
 {
 	long ret = -EFAULT;
@@ -450,7 +450,7 @@ strncpy_from_user(char *to, const char __user *from, long n)
 /* Returns: 0 if bad, string length+1 (memory size) of string if ok */
 extern long __strlen_user(const char __user *);
 
-extern inline long strlen_user(const char __user *str)
+inline long strlen_user(const char __user *str)
 {
 	return access_ok(VERIFY_READ,str,0) ? __strlen_user(str) : 0;
 }
@@ -459,7 +459,7 @@ extern inline long strlen_user(const char __user *str)
  * a value greater than N if the limit would be exceeded, else strlen.  */
 extern long __strnlen_user(const char __user *, long);
 
-extern inline long strnlen_user(const char __user *str, long n)
+inline long strnlen_user(const char __user *str, long n)
 {
 	return access_ok(VERIFY_READ,str,0) ? __strnlen_user(str, n) : 0;
 }

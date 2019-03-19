@@ -366,7 +366,7 @@ struct el_PRIVATEER_envdata_mcheck {
 #ifdef __KERNEL__
 
 #ifndef __EXTERN_INLINE
-#define __EXTERN_INLINE extern inline
+#define __EXTERN_INLINE inline
 #define __IO_EXTERN_INLINE
 #endif
 

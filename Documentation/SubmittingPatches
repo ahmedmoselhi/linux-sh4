@@ -680,7 +680,7 @@ suboptimal [there are a few, isolated cases of this in fast paths],
 or where it is impossible to use a static inline function [such as
 string-izing].
 
-'static inline' is preferred over 'static __inline__', 'extern inline',
+'static inline' is preferred over 'static __inline__', 'inline',
 and 'extern __inline__'.
 
 

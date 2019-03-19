@@ -31,7 +31,7 @@ static inline void _sbus_writel(unsigned long val, unsigned long addr)
 
 }
 
-extern inline unsigned long _sbus_readl(unsigned long addr)
+inline unsigned long _sbus_readl(unsigned long addr)
 {
 	return *(volatile unsigned long *)addr;
 }

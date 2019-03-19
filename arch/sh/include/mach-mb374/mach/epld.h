@@ -31,17 +31,17 @@
 #define EPLD_LED_OFF  0
 
 #ifndef __ASSEMBLY__
-extern inline int harp_has_intmask_setclr(void)
+inline int harp_has_intmask_setclr(void)
 {
 	return 1;
 }
 
-extern inline void harp_set_vpp_on(void)
+inline void harp_set_vpp_on(void)
 {
 	ctrl_outl(1, EPLD_VPP);
 }
 
-extern inline void harp_set_vpp_off(void)
+inline void harp_set_vpp_off(void)
 {
 	ctrl_outl(0, EPLD_VPP);
 }

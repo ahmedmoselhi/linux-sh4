@@ -131,7 +131,7 @@ void start_thread(struct pt_regs *regs,
 		unsigned long pc, unsigned long usp);
 
 /* Free all resources held by a thread. */
-extern inline void release_thread(struct task_struct *dead_task)
+inline void release_thread(struct task_struct *dead_task)
 {
 }
 
