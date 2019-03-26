@@ -198,7 +198,7 @@ struct el_MCPCIA_uncorrected_frame_mcheck {
 #ifdef __KERNEL__
 
 #ifndef __EXTERN_INLINE
-#define __EXTERN_INLINE inline
+#define __EXTERN_INLINE extern inline
 #define __IO_EXTERN_INLINE
 #endif
 
@@ -261,7 +261,7 @@ struct el_MCPCIA_uncorrected_frame_mcheck {
 	}
 #endif
 
-inline int __mcpcia_is_mmio(unsigned long addr)
+extern inline int __mcpcia_is_mmio(unsigned long addr)
 {
 	return (addr & 0x80000000UL) == 0;
 }

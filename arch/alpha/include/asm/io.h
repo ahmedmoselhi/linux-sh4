@@ -35,7 +35,7 @@
  * register not being up-to-date with respect to the hardware
  * value.
  */
-inline void __set_hae(unsigned long new_hae)
+extern inline void __set_hae(unsigned long new_hae)
 {
 	unsigned long flags;
 	local_irq_save(flags);
@@ -49,7 +49,7 @@ inline void __set_hae(unsigned long new_hae)
 	local_irq_restore(flags);
 }
 
-inline void set_hae(unsigned long new_hae)
+extern inline void set_hae(unsigned long new_hae)
 {
 	if (new_hae != alpha_mv.hae_cache)
 		__set_hae(new_hae);
@@ -173,7 +173,7 @@ REMAP2(u64, writeq, volatile)
 #undef REMAP1
 #undef REMAP2
 
-inline void __iomem *generic_ioportmap(unsigned long a)
+extern inline void __iomem *generic_ioportmap(unsigned long a)
 {
 	return alpha_mv.mv_ioportmap(a);
 }
@@ -269,15 +269,15 @@ extern void		__raw_writeq(u64 b, volatile void __iomem *addr);
  * Mapping from port numbers to __iomem space is pretty easy.
  */
 
-/* These two have to be inline because of the extern prototype from
+/* These two have to be extern inline because of the extern prototype from
    <asm-generic/iomap.h>.  It is not legal to mix "extern" and "static" for
    the same declaration.  */
-inline void __iomem *ioport_map(unsigned long port, unsigned int size)
+extern inline void __iomem *ioport_map(unsigned long port, unsigned int size)
 {
 	return IO_CONCAT(__IO_PREFIX,ioportmap) (port);
 }
 
-inline void ioport_unmap(void __iomem *addr)
+extern inline void ioport_unmap(void __iomem *addr)
 {
 }
 
@@ -320,120 +320,120 @@ static inline int __is_mmio(const volatile void __iomem *addr)
  */
 
 #if IO_CONCAT(__IO_PREFIX,trivial_io_bw)
-inline unsigned int ioread8(void __iomem *addr)
+extern inline unsigned int ioread8(void __iomem *addr)
 {
 	unsigned int ret = IO_CONCAT(__IO_PREFIX,ioread8)(addr);
 	mb();
 	return ret;
 }
 
-inline unsigned int ioread16(void __iomem *addr)
+extern inline unsigned int ioread16(void __iomem *addr)
 {
 	unsigned int ret = IO_CONCAT(__IO_PREFIX,ioread16)(addr);
 	mb();
 	return ret;
 }
 
-inline void iowrite8(u8 b, void __iomem *addr)
+extern inline void iowrite8(u8 b, void __iomem *addr)
 {
 	IO_CONCAT(__IO_PREFIX,iowrite8)(b, addr);
 	mb();
 }
 
-inline void iowrite16(u16 b, void __iomem *addr)
+extern inline void iowrite16(u16 b, void __iomem *addr)
 {
 	IO_CONCAT(__IO_PREFIX,iowrite16)(b, addr);
 	mb();
 }
 
-inline u8 inb(unsigned long port)
+extern inline u8 inb(unsigned long port)
 {
 	return ioread8(ioport_map(port, 1));
 }
 
-inline u16 inw(unsigned long port)
+extern inline u16 inw(unsigned long port)
 {
 	return ioread16(ioport_map(port, 2));
 }
 
-inline void outb(u8 b, unsigned long port)
+extern inline void outb(u8 b, unsigned long port)
 {
 	iowrite8(b, ioport_map(port, 1));
 }
 
-inline void outw(u16 b, unsigned long port)
+extern inline void outw(u16 b, unsigned long port)
 {
 	iowrite16(b, ioport_map(port, 2));
 }
 #endif
 
 #if IO_CONCAT(__IO_PREFIX,trivial_io_lq)
-inline unsigned int ioread32(void __iomem *addr)
+extern inline unsigned int ioread32(void __iomem *addr)
 {
 	unsigned int ret = IO_CONCAT(__IO_PREFIX,ioread32)(addr);
 	mb();
 	return ret;
 }
 
-inline void iowrite32(u32 b, void __iomem *addr)
+extern inline void iowrite32(u32 b, void __iomem *addr)
 {
 	IO_CONCAT(__IO_PREFIX,iowrite32)(b, addr);
 	mb();
 }
 
-inline u32 inl(unsigned long port)
+extern inline u32 inl(unsigned long port)
 {
 	return ioread32(ioport_map(port, 4));
 }
 
-inline void outl(u32 b, unsigned long port)
+extern inline void outl(u32 b, unsigned long port)
 {
 	iowrite32(b, ioport_map(port, 4));
 }
 #endif
 
 #if IO_CONCAT(__IO_PREFIX,trivial_rw_bw) == 1
-inline u8 __raw_readb(const volatile void __iomem *addr)
+extern inline u8 __raw_readb(const volatile void __iomem *addr)
 {
 	return IO_CONCAT(__IO_PREFIX,readb)(addr);
 }
 
-inline u16 __raw_readw(const volatile void __iomem *addr)
+extern inline u16 __raw_readw(const volatile void __iomem *addr)
 {
 	return IO_CONCAT(__IO_PREFIX,readw)(addr);
 }
 
-inline void __raw_writeb(u8 b, volatile void __iomem *addr)
+extern inline void __raw_writeb(u8 b, volatile void __iomem *addr)
 {
 	IO_CONCAT(__IO_PREFIX,writeb)(b, addr);
 }
 
-inline void __raw_writew(u16 b, volatile void __iomem *addr)
+extern inline void __raw_writew(u16 b, volatile void __iomem *addr)
 {
 	IO_CONCAT(__IO_PREFIX,writew)(b, addr);
 }
 
-inline u8 readb(const volatile void __iomem *addr)
+extern inline u8 readb(const volatile void __iomem *addr)
 {
 	u8 ret = __raw_readb(addr);
 	mb();
 	return ret;
 }
 
-inline u16 readw(const volatile void __iomem *addr)
+extern inline u16 readw(const volatile void __iomem *addr)
 {
 	u16 ret = __raw_readw(addr);
 	mb();
 	return ret;
 }
 
-inline void writeb(u8 b, volatile void __iomem *addr)
+extern inline void writeb(u8 b, volatile void __iomem *addr)
 {
 	__raw_writeb(b, addr);
 	mb();
 }
 
-inline void writew(u16 b, volatile void __iomem *addr)
+extern inline void writew(u16 b, volatile void __iomem *addr)
 {
 	__raw_writew(b, addr);
 	mb();
@@ -441,47 +441,47 @@ inline void writew(u16 b, volatile void __iomem *addr)
 #endif
 
 #if IO_CONCAT(__IO_PREFIX,trivial_rw_lq) == 1
-inline u32 __raw_readl(const volatile void __iomem *addr)
+extern inline u32 __raw_readl(const volatile void __iomem *addr)
 {
 	return IO_CONCAT(__IO_PREFIX,readl)(addr);
 }
 
-inline u64 __raw_readq(const volatile void __iomem *addr)
+extern inline u64 __raw_readq(const volatile void __iomem *addr)
 {
 	return IO_CONCAT(__IO_PREFIX,readq)(addr);
 }
 
-inline void __raw_writel(u32 b, volatile void __iomem *addr)
+extern inline void __raw_writel(u32 b, volatile void __iomem *addr)
 {
 	IO_CONCAT(__IO_PREFIX,writel)(b, addr);
 }
 
-inline void __raw_writeq(u64 b, volatile void __iomem *addr)
+extern inline void __raw_writeq(u64 b, volatile void __iomem *addr)
 {
 	IO_CONCAT(__IO_PREFIX,writeq)(b, addr);
 }
 
-inline u32 readl(const volatile void __iomem *addr)
+extern inline u32 readl(const volatile void __iomem *addr)
 {
 	u32 ret = __raw_readl(addr);
 	mb();
 	return ret;
 }
 
-inline u64 readq(const volatile void __iomem *addr)
+extern inline u64 readq(const volatile void __iomem *addr)
 {
 	u64 ret = __raw_readq(addr);
 	mb();
 	return ret;
 }
 
-inline void writel(u32 b, volatile void __iomem *addr)
+extern inline void writel(u32 b, volatile void __iomem *addr)
 {
 	__raw_writel(b, addr);
 	mb();
 }
 
-inline void writeq(u64 b, volatile void __iomem *addr)
+extern inline void writeq(u64 b, volatile void __iomem *addr)
 {
 	__raw_writeq(b, addr);
 	mb();

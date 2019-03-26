@@ -341,7 +341,7 @@ struct el_t2_frame_corrected {
 #ifdef __KERNEL__
 
 #ifndef __EXTERN_INLINE
-#define __EXTERN_INLINE inline
+#define __EXTERN_INLINE extern inline
 #define __IO_EXTERN_INLINE
 #endif
 
@@ -356,13 +356,13 @@ struct el_t2_frame_corrected {
 #define vip	volatile int *
 #define vuip	volatile unsigned int *
 
-inline u8 t2_inb(unsigned long addr)
+extern inline u8 t2_inb(unsigned long addr)
 {
 	long result = *(vip) ((addr << 5) + T2_IO + 0x00);
 	return __kernel_extbl(result, addr & 3);
 }
 
-inline void t2_outb(u8 b, unsigned long addr)
+extern inline void t2_outb(u8 b, unsigned long addr)
 {
 	unsigned long w;
 
@@ -371,13 +371,13 @@ inline void t2_outb(u8 b, unsigned long addr)
 	mb();
 }
 
-inline u16 t2_inw(unsigned long addr)
+extern inline u16 t2_inw(unsigned long addr)
 {
 	long result = *(vip) ((addr << 5) + T2_IO + 0x08);
 	return __kernel_extwl(result, addr & 3);
 }
 
-inline void t2_outw(u16 b, unsigned long addr)
+extern inline void t2_outw(u16 b, unsigned long addr)
 {
 	unsigned long w;
 
@@ -386,12 +386,12 @@ inline void t2_outw(u16 b, unsigned long addr)
 	mb();
 }
 
-inline u32 t2_inl(unsigned long addr)
+extern inline u32 t2_inl(unsigned long addr)
 {
 	return *(vuip) ((addr << 5) + T2_IO + 0x18);
 }
 
-inline void t2_outl(u32 b, unsigned long addr)
+extern inline void t2_outl(u32 b, unsigned long addr)
 {
 	*(vuip) ((addr << 5) + T2_IO + 0x18) = b;
 	mb();

@@ -7,7 +7,7 @@
 #include <asm/pgalloc.h>
 
 #ifndef __EXTERN_INLINE
-#define __EXTERN_INLINE inline
+#define __EXTERN_INLINE extern inline
 #define __MMU_EXTERN_INLINE
 #endif
 

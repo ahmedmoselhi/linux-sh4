@@ -26,7 +26,7 @@
 #define EPLD_INTMASK1CLR	(EPLD_BASE+0x0000003c)
 
 #ifndef __ASSEMBLY__
-inline int harp_has_intmask_setclr(void)
+extern inline int harp_has_intmask_setclr(void)
 {
 	return 1;
 }

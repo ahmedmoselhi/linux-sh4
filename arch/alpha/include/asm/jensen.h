@@ -72,7 +72,7 @@
 #ifdef __KERNEL__
 
 #ifndef __EXTERN_INLINE
-#define __EXTERN_INLINE inline
+#define __EXTERN_INLINE extern inline
 #define __IO_EXTERN_INLINE
 #endif
 

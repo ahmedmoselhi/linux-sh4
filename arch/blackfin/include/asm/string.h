@@ -12,7 +12,7 @@
 #ifdef __KERNEL__		/* only set these up for kernel code */
 
 #define __HAVE_ARCH_STRCPY
-inline char *strcpy(char *dest, const char *src)
+extern inline char *strcpy(char *dest, const char *src)
 {
 	char *xdest = dest;
 	char temp = 0;
@@ -31,7 +31,7 @@ inline char *strcpy(char *dest, const char *src)
 }
 
 #define __HAVE_ARCH_STRNCPY
-inline char *strncpy(char *dest, const char *src, size_t n)
+extern inline char *strncpy(char *dest, const char *src, size_t n)
 {
 	char *xdest = dest;
 	char temp = 0;
@@ -67,7 +67,7 @@ inline char *strncpy(char *dest, const char *src, size_t n)
 }
 
 #define __HAVE_ARCH_STRCMP
-inline int strcmp(const char *cs, const char *ct)
+extern inline int strcmp(const char *cs, const char *ct)
 {
 	/* need to use int's here so the char's in the assembly don't get
 	 * sign extended incorrectly when we don't want them to be
@@ -94,7 +94,7 @@ inline int strcmp(const char *cs, const char *ct)
 }
 
 #define __HAVE_ARCH_STRNCMP
-inline int strncmp(const char *cs, const char *ct, size_t count)
+extern inline int strncmp(const char *cs, const char *ct, size_t count)
 {
 	/* need to use int's here so the char's in the assembly don't get
 	 * sign extended incorrectly when we don't want them to be

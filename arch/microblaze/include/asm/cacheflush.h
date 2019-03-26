@@ -86,7 +86,7 @@ extern void __invalidate_dcache_user_range(struct vm_area_struct *vma,
 				struct page *page,
 				unsigned long adr, int len);
 
-inline void __invalidate_cache_all(void)
+extern inline void __invalidate_cache_all(void)
 {
 	__invalidate_icache_all();
 	__invalidate_dcache_all();

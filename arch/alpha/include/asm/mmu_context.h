@@ -110,11 +110,11 @@ extern unsigned long last_asn;
  */
 
 #ifndef __EXTERN_INLINE
-#define __EXTERN_INLINE inline
+#define __EXTERN_INLINE extern inline
 #define __MMU_EXTERN_INLINE
 #endif
 
-inline unsigned long
+extern inline unsigned long
 __get_new_mm_context(struct mm_struct *mm, long cpu)
 {
 	unsigned long asn = cpu_last_asn(cpu);
@@ -239,7 +239,7 @@ init_new_context(struct task_struct *tsk, struct mm_struct *mm)
 	return 0;
 }
 
-inline void
+extern inline void
 destroy_context(struct mm_struct *mm)
 {
 	/* Nothing to do.  */

@@ -221,7 +221,7 @@ typedef union _TXDMA_PR_NUM_DES_t {
 #define INDEX10(x)	((x) & ET_DMA10_MASK)
 #define INDEX4(x)	((x) & ET_DMA4_MASK)
 
-inline void add_10bit(u32 *v, int n)
+extern inline void add_10bit(u32 *v, int n)
 {
 	*v = INDEX10(*v + n) | (*v & ET_DMA10_WRAP);
 }
