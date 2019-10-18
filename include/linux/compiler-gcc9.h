@@ -29,6 +29,8 @@
    the kernel context */
 #define __cold			__attribute__((__cold__))
 
+#endif
+
 #define __UNIQUE_ID(prefix) __PASTE(__PASTE(__UNIQUE_ID_, prefix), __COUNTER__)
 
 #ifndef __CHECKER__
