@@ -31,28 +31,6 @@
 
 #endif
 
-#define __UNIQUE_ID(prefix) __PASTE(__PASTE(__UNIQUE_ID_, prefix), __COUNTER__)
-
-#ifndef __CHECKER__
-# define __compiletime_warning(message) __attribute__((warning(message)))
-# define __compiletime_error(message) __attribute__((error(message)))
-#endif /* __CHECKER__ */
-
-/*
- * Mark a position in code as unreachable.  This can be used to
- * suppress control flow warnings after asm blocks that transfer
- * control elsewhere.
- */
-#define unreachable() __builtin_unreachable()
-
-/* Mark a function definition as prohibited from being cloned. */
-#define __noclone	__attribute__((__noclone__))
-
-/*
- * Tell the optimizer that something else uses this function or variable.
- */
-#define __visible __attribute__((externally_visible))
-
 /*
  * GCC 'asm goto' miscompiles certain code sequences:
  *
@@ -63,11 +41,5 @@
  * (asm goto is automatically volatile - the naming reflects this.)
  */
 #define asm_volatile_goto(x...)	do { asm goto(x); asm (""); } while (0)
-
-#ifdef CONFIG_ARCH_USE_BUILTIN_BSWAP
-#define __HAVE_BUILTIN_BSWAP32__
-#define __HAVE_BUILTIN_BSWAP64__
-#define __HAVE_BUILTIN_BSWAP16__
-#endif /* CONFIG_ARCH_USE_BUILTIN_BSWAP */
 
 #define KASAN_ABI_VERSION 5
