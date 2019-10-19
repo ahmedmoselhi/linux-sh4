@@ -80,6 +80,27 @@
 #define __attribute_const__		__attribute__((__const__))
 #define __maybe_unused			__attribute__((unused))
 
+#ifndef __has_attribute
+# define __has_attribute(x) __GCC4_has_attribute_##x
+# define __GCC4_has_attribute___assume_aligned__      (__GNUC_MINOR__ >= 9)
+# define __GCC4_has_attribute___designated_init__     0
+# define __GCC4_has_attribute___externally_visible__  1
+# define __GCC4_has_attribute___noclone__             1
+# define __GCC4_has_attribute___nonstring__           0
+# define __GCC4_has_attribute___no_sanitize_address__ (__GNUC_MINOR__ >= 8)
+#endif
+
+/*
+ *   gcc: https://gcc.gnu.org/onlinedocs/gcc/Common-Function-Attributes.html#index-alias-function-attribute
+ */
+#define __alias(symbol)                 __attribute__((__alias__(#symbol)))
+
+#if __has_attribute(__copy__)
+# define __copy(symbol)                 __attribute__((__copy__(symbol)))
+#else
+# define __copy(symbol)
+#endif
+
 #define __gcc_header(x) #x
 #define _gcc_header(x) __gcc_header(linux/compiler-gcc##x.h)
 #define gcc_header(x) _gcc_header(x)
