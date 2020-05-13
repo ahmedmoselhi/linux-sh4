@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  ebt_arpreply
  *
@@ -16,7 +17,7 @@
 #include <linux/netfilter_bridge/ebt_arpreply.h>
 
 static unsigned int
-ebt_arpreply_tg(struct sk_buff *skb, const struct xt_target_param *par)
+ebt_arpreply_tg(struct sk_buff *skb, const struct xt_action_param *par)
 {
 	const struct ebt_arpreply_info *info = par->targinfo;
 	const __be32 *siptr, *diptr;
@@ -51,23 +52,27 @@ ebt_arpreply_tg(struct sk_buff *skb, const struct xt_target_param *par)
 	if (diptr == NULL)
 		return EBT_DROP;
 
-	arp_send(ARPOP_REPLY, ETH_P_ARP, *siptr, (struct net_device *)par->in,
+	arp_send(ARPOP_REPLY, ETH_P_ARP, *siptr,
+		 (struct net_device *)xt_in(par),
 		 *diptr, shp, info->mac, shp);
 
 	return info->target;
 }
 
-static bool ebt_arpreply_tg_check(const struct xt_tgchk_param *par)
+static int ebt_arpreply_tg_check(const struct xt_tgchk_param *par)
 {
 	const struct ebt_arpreply_info *info = par->targinfo;
 	const struct ebt_entry *e = par->entryinfo;
 
 	if (BASE_CHAIN && info->target == EBT_RETURN)
-		return false;
+		return -EINVAL;
 	if (e->ethproto != htons(ETH_P_ARP) ||
 	    e->invflags & EBT_IPROTO)
-		return false;
-	return true;
+		return -EINVAL;
+	if (ebt_invalid_target(info->target))
+		return -EINVAL;
+
+	return 0;
 }
 
 static struct xt_target ebt_arpreply_tg_reg __read_mostly = {
@@ -78,7 +83,7 @@ static struct xt_target ebt_arpreply_tg_reg __read_mostly = {
 	.hooks		= (1 << NF_BR_NUMHOOKS) | (1 << NF_BR_PRE_ROUTING),
 	.target		= ebt_arpreply_tg,
 	.checkentry	= ebt_arpreply_tg_check,
-	.targetsize	= XT_ALIGN(sizeof(struct ebt_arpreply_info)),
+	.targetsize	= sizeof(struct ebt_arpreply_info),
 	.me		= THIS_MODULE,
 };
 

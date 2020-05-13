@@ -1,5 +1,8 @@
-#include "drmP.h"
-#include "drm_crtc_helper.h"
+// SPDX-License-Identifier: MIT
+
+#include <drm/drm_crtc_helper.h>
+#include <drm/drm_device.h>
+
 #include "radeon.h"
 
 /*
@@ -81,7 +84,7 @@ struct radeon_tv_mode_constants {
 	unsigned pix_to_tv;
 };
 
-static const uint16_t hor_timing_NTSC[] = {
+static const uint16_t hor_timing_NTSC[MAX_H_CODE_TIMING_LEN] = {
 	0x0007,
 	0x003f,
 	0x0263,
@@ -102,7 +105,7 @@ static const uint16_t hor_timing_NTSC[] = {
 	0
 };
 
-static const uint16_t vert_timing_NTSC[] = {
+static const uint16_t vert_timing_NTSC[MAX_V_CODE_TIMING_LEN] = {
 	0x2001,
 	0x200d,
 	0x1006,
@@ -119,7 +122,7 @@ static const uint16_t vert_timing_NTSC[] = {
 	0
 };
 
-static const uint16_t hor_timing_PAL[] = {
+static const uint16_t hor_timing_PAL[MAX_H_CODE_TIMING_LEN] = {
 	0x0007,
 	0x0058,
 	0x027c,
@@ -140,7 +143,7 @@ static const uint16_t hor_timing_PAL[] = {
 	0
 };
 
-static const uint16_t vert_timing_PAL[] = 	{
+static const uint16_t vert_timing_PAL[MAX_V_CODE_TIMING_LEN] = {
 	0x2001,
 	0x200c,
 	0x1005,
@@ -420,24 +423,14 @@ static void radeon_legacy_write_tv_restarts(struct radeon_encoder *radeon_encode
 
 static bool radeon_legacy_tv_init_restarts(struct drm_encoder *encoder)
 {
-	struct drm_device *dev = encoder->dev;
-	struct radeon_device *rdev = dev->dev_private;
 	struct radeon_encoder *radeon_encoder = to_radeon_encoder(encoder);
 	struct radeon_encoder_tv_dac *tv_dac = radeon_encoder->enc_priv;
-	struct radeon_crtc *radeon_crtc;
 	int restart;
 	unsigned int h_total, v_total, f_total;
 	int v_offset, h_offset;
 	u16 p1, p2, h_inc;
 	bool h_changed;
 	const struct radeon_tv_mode_constants *const_ptr;
-	struct radeon_pll *pll;
-
-	radeon_crtc = to_radeon_crtc(radeon_encoder->base.crtc);
-	if (radeon_crtc->crtc_id == 1)
-		pll = &rdev->clock.p2pll;
-	else
-		pll = &rdev->clock.p1pll;
 
 	const_ptr = radeon_legacy_tv_get_std_mode(radeon_encoder, NULL);
 	if (!const_ptr)
@@ -496,7 +489,7 @@ static bool radeon_legacy_tv_init_restarts(struct drm_encoder *encoder)
 
 	restart -= v_offset + h_offset;
 
-	DRM_DEBUG("compute_restarts: def = %u h = %d v = %d, p1 = %04x, p2 = %04x, restart = %d\n",
+	DRM_DEBUG_KMS("compute_restarts: def = %u h = %d v = %d, p1 = %04x, p2 = %04x, restart = %d\n",
 		  const_ptr->def_restart, tv_dac->h_pos, tv_dac->v_pos, p1, p2, restart);
 
 	tv_dac->tv.hrestart = restart % h_total;
@@ -505,7 +498,7 @@ static bool radeon_legacy_tv_init_restarts(struct drm_encoder *encoder)
 	restart /= v_total;
 	tv_dac->tv.frestart = restart % f_total;
 
-	DRM_DEBUG("compute_restart: F/H/V=%u,%u,%u\n",
+	DRM_DEBUG_KMS("compute_restart: F/H/V=%u,%u,%u\n",
 		  (unsigned)tv_dac->tv.frestart,
 		  (unsigned)tv_dac->tv.vrestart,
 		  (unsigned)tv_dac->tv.hrestart);
@@ -523,7 +516,7 @@ static bool radeon_legacy_tv_init_restarts(struct drm_encoder *encoder)
 	tv_dac->tv.timing_cntl = (tv_dac->tv.timing_cntl & ~RADEON_H_INC_MASK) |
 		((u32)h_inc << RADEON_H_INC_SHIFT);
 
-	DRM_DEBUG("compute_restart: h_size = %d h_inc = %d\n", tv_dac->h_size, h_inc);
+	DRM_DEBUG_KMS("compute_restart: h_size = %d h_inc = %d\n", tv_dac->h_size, h_inc);
 
 	return h_changed;
 }
@@ -544,7 +537,7 @@ void radeon_legacy_tv_mode_set(struct drm_encoder *encoder,
 	uint32_t tv_master_cntl, tv_rgb_cntl, tv_dac_cntl;
 	uint32_t tv_modulator_cntl1, tv_modulator_cntl2;
 	uint32_t tv_vscaler_cntl1, tv_vscaler_cntl2;
-	uint32_t tv_pll_cntl, tv_pll_cntl1, tv_ftotal;
+	uint32_t tv_pll_cntl, tv_ftotal;
 	uint32_t tv_y_fall_cntl, tv_y_rise_cntl, tv_y_saw_tooth_cntl;
 	uint32_t m, n, p;
 	const uint16_t *hor_timing;
@@ -644,7 +637,7 @@ void radeon_legacy_tv_mode_set(struct drm_encoder *encoder,
 
 	if (flicker_removal < 3)
 		flicker_removal = 3;
-	for (i = 0; i < 6; ++i) {
+	for (i = 0; i < ARRAY_SIZE(SLOPE_limit); ++i) {
 		if (flicker_removal == SLOPE_limit[i])
 			break;
 	}
@@ -715,12 +708,6 @@ void radeon_legacy_tv_mode_set(struct drm_encoder *encoder,
 		((n & RADEON_TV_N0LO_MASK) << RADEON_TV_N0LO_SHIFT) |
 		(((n >> 9) & RADEON_TV_N0HI_MASK) << RADEON_TV_N0HI_SHIFT) |
 		((p & RADEON_TV_P_MASK) << RADEON_TV_P_SHIFT);
-
-	tv_pll_cntl1 = (((4 & RADEON_TVPCP_MASK) << RADEON_TVPCP_SHIFT) |
-			((4 & RADEON_TVPVG_MASK) << RADEON_TVPVG_SHIFT) |
-			((1 & RADEON_TVPDC_MASK) << RADEON_TVPDC_SHIFT) |
-			RADEON_TVCLK_SRC_SEL_TVPLL |
-			RADEON_TVPLL_TEST_DIS);
 
 	tv_dac->tv.tv_uv_adr = 0xc8;
 
@@ -864,7 +851,7 @@ void radeon_legacy_tv_adjust_crtc_reg(struct drm_encoder *encoder,
 	*v_sync_strt_wid = tmp;
 }
 
-static inline int get_post_div(int value)
+static int get_post_div(int value)
 {
 	int post_div;
 	switch (value) {

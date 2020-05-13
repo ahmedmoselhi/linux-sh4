@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_SH_ELF_H
 #define __ASM_SH_ELF_H
 
@@ -50,25 +51,14 @@
 #define	R_SH_GOTPC		167
 
 /* FDPIC relocs */
-#define R_SH_GOT20		70
-#define R_SH_GOTOFF20		71
-#define R_SH_GOTFUNCDESC	72
-#define R_SH_GOTFUNCDESC20	73
-#define R_SH_GOTOFFFUNCDESC	74
-#define R_SH_GOTOFFFUNCDESC20	75
-#define R_SH_FUNCDESC		76
-#define R_SH_FUNCDESC_VALUE	77
-
-#if 0 /* XXX - later .. */
-#define R_SH_GOT20		198
-#define R_SH_GOTOFF20		199
-#define R_SH_GOTFUNCDESC	200
-#define R_SH_GOTFUNCDESC20	201
-#define R_SH_GOTOFFFUNCDESC	202
-#define R_SH_GOTOFFFUNCDESC20	203
-#define R_SH_FUNCDESC		204
-#define R_SH_FUNCDESC_VALUE	205
-#endif
+#define R_SH_GOT20		201
+#define R_SH_GOTOFF20		202
+#define R_SH_GOTFUNCDESC	203
+#define R_SH_GOTFUNCDESC20	204
+#define R_SH_GOTOFFFUNCDESC	205
+#define R_SH_GOTOFFFUNCDESC20	206
+#define R_SH_FUNCDESC		207
+#define R_SH_FUNCDESC_VALUE	208
 
 /* SHmedia relocs */
 #define R_SH_IMM_LOW16		246
@@ -114,7 +104,6 @@ typedef struct user_fpu_struct elf_fpregset_t;
  */
 #define CORE_DUMP_USE_REGSET
 
-#define USE_ELF_CORE_DUMP
 #define ELF_FDPIC_CORE_EFLAGS	EF_SH_FDPIC
 #define ELF_EXEC_PAGESIZE	PAGE_SIZE
 
@@ -143,14 +132,6 @@ typedef struct user_fpu_struct elf_fpregset_t;
    but that could change... */
 
 #define ELF_PLATFORM	(utsname()->machine)
-
-/* ELF_BASE_PLATFORM indicates the real hardware platform, including
-   the 'variant' of the cpu family (SH4-202, ST40-300).
-   ld.so will use this value to load implementation specific libraries for
-   optimization better than the too generic ELF_PLATFORM. */
-
-extern const char *get_cpu_variant(struct sh_cpuinfo *);
-#define ELF_BASE_PLATFORM	(get_cpu_variant(&boot_cpu_data))
 
 #ifdef __SH5__
 #define ELF_PLAT_INIT(_r, load_addr) \
@@ -203,7 +184,8 @@ do {									\
 } while (0)
 #endif
 
-#define SET_PERSONALITY(ex) set_personality(PER_LINUX_32BIT)
+#define SET_PERSONALITY(ex) \
+	set_personality(PER_LINUX_32BIT | (current->personality & (~PER_MASK)))
 
 #ifdef CONFIG_VSYSCALL
 /* vDSO has arch_setup_additional_pages */
@@ -222,9 +204,9 @@ extern void __kernel_vsyscall;
 	if (vdso_enabled)					\
 		NEW_AUX_ENT(AT_SYSINFO_EHDR, VDSO_BASE);	\
 	else							\
-		NEW_AUX_ENT(AT_IGNORE, 0);
+		NEW_AUX_ENT(AT_IGNORE, 0)
 #else
-#define VSYSCALL_AUX_ENT
+#define VSYSCALL_AUX_ENT	NEW_AUX_ENT(AT_IGNORE, 0)
 #endif /* CONFIG_VSYSCALL */
 
 #ifdef CONFIG_SH_FPU

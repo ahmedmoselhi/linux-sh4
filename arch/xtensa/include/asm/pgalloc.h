@@ -1,9 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * include/asm-xtensa/pgalloc.h
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  * Copyright (C) 2001-2007 Tensilica Inc.
  */
@@ -11,9 +8,8 @@
 #ifndef _XTENSA_PGALLOC_H
 #define _XTENSA_PGALLOC_H
 
-#ifdef __KERNEL__
-
 #include <linux/highmem.h>
+#include <linux/slab.h>
 
 /*
  * Allocating and freeing a pmd is trivial: the 1-entry pmd is
@@ -37,37 +33,45 @@ static inline void pgd_free(struct mm_struct *mm, pgd_t *pgd)
 	free_page((unsigned long)pgd);
 }
 
-/* Use a slab cache for the pte pages (see also sparc64 implementation) */
-
-extern struct kmem_cache *pgtable_cache;
-
-static inline pte_t *pte_alloc_one_kernel(struct mm_struct *mm, 
-					 unsigned long address)
+static inline pte_t *pte_alloc_one_kernel(struct mm_struct *mm)
 {
-	return kmem_cache_alloc(pgtable_cache, GFP_KERNEL|__GFP_REPEAT);
+	pte_t *ptep;
+	int i;
+
+	ptep = (pte_t *)__get_free_page(GFP_KERNEL);
+	if (!ptep)
+		return NULL;
+	for (i = 0; i < 1024; i++)
+		pte_clear(NULL, 0, ptep + i);
+	return ptep;
 }
 
-static inline pgtable_t pte_alloc_one(struct mm_struct *mm,
-					unsigned long addr)
+static inline pgtable_t pte_alloc_one(struct mm_struct *mm)
 {
+	pte_t *pte;
 	struct page *page;
 
-	page = virt_to_page(pte_alloc_one_kernel(mm, addr));
-	pgtable_page_ctor(page);
+	pte = pte_alloc_one_kernel(mm);
+	if (!pte)
+		return NULL;
+	page = virt_to_page(pte);
+	if (!pgtable_pte_page_ctor(page)) {
+		__free_page(page);
+		return NULL;
+	}
 	return page;
 }
 
 static inline void pte_free_kernel(struct mm_struct *mm, pte_t *pte)
 {
-	kmem_cache_free(pgtable_cache, pte);
+	free_page((unsigned long)pte);
 }
 
 static inline void pte_free(struct mm_struct *mm, pgtable_t pte)
 {
-	pgtable_page_dtor(pte);
-	kmem_cache_free(pgtable_cache, page_address(pte));
+	pgtable_pte_page_dtor(pte);
+	__free_page(pte);
 }
 #define pmd_pgtable(pmd) pmd_page(pmd)
 
-#endif /* __KERNEL__ */
 #endif /* _XTENSA_PGALLOC_H */

@@ -1,13 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *	"LAPB via ethernet" driver release 001
  *
  *	This code REQUIRES 2.1.15 or higher/ NET3.038
- *
- *	This module:
- *		This module is free software; you can redistribute it and/or
- *		modify it under the terms of the GNU General Public License
- *		as published by the Free Software Foundation; either version
- *		2 of the License, or (at your option) any later version.
  *
  *	This is a "pseudo" network driver to allow LAPB over Ethernet.
  *
@@ -20,10 +15,13 @@
  *	2000-11-14	Henner Eisen	dev_hold/put, NETDEV_GOING_DOWN support
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/errno.h>
 #include <linux/types.h>
 #include <linux/socket.h>
 #include <linux/in.h>
+#include <linux/slab.h>
 #include <linux/kernel.h>
 #include <linux/string.h>
 #include <linux/net.h>
@@ -32,20 +30,18 @@
 #include <linux/if_arp.h>
 #include <linux/skbuff.h>
 #include <net/sock.h>
-#include <asm/system.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/mm.h>
 #include <linux/interrupt.h>
 #include <linux/notifier.h>
 #include <linux/stat.h>
-#include <linux/netfilter.h>
 #include <linux/module.h>
 #include <linux/lapb.h>
 #include <linux/init.h>
 
 #include <net/x25device.h>
 
-static char bcast_addr[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+static const u8 bcast_addr[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 
 /* If this number is made larger, check that the temporary string buffer
  * in lapbeth_new_device is large enough to store the probe device name.*/
@@ -68,7 +64,7 @@ static struct lapbethdev *lapbeth_get_x25_dev(struct net_device *dev)
 {
 	struct lapbethdev *lapbeth;
 
-	list_for_each_entry_rcu(lapbeth, &lapbeth_devices, node) {
+	list_for_each_entry_rcu(lapbeth, &lapbeth_devices, node, lockdep_rtnl_is_held()) {
 		if (lapbeth->ethdev == dev) 
 			return lapbeth;
 	}
@@ -138,7 +134,7 @@ static int lapbeth_data_indication(struct net_device *dev, struct sk_buff *skb)
 		return NET_RX_DROP;
 
 	ptr  = skb->data;
-	*ptr = 0x00;
+	*ptr = X25_IFACE_DATA;
 
 	skb->protocol = x25_type_trans(skb, dev);
 	return netif_rx(skb);
@@ -160,17 +156,15 @@ static netdev_tx_t lapbeth_xmit(struct sk_buff *skb,
 		goto drop;
 
 	switch (skb->data[0]) {
-	case 0x00:
+	case X25_IFACE_DATA:
 		break;
-	case 0x01:
+	case X25_IFACE_CONNECT:
 		if ((err = lapb_connect_request(dev)) != LAPB_OK)
-			printk(KERN_ERR "lapbeth: lapb_connect_request "
-			       "error: %d\n", err);
+			pr_err("lapb_connect_request error: %d\n", err);
 		goto drop;
-	case 0x02:
+	case X25_IFACE_DISCONNECT:
 		if ((err = lapb_disconnect_request(dev)) != LAPB_OK)
-			printk(KERN_ERR "lapbeth: lapb_disconnect_request "
-			       "err: %d\n", err);
+			pr_err("lapb_disconnect_request err: %d\n", err);
 		/* Fall thru */
 	default:
 		goto drop;
@@ -179,7 +173,7 @@ static netdev_tx_t lapbeth_xmit(struct sk_buff *skb,
 	skb_pull(skb, 1);
 
 	if ((err = lapb_data_request(dev, skb)) != LAPB_OK) {
-		printk(KERN_ERR "lapbeth: lapb_data_request error - %d\n", err);
+		pr_err("lapb_data_request error - %d\n", err);
 		goto drop;
 	}
 out:
@@ -219,12 +213,12 @@ static void lapbeth_connected(struct net_device *dev, int reason)
 	struct sk_buff *skb = dev_alloc_skb(1);
 
 	if (!skb) {
-		printk(KERN_ERR "lapbeth: out of memory\n");
+		pr_err("out of memory\n");
 		return;
 	}
 
 	ptr  = skb_put(skb, 1);
-	*ptr = 0x01;
+	*ptr = X25_IFACE_CONNECT;
 
 	skb->protocol = x25_type_trans(skb, dev);
 	netif_rx(skb);
@@ -236,12 +230,12 @@ static void lapbeth_disconnected(struct net_device *dev, int reason)
 	struct sk_buff *skb = dev_alloc_skb(1);
 
 	if (!skb) {
-		printk(KERN_ERR "lapbeth: out of memory\n");
+		pr_err("out of memory\n");
 		return;
 	}
 
 	ptr  = skb_put(skb, 1);
-	*ptr = 0x02;
+	*ptr = X25_IFACE_DISCONNECT;
 
 	skb->protocol = x25_type_trans(skb, dev);
 	netif_rx(skb);
@@ -258,14 +252,13 @@ static int lapbeth_set_mac_address(struct net_device *dev, void *addr)
 }
 
 
-static struct lapb_register_struct lapbeth_callbacks = {
+static const struct lapb_register_struct lapbeth_callbacks = {
 	.connect_confirmation    = lapbeth_connected,
 	.connect_indication      = lapbeth_connected,
 	.disconnect_confirmation = lapbeth_disconnected,
 	.disconnect_indication   = lapbeth_disconnected,
 	.data_indication         = lapbeth_data_indication,
 	.data_transmit           = lapbeth_data_transmit,
-
 };
 
 /*
@@ -276,7 +269,7 @@ static int lapbeth_open(struct net_device *dev)
 	int err;
 
 	if ((err = lapb_register(dev, &lapbeth_callbacks)) != LAPB_OK) {
-		printk(KERN_ERR "lapbeth: lapb_register error - %d\n", err);
+		pr_err("lapb_register error: %d\n", err);
 		return -ENODEV;
 	}
 
@@ -291,7 +284,7 @@ static int lapbeth_close(struct net_device *dev)
 	netif_stop_queue(dev);
 
 	if ((err = lapb_unregister(dev)) != LAPB_OK)
-		printk(KERN_ERR "lapbeth: lapb_unregister error - %d\n", err);
+		pr_err("lapb_unregister error: %d\n", err);
 
 	return 0;
 }
@@ -308,7 +301,7 @@ static const struct net_device_ops lapbeth_netdev_ops = {
 static void lapbeth_setup(struct net_device *dev)
 {
 	dev->netdev_ops	     = &lapbeth_netdev_ops;
-	dev->destructor	     = free_netdev;
+	dev->needs_free_netdev = true;
 	dev->type            = ARPHRD_X25;
 	dev->hard_header_len = 3;
 	dev->mtu             = 1000;
@@ -326,8 +319,8 @@ static int lapbeth_new_device(struct net_device *dev)
 
 	ASSERT_RTNL();
 
-	ndev = alloc_netdev(sizeof(*lapbeth), "lapb%d", 
-			   lapbeth_setup);
+	ndev = alloc_netdev(sizeof(*lapbeth), "lapb%d", NET_NAME_UNKNOWN,
+			    lapbeth_setup);
 	if (!ndev)
 		goto out;
 
@@ -336,10 +329,6 @@ static int lapbeth_new_device(struct net_device *dev)
 
 	dev_hold(dev);
 	lapbeth->ethdev = dev;
-
-	rc = dev_alloc_name(ndev, ndev->name);
-	if (rc < 0) 
-		goto fail;
 
 	rc = -EIO;
 	if (register_netdevice(ndev))
@@ -352,7 +341,6 @@ out:
 fail:
 	dev_put(dev);
 	free_netdev(ndev);
-	kfree(lapbeth);
 	goto out;
 }
 
@@ -375,7 +363,7 @@ static int lapbeth_device_event(struct notifier_block *this,
 				unsigned long event, void *ptr)
 {
 	struct lapbethdev *lapbeth;
-	struct net_device *dev = ptr;
+	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
 
 	if (dev_net(dev) != &init_net)
 		return NOTIFY_DONE;

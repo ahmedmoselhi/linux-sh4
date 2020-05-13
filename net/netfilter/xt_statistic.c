@@ -1,9 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2006 Patrick McHardy <kaber@trash.net>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  * Based on ipt_random and ipt_nth by Fabrice MARIE <fabrice@netfilter.org>.
  */
@@ -12,13 +9,15 @@
 #include <linux/spinlock.h>
 #include <linux/skbuff.h>
 #include <linux/net.h>
+#include <linux/slab.h>
 
 #include <linux/netfilter/xt_statistic.h>
 #include <linux/netfilter/x_tables.h>
+#include <linux/module.h>
 
 struct xt_statistic_priv {
-	uint32_t count;
-};
+	atomic_t count;
+} ____cacheline_aligned_in_smp;
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Patrick McHardy <kaber@trash.net>");
@@ -26,48 +25,45 @@ MODULE_DESCRIPTION("Xtables: statistics-based matching (\"Nth\", random)");
 MODULE_ALIAS("ipt_statistic");
 MODULE_ALIAS("ip6t_statistic");
 
-static DEFINE_SPINLOCK(nth_lock);
-
 static bool
-statistic_mt(const struct sk_buff *skb, const struct xt_match_param *par)
+statistic_mt(const struct sk_buff *skb, struct xt_action_param *par)
 {
 	const struct xt_statistic_info *info = par->matchinfo;
 	bool ret = info->flags & XT_STATISTIC_INVERT;
+	int nval, oval;
 
 	switch (info->mode) {
 	case XT_STATISTIC_MODE_RANDOM:
-		if ((net_random() & 0x7FFFFFFF) < info->u.random.probability)
+		if ((prandom_u32() & 0x7FFFFFFF) < info->u.random.probability)
 			ret = !ret;
 		break;
 	case XT_STATISTIC_MODE_NTH:
-		spin_lock_bh(&nth_lock);
-		if (info->master->count++ == info->u.nth.every) {
-			info->master->count = 0;
+		do {
+			oval = atomic_read(&info->master->count);
+			nval = (oval == info->u.nth.every) ? 0 : oval + 1;
+		} while (atomic_cmpxchg(&info->master->count, oval, nval) != oval);
+		if (nval == 0)
 			ret = !ret;
-		}
-		spin_unlock_bh(&nth_lock);
 		break;
 	}
 
 	return ret;
 }
 
-static bool statistic_mt_check(const struct xt_mtchk_param *par)
+static int statistic_mt_check(const struct xt_mtchk_param *par)
 {
 	struct xt_statistic_info *info = par->matchinfo;
 
 	if (info->mode > XT_STATISTIC_MODE_MAX ||
 	    info->flags & ~XT_STATISTIC_MASK)
-		return false;
+		return -EINVAL;
 
 	info->master = kzalloc(sizeof(*info->master), GFP_KERNEL);
-	if (info->master == NULL) {
-		printk(KERN_ERR KBUILD_MODNAME ": Out of memory\n");
-		return false;
-	}
-	info->master->count = info->u.nth.count;
+	if (info->master == NULL)
+		return -ENOMEM;
+	atomic_set(&info->master->count, info->u.nth.count);
 
-	return true;
+	return 0;
 }
 
 static void statistic_mt_destroy(const struct xt_mtdtor_param *par)
@@ -85,6 +81,7 @@ static struct xt_match xt_statistic_mt_reg __read_mostly = {
 	.checkentry = statistic_mt_check,
 	.destroy    = statistic_mt_destroy,
 	.matchsize  = sizeof(struct xt_statistic_info),
+	.usersize   = offsetof(struct xt_statistic_info, master),
 	.me         = THIS_MODULE,
 };
 

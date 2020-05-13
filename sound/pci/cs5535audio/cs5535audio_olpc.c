@@ -1,21 +1,20 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * OLPC XO-1 additional sound features
  *
  * Copyright © 2006  Jaya Kumar <jayakumar.lkml@gmail.com>
  * Copyright © 2007-2008  Andres Salomon <dilinger@debian.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 #include <sound/core.h>
 #include <sound/info.h>
 #include <sound/control.h>
 #include <sound/ac97_codec.h>
+#include <linux/gpio.h>
 
 #include <asm/olpc.h>
 #include "cs5535audio.h"
+
+#define DRV_NAME "cs5535audio-olpc"
 
 /*
  * OLPC has an additional feature on top of the regular AD1888 codec features.
@@ -33,15 +32,13 @@ void olpc_analog_input(struct snd_ac97 *ac97, int on)
 	err = snd_ac97_update_bits(ac97, AC97_AD_TEST2,
 			1 << AC97_AD_HPFD_SHIFT, on << AC97_AD_HPFD_SHIFT);
 	if (err < 0) {
-		snd_printk(KERN_ERR "setting High Pass Filter - %d\n", err);
+		dev_err(ac97->bus->card->dev,
+			"setting High Pass Filter - %d\n", err);
 		return;
 	}
 
 	/* set Analog Input through GPIO */
-	if (on)
-		geode_gpio_set(OLPC_GPIO_MIC_AC, GPIO_OUTPUT_VAL);
-	else
-		geode_gpio_clear(OLPC_GPIO_MIC_AC, GPIO_OUTPUT_VAL);
+	gpio_set_value(OLPC_GPIO_MIC_AC, on);
 }
 
 /*
@@ -58,7 +55,7 @@ void olpc_mic_bias(struct snd_ac97 *ac97, int on)
 	err = snd_ac97_update_bits(ac97, AC97_AD_MISC,
 			1 << AC97_AD_VREFD_SHIFT, on << AC97_AD_VREFD_SHIFT);
 	if (err < 0)
-		snd_printk(KERN_ERR "setting MIC Bias - %d\n", err);
+		dev_err(ac97->bus->card->dev, "setting MIC Bias - %d\n", err);
 }
 
 static int olpc_dc_info(struct snd_kcontrol *kctl,
@@ -73,8 +70,7 @@ static int olpc_dc_info(struct snd_kcontrol *kctl,
 
 static int olpc_dc_get(struct snd_kcontrol *kctl, struct snd_ctl_elem_value *v)
 {
-	v->value.integer.value[0] = geode_gpio_isset(OLPC_GPIO_MIC_AC,
-			GPIO_OUTPUT_VAL);
+	v->value.integer.value[0] = gpio_get_value(OLPC_GPIO_MIC_AC);
 	return 0;
 }
 
@@ -115,7 +111,7 @@ static int olpc_mic_put(struct snd_kcontrol *kctl, struct snd_ctl_elem_value *v)
 	return 1;
 }
 
-static struct snd_kcontrol_new olpc_cs5535audio_ctls[] __devinitdata = {
+static const struct snd_kcontrol_new olpc_cs5535audio_ctls[] = {
 {
 	.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 	.name = "DC Mode Enable",
@@ -134,8 +130,8 @@ static struct snd_kcontrol_new olpc_cs5535audio_ctls[] __devinitdata = {
 },
 };
 
-void __devinit olpc_prequirks(struct snd_card *card,
-		struct snd_ac97_template *ac97)
+void olpc_prequirks(struct snd_card *card,
+		    struct snd_ac97_template *ac97)
 {
 	if (!machine_is_olpc())
 		return;
@@ -145,7 +141,7 @@ void __devinit olpc_prequirks(struct snd_card *card,
 		ac97->scaps |= AC97_SCAP_INV_EAPD;
 }
 
-int __devinit olpc_quirks(struct snd_card *card, struct snd_ac97 *ac97)
+int olpc_quirks(struct snd_card *card, struct snd_ac97 *ac97)
 {
 	struct snd_ctl_elem_id elem;
 	int i, err;
@@ -153,27 +149,40 @@ int __devinit olpc_quirks(struct snd_card *card, struct snd_ac97 *ac97)
 	if (!machine_is_olpc())
 		return 0;
 
+	if (gpio_request(OLPC_GPIO_MIC_AC, DRV_NAME)) {
+		dev_err(card->dev, "unable to allocate MIC GPIO\n");
+		return -EIO;
+	}
+	gpio_direction_output(OLPC_GPIO_MIC_AC, 0);
+
 	/* drop the original AD1888 HPF control */
 	memset(&elem, 0, sizeof(elem));
 	elem.iface = SNDRV_CTL_ELEM_IFACE_MIXER;
-	strncpy(elem.name, "High Pass Filter Enable", sizeof(elem.name));
+	strlcpy(elem.name, "High Pass Filter Enable", sizeof(elem.name));
 	snd_ctl_remove_id(card, &elem);
 
 	/* drop the original V_REFOUT control */
 	memset(&elem, 0, sizeof(elem));
 	elem.iface = SNDRV_CTL_ELEM_IFACE_MIXER;
-	strncpy(elem.name, "V_REFOUT Enable", sizeof(elem.name));
+	strlcpy(elem.name, "V_REFOUT Enable", sizeof(elem.name));
 	snd_ctl_remove_id(card, &elem);
 
 	/* add the OLPC-specific controls */
 	for (i = 0; i < ARRAY_SIZE(olpc_cs5535audio_ctls); i++) {
 		err = snd_ctl_add(card, snd_ctl_new1(&olpc_cs5535audio_ctls[i],
 				ac97->private_data));
-		if (err < 0)
+		if (err < 0) {
+			gpio_free(OLPC_GPIO_MIC_AC);
 			return err;
+		}
 	}
 
 	/* turn off the mic by default */
 	olpc_mic_bias(ac97, 0);
 	return 0;
+}
+
+void olpc_quirks_cleanup(void)
+{
+	gpio_free(OLPC_GPIO_MIC_AC);
 }

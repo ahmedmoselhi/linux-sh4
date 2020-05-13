@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 source "arch/sh/drivers/dma/Kconfig"
 source "arch/sh/cchips/Kconfig"
 
@@ -15,12 +16,5 @@ config PUSH_SWITCH
 	help
 	  This enables support for the push switch framework, a simple
 	  framework that allows for sysfs driven switch status reporting.
-
-config PINMUX_GPIO
-	bool "Pinmuxed GPIO"
-	select GENERIC_GPIO
-	help
-	  Select this option to use the pinmuxed GPIO driver supported on
-	  some Renesas devices.
 
 endmenu

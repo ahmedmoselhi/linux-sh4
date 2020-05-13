@@ -1,10 +1,15 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * This is the infamous ld script for the 32 bits vdso
  * library
  */
 #include <asm/vdso.h>
 
+#ifdef __LITTLE_ENDIAN__
+OUTPUT_FORMAT("elf32-powerpcle", "elf32-powerpcle", "elf32-powerpcle")
+#else
 OUTPUT_FORMAT("elf32-powerpc", "elf32-powerpc", "elf32-powerpc")
+#endif
 OUTPUT_ARCH(powerpc:common)
 ENTRY(_start)
 
@@ -139,14 +144,20 @@ VERSION
 		__kernel_datapage_offset;
 
 		__kernel_get_syscall_map;
+#ifndef CONFIG_PPC_BOOK3S_601
 		__kernel_gettimeofday;
 		__kernel_clock_gettime;
 		__kernel_clock_getres;
+		__kernel_time;
 		__kernel_get_tbfreq;
+#endif
 		__kernel_sync_dicache;
 		__kernel_sync_dicache_p5;
 		__kernel_sigtramp32;
 		__kernel_sigtramp_rt32;
+#if defined(CONFIG_PPC64) || !defined(CONFIG_SMP)
+		__kernel_getcpu;
+#endif
 
 	local: *;
 	};

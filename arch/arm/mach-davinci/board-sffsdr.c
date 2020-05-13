@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Lyrtech SFFSDR board support.
  *
@@ -7,59 +8,30 @@
  * Based on DV-EVM platform, original copyright follows:
  *
  * Copyright (C) 2007 MontaVista Software, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
-#include <linux/kernel.h>
-#include <linux/module.h>
 #include <linux/init.h>
-#include <linux/dma-mapping.h>
 #include <linux/platform_device.h>
-#include <linux/gpio.h>
-
 #include <linux/i2c.h>
-#include <linux/i2c/at24.h>
-#include <linux/etherdevice.h>
+#include <linux/property.h>
 #include <linux/mtd/mtd.h>
-#include <linux/mtd/nand.h>
+#include <linux/mtd/rawnand.h>
 #include <linux/mtd/partitions.h>
-#include <linux/mtd/physmap.h>
-#include <linux/io.h>
 
-#include <asm/setup.h>
 #include <asm/mach-types.h>
-
 #include <asm/mach/arch.h>
-#include <asm/mach/map.h>
 #include <asm/mach/flash.h>
 
-#include <mach/dm644x.h>
 #include <mach/common.h>
-#include <mach/i2c.h>
+#include <linux/platform_data/i2c-davinci.h>
 #include <mach/serial.h>
-#include <mach/psc.h>
 #include <mach/mux.h>
+#include <linux/platform_data/usb-davinci.h>
 
-#define SFFSDR_PHY_MASK		(0x2)
-#define SFFSDR_MDIO_FREQUENCY	(2200000) /* PHY bus frequency */
+#include "davinci.h"
 
-#define DAVINCI_ASYNC_EMIF_CONTROL_BASE   0x01e00000
-#define DAVINCI_ASYNC_EMIF_DATA_CE0_BASE  0x02000000
-
-struct mtd_partition davinci_sffsdr_nandflash_partition[] = {
+#define SFFSDR_PHY_ID		"davinci_mdio-0:01"
+static struct mtd_partition davinci_sffsdr_nandflash_partition[] = {
 	/* U-Boot Environment: Block 0
 	 * UBL:                Block 1
 	 * U-Boot:             Blocks 6-7 (256 kb)
@@ -87,12 +59,12 @@ static struct flash_platform_data davinci_sffsdr_nandflash_data = {
 
 static struct resource davinci_sffsdr_nandflash_resource[] = {
 	{
-		.start		= DAVINCI_ASYNC_EMIF_DATA_CE0_BASE,
-		.end		= DAVINCI_ASYNC_EMIF_DATA_CE0_BASE + SZ_16M - 1,
+		.start		= DM644X_ASYNC_EMIF_DATA_CE0_BASE,
+		.end		= DM644X_ASYNC_EMIF_DATA_CE0_BASE + SZ_16M - 1,
 		.flags		= IORESOURCE_MEM,
 	}, {
-		.start		= DAVINCI_ASYNC_EMIF_CONTROL_BASE,
-		.end		= DAVINCI_ASYNC_EMIF_CONTROL_BASE + SZ_4K - 1,
+		.start		= DM644X_ASYNC_EMIF_CONTROL_BASE,
+		.end		= DM644X_ASYNC_EMIF_CONTROL_BASE + SZ_4K - 1,
 		.flags		= IORESOURCE_MEM,
 	},
 };
@@ -107,21 +79,15 @@ static struct platform_device davinci_sffsdr_nandflash_device = {
 	.resource	= davinci_sffsdr_nandflash_resource,
 };
 
-static struct emac_platform_data sffsdr_emac_pdata = {
-	.phy_mask	= SFFSDR_PHY_MASK,
-	.mdio_max_freq	= SFFSDR_MDIO_FREQUENCY,
-};
-
-static struct at24_platform_data eeprom_info = {
-	.byte_len	= (64*1024) / 8,
-	.page_size	= 32,
-	.flags		= AT24_FLAG_ADDR16,
+static const struct property_entry eeprom_properties[] = {
+	PROPERTY_ENTRY_U32("pagesize", 32),
+	{ }
 };
 
 static struct i2c_board_info __initdata i2c_info[] =  {
 	{
-		I2C_BOARD_INFO("24lc64", 0x50),
-		.platform_data	= &eeprom_info,
+		I2C_BOARD_INFO("24c64", 0x50),
+		.properties = eeprom_properties,
 	},
 	/* Other I2C devices:
 	 * MSP430,  addr 0x23 (not used)
@@ -145,10 +111,6 @@ static struct platform_device *davinci_sffsdr_devices[] __initdata = {
 	&davinci_sffsdr_nandflash_device,
 };
 
-static struct davinci_uart_config uart_config __initdata = {
-	.enabled_uarts = (1 << 0),
-};
-
 static void __init davinci_sffsdr_map_io(void)
 {
 	dm644x_init();
@@ -158,31 +120,28 @@ static __init void davinci_sffsdr_init(void)
 {
 	struct davinci_soc_info *soc_info = &davinci_soc_info;
 
+	dm644x_register_clocks();
+
+	dm644x_init_devices();
+
 	platform_add_devices(davinci_sffsdr_devices,
 			     ARRAY_SIZE(davinci_sffsdr_devices));
 	sffsdr_init_i2c();
-	davinci_serial_init(&uart_config);
-	soc_info->emac_pdata->phy_mask = SFFSDR_PHY_MASK;
-	soc_info->emac_pdata->mdio_max_freq = SFFSDR_MDIO_FREQUENCY;
-	setup_usb(0, 0); /* We support only peripheral mode. */
+	davinci_serial_init(dm644x_serial_device);
+	soc_info->emac_pdata->phy_id = SFFSDR_PHY_ID;
+	davinci_setup_usb(0, 0); /* We support only peripheral mode. */
 
 	/* mux VLYNQ pins */
 	davinci_cfg_reg(DM644X_VLYNQEN);
 	davinci_cfg_reg(DM644X_VLYNQWD);
 }
 
-static __init void davinci_sffsdr_irq_init(void)
-{
-	davinci_irq_init();
-}
-
 MACHINE_START(SFFSDR, "Lyrtech SFFSDR")
-	/* Maintainer: Hugo Villeneuve hugo.villeneuve@lyrtech.com */
-	.phys_io      = IO_PHYS,
-	.io_pg_offst  = (__IO_ADDRESS(IO_PHYS) >> 18) & 0xfffc,
-	.boot_params  = (DAVINCI_DDR_BASE + 0x100),
+	.atag_offset  = 0x100,
 	.map_io	      = davinci_sffsdr_map_io,
-	.init_irq     = davinci_sffsdr_irq_init,
-	.timer	      = &davinci_timer,
+	.init_irq     = dm644x_init_irq,
+	.init_time	= dm644x_init_time,
 	.init_machine = davinci_sffsdr_init,
+	.init_late	= davinci_init_late,
+	.dma_zone_size	= SZ_128M,
 MACHINE_END

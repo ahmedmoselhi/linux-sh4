@@ -1,12 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * USB SD Host Controller (USHC) controller driver.
  *
  * Copyright (C) 2010 Cambridge Silicon Radio Ltd.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or (at
- * your option) any later version.
  *
  * Notes:
  *   - Only version 2 devices are supported.
@@ -19,7 +15,6 @@
 #include <linux/module.h>
 #include <linux/usb.h>
 #include <linux/kernel.h>
-#include <linux/usb.h>
 #include <linux/slab.h>
 #include <linux/dma-mapping.h>
 #include <linux/mmc/host.h>
@@ -301,8 +296,10 @@ static void ushc_request(struct mmc_host *mmc, struct mmc_request *req)
 			pipe = usb_sndbulkpipe(ushc->usb_dev, 2);
 
 		usb_fill_bulk_urb(ushc->data_urb, ushc->usb_dev, pipe,
-				  sg_virt(data->sg), data->sg->length,
+				  NULL, data->sg->length,
 				  data_callback, ushc);
+		ushc->data_urb->num_sgs = 1;
+		ushc->data_urb->sg = data->sg;
 		ret = usb_submit_urb(ushc->data_urb, GFP_ATOMIC);
 		if (ret < 0)
 			goto out;
@@ -310,8 +307,6 @@ static void ushc_request(struct mmc_host *mmc, struct mmc_request *req)
 
 	/* Submit CSW. */
 	ret = usb_submit_urb(ushc->csw_urb, GFP_ATOMIC);
-	if (ret < 0)
-		goto out;
 
 out:
 	spin_unlock_irqrestore(&ushc->lock, flags);
@@ -427,6 +422,9 @@ static int ushc_probe(struct usb_interface *intf, const struct usb_device_id *id
 	struct ushc_data *ushc;
 	int ret;
 
+	if (intf->cur_altsetting->desc.bNumEndpoints < 1)
+		return -ENODEV;
+
 	mmc = mmc_alloc_host(sizeof(struct ushc_data), &intf->dev);
 	if (mmc == NULL)
 		return -ENOMEM;
@@ -505,7 +503,7 @@ static int ushc_probe(struct usb_interface *intf, const struct usb_device_id *id
 		ret = -ENOMEM;
 		goto err;
 	}
-	ushc->csw = kzalloc(sizeof(struct ushc_cbw), GFP_KERNEL);
+	ushc->csw = kzalloc(sizeof(struct ushc_csw), GFP_KERNEL);
 	if (ushc->csw == NULL) {
 		ret = -ENOMEM;
 		goto err;
@@ -563,17 +561,7 @@ static struct usb_driver ushc_driver = {
 	.disconnect = ushc_disconnect,
 };
 
-static int __init ushc_init(void)
-{
-	return usb_register(&ushc_driver);
-}
-module_init(ushc_init);
-
-static void __exit ushc_exit(void)
-{
-	usb_deregister(&ushc_driver);
-}
-module_exit(ushc_exit);
+module_usb_driver(ushc_driver);
 
 MODULE_DESCRIPTION("USB SD Host Controller driver");
 MODULE_AUTHOR("David Vrabel <david.vrabel@csr.com>");

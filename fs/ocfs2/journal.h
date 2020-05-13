@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* -*- mode: c; c-basic-offset: 8; -*-
  * vim: noexpandtab sw=8 ts=8 sts=0:
  *
@@ -6,21 +7,6 @@
  * Defines journalling api and structures.
  *
  * Copyright (C) 2003, 2005 Oracle.  All rights reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public
- * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public
- * License along with this program; if not, write to the
- * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
- * Boston, MA 021110-1307, USA.
  */
 
 #ifndef OCFS2_JOURNAL_H
@@ -67,11 +53,12 @@ struct ocfs2_journal {
 	struct buffer_head        *j_bh;      /* Journal disk inode block */
 	atomic_t                  j_num_trans; /* Number of transactions
 					        * currently in the system. */
+	spinlock_t                j_lock;
 	unsigned long             j_trans_id;
 	struct rw_semaphore       j_trans_barrier;
 	wait_queue_head_t         j_checkpointed;
 
-	spinlock_t                j_lock;
+	/* both fields protected by j_lock*/
 	struct list_head          j_la_cleanups;
 	struct work_struct        j_recovery_work;
 };
@@ -157,7 +144,6 @@ static inline void ocfs2_ci_set_new(struct ocfs2_super *osb,
 void ocfs2_orphan_scan_init(struct ocfs2_super *osb);
 void ocfs2_orphan_scan_start(struct ocfs2_super *osb);
 void ocfs2_orphan_scan_stop(struct ocfs2_super *osb);
-void ocfs2_orphan_scan_exit(struct ocfs2_super *osb);
 
 void ocfs2_complete_recovery(struct work_struct *work);
 void ocfs2_wait_for_recovery(struct ocfs2_super *osb);
@@ -199,7 +185,6 @@ void ocfs2_complete_quota_recovery(struct ocfs2_super *osb);
 
 static inline void ocfs2_start_checkpoint(struct ocfs2_super *osb)
 {
-	atomic_set(&osb->needs_checkpoint, 1);
 	wake_up(&osb->checkpoint_event);
 }
 
@@ -214,7 +199,7 @@ static inline void ocfs2_checkpoint_inode(struct inode *inode)
 		/* WARNING: This only kicks off a single
 		 * checkpoint. If someone races you and adds more
 		 * metadata to the journal, you won't know, and will
-		 * wind up waiting *alot* longer than necessary. Right
+		 * wind up waiting *a lot* longer than necessary. Right
 		 * now we only use this in clear_inode so that's
 		 * OK. */
 		ocfs2_start_checkpoint(osb);
@@ -246,8 +231,8 @@ static inline void ocfs2_checkpoint_inode(struct inode *inode)
  *                          ocfs2_journal_access_*() unless you intend to
  *                          manage the checksum by hand.
  *  ocfs2_journal_dirty    - Mark a journalled buffer as having dirty data.
- *  ocfs2_jbd2_file_inode  - Mark an inode so that its data goes out before
- *                           the current handle commits.
+ *  ocfs2_jbd2_inode_add_write  - Mark an inode with range so that its data goes
+ *                                out before the current handle commits.
  */
 
 /* You must always start_trans with a number of buffs > 0, but it's
@@ -258,6 +243,17 @@ handle_t		    *ocfs2_start_trans(struct ocfs2_super *osb,
 int			     ocfs2_commit_trans(struct ocfs2_super *osb,
 						handle_t *handle);
 int			     ocfs2_extend_trans(handle_t *handle, int nblocks);
+int			     ocfs2_allocate_extend_trans(handle_t *handle,
+						int thresh);
+
+/*
+ * Define an arbitrary limit for the amount of data we will anticipate
+ * writing to any given transaction.  For unbounded transactions such as
+ * fallocate(2) we can write more than this, but we always
+ * start off at the maximum transaction size and grow the transaction
+ * optimistically as we go.
+ */
+#define OCFS2_MAX_TRANS_DATA	64U
 
 /*
  * Create access is for when we get a newly created buffer and we're
@@ -325,8 +321,7 @@ int ocfs2_journal_access(handle_t *handle, struct ocfs2_caching_info *ci,
  *	<modify the bh>
  * 	ocfs2_journal_dirty(handle, bh);
  */
-int                  ocfs2_journal_dirty(handle_t *handle,
-					 struct buffer_head *bh);
+void ocfs2_journal_dirty(handle_t *handle, struct buffer_head *bh);
 
 /*
  *  Credit Macros:
@@ -405,9 +400,9 @@ static inline int ocfs2_remove_extent_credits(struct super_block *sb)
 	       ocfs2_quota_trans_credits(sb);
 }
 
-/* data block for new dir/symlink, 2 for bitmap updates (bitmap fe +
- * bitmap block for the new bit) dx_root update for free list */
-#define OCFS2_DIR_LINK_ADDITIONAL_CREDITS (1 + 2 + 1)
+/* data block for new dir/symlink, allocation of directory block, dx_root
+ * update for free list */
+#define OCFS2_DIR_LINK_ADDITIONAL_CREDITS (1 + OCFS2_SUBALLOC_ALLOC + 1)
 
 static inline int ocfs2_add_dir_index_credits(struct super_block *sb)
 {
@@ -441,10 +436,11 @@ static inline int ocfs2_mknod_credits(struct super_block *sb, int is_dir,
 #define OCFS2_SIMPLE_DIR_EXTEND_CREDITS (2)
 
 /* file update (nlink, etc) + directory mtime/ctime + dir entry block + quota
- * update on dir + index leaf + dx root update for free list */
+ * update on dir + index leaf + dx root update for free list +
+ * previous dirblock update in the free list */
 static inline int ocfs2_link_credits(struct super_block *sb)
 {
-	return 2*OCFS2_INODE_UPDATE_CREDITS + 3 +
+	return 2 * OCFS2_INODE_UPDATE_CREDITS + 4 +
 	       ocfs2_quota_trans_credits(sb);
 }
 
@@ -460,6 +456,11 @@ static inline int ocfs2_unlink_credits(struct super_block *sb)
  * inode alloc group descriptor + orphan dir index root +
  * orphan dir index leaf */
 #define OCFS2_DELETE_INODE_CREDITS (3 * OCFS2_INODE_UPDATE_CREDITS + 4)
+
+/* dinode + orphan dir dinode + extent tree leaf block + orphan dir entry +
+ * orphan dir index root + orphan dir index leaf */
+#define OCFS2_INODE_ADD_TO_ORPHAN_CREDITS  (2 * OCFS2_INODE_UPDATE_CREDITS + 4)
+#define OCFS2_INODE_DEL_FROM_ORPHAN_CREDITS  OCFS2_INODE_ADD_TO_ORPHAN_CREDITS
 
 /* dinode update, old dir dinode update, new dir dinode update, old
  * dir dir entry, new dir dir entry, dir entry update for renaming
@@ -513,8 +514,7 @@ static inline int ocfs2_calc_dxi_expand_credits(struct super_block *sb)
  * the result may be wrong.
  */
 static inline int ocfs2_calc_extend_credits(struct super_block *sb,
-					    struct ocfs2_extent_list *root_el,
-					    u32 bits_wanted)
+					    struct ocfs2_extent_list *root_el)
 {
 	int bitmap_blocks, sysfile_bitmap_blocks, extent_blocks;
 
@@ -562,37 +562,24 @@ static inline int ocfs2_calc_group_alloc_credits(struct super_block *sb,
 	return blocks;
 }
 
-static inline int ocfs2_calc_tree_trunc_credits(struct super_block *sb,
-						unsigned int clusters_to_del,
-						struct ocfs2_dinode *fe,
-						struct ocfs2_extent_list *last_el)
+/*
+ * Allocating a discontiguous block group requires the credits from
+ * ocfs2_calc_group_alloc_credits() as well as enough credits to fill
+ * the group descriptor's extent list.  The caller already has started
+ * the transaction with ocfs2_calc_group_alloc_credits().  They extend
+ * it with these credits.
+ */
+static inline int ocfs2_calc_bg_discontig_credits(struct super_block *sb)
 {
- 	/* for dinode + all headers in this pass + update to next leaf */
-	u16 next_free = le16_to_cpu(last_el->l_next_free_rec);
-	u16 tree_depth = le16_to_cpu(fe->id2.i_list.l_tree_depth);
-	int credits = 1 + tree_depth + 1;
-	int i;
-
-	i = next_free - 1;
-	BUG_ON(i < 0);
-
-	/* We may be deleting metadata blocks, so metadata alloc dinode +
-	   one desc. block for each possible delete. */
-	if (tree_depth && next_free == 1 &&
-	    ocfs2_rec_clusters(last_el, &last_el->l_recs[i]) == clusters_to_del)
-		credits += 1 + tree_depth;
-
-	/* update to the truncate log. */
-	credits += OCFS2_TRUNCATE_LOG_UPDATE;
-
-	credits += ocfs2_quota_trans_credits(sb);
-
-	return credits;
+	return ocfs2_extent_recs_per_gd(sb);
 }
 
-static inline int ocfs2_jbd2_file_inode(handle_t *handle, struct inode *inode)
+static inline int ocfs2_jbd2_inode_add_write(handle_t *handle, struct inode *inode,
+					     loff_t start_byte, loff_t length)
 {
-	return jbd2_journal_file_inode(handle, &OCFS2_I(inode)->ip_jinode);
+	return jbd2_journal_inode_ranged_write(handle,
+					       &OCFS2_I(inode)->ip_jinode,
+					       start_byte, length);
 }
 
 static inline int ocfs2_begin_ordered_truncate(struct inode *inode,
@@ -602,6 +589,19 @@ static inline int ocfs2_begin_ordered_truncate(struct inode *inode,
 				OCFS2_SB(inode->i_sb)->journal->j_journal,
 				&OCFS2_I(inode)->ip_jinode,
 				new_size);
+}
+
+static inline void ocfs2_update_inode_fsync_trans(handle_t *handle,
+						  struct inode *inode,
+						  int datasync)
+{
+	struct ocfs2_inode_info *oi = OCFS2_I(inode);
+
+	if (!is_handle_aborted(handle)) {
+		oi->i_sync_tid = handle->h_transaction->t_tid;
+		if (datasync)
+			oi->i_datasync_tid = handle->h_transaction->t_tid;
+	}
 }
 
 #endif /* OCFS2_JOURNAL_H */

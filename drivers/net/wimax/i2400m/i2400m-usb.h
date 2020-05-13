@@ -88,6 +88,13 @@ struct edc {
 	u16 errorcount;
 };
 
+struct i2400m_endpoint_cfg {
+	unsigned char bulk_out;
+	unsigned char notification;
+	unsigned char reset_cold;
+	unsigned char bulk_in;
+};
+
 static inline void edc_init(struct edc *edc)
 {
 	edc->timestart = jiffies;
@@ -98,14 +105,14 @@ static inline void edc_init(struct edc *edc)
  *
  * @edc: pointer to error density counter.
  * @max_err: maximum number of errors we can accept over the timeframe
- * @timeframe: lenght of the timeframe (in jiffies).
+ * @timeframe: length of the timeframe (in jiffies).
  *
  * Returns: !0 1 if maximum acceptable errors per timeframe has been
  *     exceeded. 0 otherwise.
  *
  * This is way to determine if the number of acceptable errors per time
  * period has been exceeded. It is not accurate as there are cases in which
- * this scheme will not work, for example if there are periodic occurences
+ * this scheme will not work, for example if there are periodic occurrences
  * of errors that straddle updates to the start time. This scheme is
  * sufficient for our usage.
  *
@@ -124,7 +131,7 @@ static inline int edc_inc(struct edc *edc, u16 max_err, u16 timeframe)
 	unsigned long now;
 
 	now = jiffies;
-	if (now - edc->timestart > timeframe) {
+	if (time_after(now, edc->timestart + timeframe)) {
 		edc->errorcount = 1;
 		edc->timestart = now;
 	} else if (++edc->errorcount > max_err) {
@@ -137,15 +144,18 @@ static inline int edc_inc(struct edc *edc, u16 max_err, u16 timeframe)
 
 /* Host-Device interface for USB */
 enum {
+	I2400M_USB_BOOT_RETRIES = 3,
 	I2400MU_MAX_NOTIFICATION_LEN = 256,
 	I2400MU_BLK_SIZE = 16,
 	I2400MU_PL_SIZE_MAX = 0x3EFF,
 
-	/* Endpoints */
-	I2400MU_EP_BULK_OUT = 0,
-	I2400MU_EP_NOTIFICATION,
-	I2400MU_EP_RESET_COLD,
-	I2400MU_EP_BULK_IN,
+	/* Device IDs */
+	USB_DEVICE_ID_I6050 = 0x0186,
+	USB_DEVICE_ID_I6050_2 = 0x0188,
+	USB_DEVICE_ID_I6150 = 0x07d6,
+	USB_DEVICE_ID_I6150_2 = 0x07d7,
+	USB_DEVICE_ID_I6150_3 = 0x07d9,
+	USB_DEVICE_ID_I6250 = 0x0187,
 };
 
 
@@ -197,7 +207,7 @@ enum {
  *     usb_autopm_get/put_interface() barriers when executing
  *     commands. See doc in i2400mu_suspend() for more information.
  *
- * @rx_size_auto_shrink: if true, the rx_size is shrinked
+ * @rx_size_auto_shrink: if true, the rx_size is shrunk
  *     automatically based on the average size of the received
  *     transactions. This allows the receive code to allocate smaller
  *     chunks of memory and thus reduce pressure on the memory
@@ -215,6 +225,7 @@ struct i2400mu {
 	struct usb_device *usb_dev;
 	struct usb_interface *usb_iface;
 	struct edc urb_edc;		/* Error density counter */
+	struct i2400m_endpoint_cfg endpoint_cfg;
 
 	struct urb *notif_urb;
 	struct task_struct *tx_kthread;
@@ -228,6 +239,7 @@ struct i2400mu {
 	u8 rx_size_auto_shrink;
 
 	struct dentry *debugfs_dentry;
+	unsigned i6050:1;	/* 1 if this is a 6050 based SKU */
 };
 
 
@@ -244,21 +256,20 @@ void i2400mu_init(struct i2400mu *i2400mu)
 	i2400mu->rx_size_auto_shrink = 1;
 }
 
-extern int i2400mu_notification_setup(struct i2400mu *);
-extern void i2400mu_notification_release(struct i2400mu *);
+int i2400mu_notification_setup(struct i2400mu *);
+void i2400mu_notification_release(struct i2400mu *);
 
-extern int i2400mu_rx_setup(struct i2400mu *);
-extern void i2400mu_rx_release(struct i2400mu *);
-extern void i2400mu_rx_kick(struct i2400mu *);
+int i2400mu_rx_setup(struct i2400mu *);
+void i2400mu_rx_release(struct i2400mu *);
+void i2400mu_rx_kick(struct i2400mu *);
 
-extern int i2400mu_tx_setup(struct i2400mu *);
-extern void i2400mu_tx_release(struct i2400mu *);
-extern void i2400mu_bus_tx_kick(struct i2400m *);
+int i2400mu_tx_setup(struct i2400mu *);
+void i2400mu_tx_release(struct i2400mu *);
+void i2400mu_bus_tx_kick(struct i2400m *);
 
-extern ssize_t i2400mu_bus_bm_cmd_send(struct i2400m *,
-				       const struct i2400m_bootrom_header *,
-				       size_t, int);
-extern ssize_t i2400mu_bus_bm_wait_for_ack(struct i2400m *,
-					   struct i2400m_bootrom_header *,
-					   size_t);
+ssize_t i2400mu_bus_bm_cmd_send(struct i2400m *,
+				const struct i2400m_bootrom_header *, size_t,
+				int);
+ssize_t i2400mu_bus_bm_wait_for_ack(struct i2400m *,
+				    struct i2400m_bootrom_header *, size_t);
 #endif /* #ifndef __I2400M_USB_H__ */

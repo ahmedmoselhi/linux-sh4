@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * bitops.c: atomic operations which got too long to be inlined all over
  *      the place.
@@ -8,12 +9,11 @@
 
 #include <linux/kernel.h>
 #include <linux/spinlock.h>
-#include <asm/system.h>
-#include <asm/atomic.h>
+#include <linux/atomic.h>
 
 #ifdef CONFIG_SMP
-raw_spinlock_t __atomic_hash[ATOMIC_HASH_SIZE] __lock_aligned = {
-	[0 ... (ATOMIC_HASH_SIZE-1)]  = __RAW_SPIN_LOCK_UNLOCKED
+arch_spinlock_t __atomic_hash[ATOMIC_HASH_SIZE] __lock_aligned = {
+	[0 ... (ATOMIC_HASH_SIZE-1)]  = __ARCH_SPIN_LOCK_UNLOCKED
 };
 #endif
 
@@ -56,11 +56,10 @@ unsigned long __xchg8(char x, char *ptr)
 }
 
 
-#ifdef CONFIG_64BIT
-unsigned long __cmpxchg_u64(volatile unsigned long *ptr, unsigned long old, unsigned long new)
+u64 __cmpxchg_u64(volatile u64 *ptr, u64 old, u64 new)
 {
 	unsigned long flags;
-	unsigned long prev;
+	u64 prev;
 
 	_atomic_spin_lock_irqsave(ptr, flags);
 	if ((prev = *ptr) == old)
@@ -68,7 +67,6 @@ unsigned long __cmpxchg_u64(volatile unsigned long *ptr, unsigned long old, unsi
 	_atomic_spin_unlock_irqrestore(ptr, flags);
 	return prev;
 }
-#endif
 
 unsigned long __cmpxchg_u32(volatile unsigned int *ptr, unsigned int old, unsigned int new)
 {

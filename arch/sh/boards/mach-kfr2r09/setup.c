@@ -1,30 +1,52 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * KFR2R09 board support code
  *
  * Copyright (C) 2009 Magnus Damm
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
-#include <linux/init.h>
-#include <linux/platform_device.h>
-#include <linux/interrupt.h>
-#include <linux/mtd/physmap.h>
-#include <linux/mtd/onenand.h>
-#include <linux/delay.h>
-#include <linux/clk.h>
-#include <linux/gpio.h>
-#include <linux/input.h>
-#include <linux/i2c.h>
-#include <linux/usb/r8a66597.h>
-#include <video/sh_mobile_lcdc.h>
+
 #include <asm/clock.h>
-#include <asm/machvec.h>
 #include <asm/io.h>
-#include <asm/sh_keysc.h>
+#include <asm/machvec.h>
+#include <asm/suspend.h>
+
 #include <cpu/sh7724.h>
+
+#include <linux/clkdev.h>
+#include <linux/delay.h>
+#include <linux/dma-mapping.h>
+#include <linux/gpio.h>
+#include <linux/gpio/machine.h>
+#include <linux/i2c.h>
+#include <linux/init.h>
+#include <linux/input.h>
+#include <linux/input/sh_keysc.h>
+#include <linux/interrupt.h>
+#include <linux/memblock.h>
+#include <linux/mfd/tmio.h>
+#include <linux/mmc/host.h>
+#include <linux/mtd/physmap.h>
+#include <linux/platform_data/lv5207lp.h>
+#include <linux/platform_device.h>
+#include <linux/regulator/fixed.h>
+#include <linux/regulator/machine.h>
+#include <linux/sh_intc.h>
+#include <linux/usb/r8a66597.h>
+#include <linux/videodev2.h>
+
 #include <mach/kfr2r09.h>
+
+#include <media/drv-intf/renesas-ceu.h>
+#include <media/i2c/rj54n1cb0c.h>
+
+#include <video/sh_mobile_lcdc.h>
+
+#define CEU_BUFFER_MEMORY_SIZE		(4 << 20)
+static phys_addr_t ceu_dma_membase;
+
+/* set VIO_CKO clock to 25MHz */
+#define CEU_MCLK_FREQ			25000000
+#define DRVCRB				0xA405018C
 
 static struct mtd_partition kfr2r09_nor_flash_partitions[] =
 {
@@ -102,7 +124,7 @@ static struct resource kfr2r09_sh_keysc_resources[] = {
 		.flags  = IORESOURCE_MEM,
 	},
 	[1] = {
-		.start  = 79,
+		.start  = evt2irq(0xbe0),
 		.flags  = IORESOURCE_IRQ,
 	},
 };
@@ -115,8 +137,20 @@ static struct platform_device kfr2r09_sh_keysc_device = {
 	.dev	= {
 		.platform_data	= &kfr2r09_sh_keysc_info,
 	},
-	.archdata = {
-		.hwblk_id = HWBLK_KEYSC,
+};
+
+static const struct fb_videomode kfr2r09_lcdc_modes[] = {
+	{
+		.name = "TX07D34VM0AAA",
+		.xres = 240,
+		.yres = 400,
+		.left_margin = 0,
+		.right_margin = 16,
+		.hsync_len = 8,
+		.upper_margin = 0,
+		.lower_margin = 1,
+		.vsync_len = 1,
+		.sync = FB_SYNC_HOR_HIGH_ACT | FB_SYNC_VERT_HIGH_ACT,
 	},
 };
 
@@ -124,30 +158,17 @@ static struct sh_mobile_lcdc_info kfr2r09_sh_lcdc_info = {
 	.clock_source = LCDC_CLK_BUS,
 	.ch[0] = {
 		.chan = LCDC_CHAN_MAINLCD,
-		.bpp = 16,
+		.fourcc = V4L2_PIX_FMT_RGB565,
 		.interface_type = SYS18,
 		.clock_divider = 6,
 		.flags = LCDC_FLAGS_DWPOL,
-		.lcd_cfg = {
-			.name = "TX07D34VM0AAA",
-			.xres = 240,
-			.yres = 400,
-			.left_margin = 0,
-			.right_margin = 16,
-			.hsync_len = 8,
-			.upper_margin = 0,
-			.lower_margin = 1,
-			.vsync_len = 1,
-			.sync = FB_SYNC_HOR_HIGH_ACT | FB_SYNC_VERT_HIGH_ACT,
-		},
-		.lcd_size_cfg = {
+		.lcd_modes = kfr2r09_lcdc_modes,
+		.num_modes = ARRAY_SIZE(kfr2r09_lcdc_modes),
+		.panel_cfg = {
 			.width = 35,
 			.height = 58,
-		},
-		.board_cfg = {
 			.setup_sys = kfr2r09_lcd_setup,
-			.display_on = kfr2r09_lcd_on,
-			.display_off = kfr2r09_lcd_off,
+			.start_transfer = kfr2r09_lcd_start,
 		},
 		.sys_bus_cfg = {
 			.ldmt2r = 0x07010904,
@@ -166,7 +187,7 @@ static struct resource kfr2r09_sh_lcdc_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= 106,
+		.start	= evt2irq(0xf40),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -178,9 +199,17 @@ static struct platform_device kfr2r09_sh_lcdc_device = {
 	.dev	= {
 		.platform_data	= &kfr2r09_sh_lcdc_info,
 	},
-	.archdata = {
-		.hwblk_id = HWBLK_LCDC,
-	},
+};
+
+static struct lv5207lp_platform_data kfr2r09_backlight_data = {
+	.fbdev = &kfr2r09_sh_lcdc_device.dev,
+	.def_value = 13,
+	.max_value = 13,
+};
+
+static struct i2c_board_info kfr2r09_backlight_board_info = {
+	I2C_BOARD_INFO("lv5207lp", 0x75),
+	.platform_data = &kfr2r09_backlight_data,
 };
 
 static struct r8a66597_platdata kfr2r09_usb0_gadget_data = {
@@ -194,8 +223,8 @@ static struct resource kfr2r09_usb0_gadget_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= 65,
-		.end	= 65,
+		.start	= evt2irq(0xa20),
+		.end	= evt2irq(0xa20),
 		.flags	= IORESOURCE_IRQ | IRQF_TRIGGER_LOW,
 	},
 };
@@ -212,11 +241,105 @@ static struct platform_device kfr2r09_usb0_gadget_device = {
 	.resource	= kfr2r09_usb0_gadget_resources,
 };
 
+static struct ceu_platform_data ceu_pdata = {
+	.num_subdevs			= 1,
+	.subdevs = {
+		{ /* [0] = rj54n1cb0c */
+			.flags		= 0,
+			.bus_width	= 8,
+			.bus_shift	= 0,
+			.i2c_adapter_id	= 1,
+			.i2c_address	= 0x50,
+		},
+	},
+};
+
+static struct resource kfr2r09_ceu_resources[] = {
+	[0] = {
+		.name	= "CEU",
+		.start	= 0xfe910000,
+		.end	= 0xfe91009f,
+		.flags	= IORESOURCE_MEM,
+	},
+	[1] = {
+		.start  = evt2irq(0x880),
+		.end	= evt2irq(0x880),
+		.flags  = IORESOURCE_IRQ,
+	},
+};
+
+static struct platform_device kfr2r09_ceu_device = {
+	.name		= "renesas-ceu",
+	.id             = 0, /* "ceu0" clock */
+	.num_resources	= ARRAY_SIZE(kfr2r09_ceu_resources),
+	.resource	= kfr2r09_ceu_resources,
+	.dev	= {
+		.platform_data	= &ceu_pdata,
+	},
+};
+
+static struct rj54n1_pdata rj54n1_priv = {
+	.mclk_freq	= CEU_MCLK_FREQ,
+	.ioctl_high	= false,
+};
+
+static struct i2c_board_info kfr2r09_i2c_camera = {
+	I2C_BOARD_INFO("rj54n1cb0c", 0x50),
+	.platform_data = &rj54n1_priv,
+};
+
+static struct gpiod_lookup_table rj54n1_gpios = {
+	.dev_id		= "1-0050",
+	.table		= {
+		GPIO_LOOKUP("sh7724_pfc", GPIO_PTB4, "poweron",
+			    GPIO_ACTIVE_HIGH),
+		GPIO_LOOKUP("sh7724_pfc", GPIO_PTB7, "enable",
+			    GPIO_ACTIVE_HIGH),
+	},
+};
+
+/* Fixed 3.3V regulator to be used by SDHI0 */
+static struct regulator_consumer_supply fixed3v3_power_consumers[] =
+{
+	REGULATOR_SUPPLY("vmmc", "sh_mobile_sdhi.0"),
+	REGULATOR_SUPPLY("vqmmc", "sh_mobile_sdhi.0"),
+};
+
+static struct resource kfr2r09_sh_sdhi0_resources[] = {
+	[0] = {
+		.name	= "SDHI0",
+		.start  = 0x04ce0000,
+		.end    = 0x04ce00ff,
+		.flags  = IORESOURCE_MEM,
+	},
+	[1] = {
+		.start  = evt2irq(0xe80),
+		.flags  = IORESOURCE_IRQ,
+	},
+};
+
+static struct tmio_mmc_data sh7724_sdhi0_data = {
+	.chan_priv_tx	= (void *)SHDMA_SLAVE_SDHI0_TX,
+	.chan_priv_rx	= (void *)SHDMA_SLAVE_SDHI0_RX,
+	.capabilities	= MMC_CAP_SDIO_IRQ,
+	.capabilities2	= MMC_CAP2_NO_WRITE_PROTECT,
+};
+
+static struct platform_device kfr2r09_sh_sdhi0_device = {
+	.name           = "sh_mobile_sdhi",
+	.num_resources  = ARRAY_SIZE(kfr2r09_sh_sdhi0_resources),
+	.resource       = kfr2r09_sh_sdhi0_resources,
+	.dev = {
+		.platform_data	= &sh7724_sdhi0_data,
+	},
+};
+
 static struct platform_device *kfr2r09_devices[] __initdata = {
 	&kfr2r09_nor_flash_device,
 	&kfr2r09_nand_flash_device,
 	&kfr2r09_sh_keysc_device,
 	&kfr2r09_sh_lcdc_device,
+	&kfr2r09_sh_sdhi0_device,
 };
 
 #define BSC_CS0BCR 0xfec10004
@@ -268,8 +391,56 @@ static int kfr2r09_usb0_gadget_i2c_setup(void)
 
 	return 0;
 }
+
+static int kfr2r09_serial_i2c_setup(void)
+{
+	struct i2c_adapter *a;
+	struct i2c_msg msg;
+	unsigned char buf[2];
+	int ret;
+
+	a = i2c_get_adapter(0);
+	if (!a)
+		return -ENODEV;
+
+	/* set bit 6 (the 7th bit) of chip at 0x09, register 0x13 */
+	buf[0] = 0x13;
+	msg.addr = 0x09;
+	msg.buf = buf;
+	msg.len = 1;
+	msg.flags = 0;
+	ret = i2c_transfer(a, &msg, 1);
+	if (ret != 1)
+		return -ENODEV;
+
+	buf[0] = 0;
+	msg.addr = 0x09;
+	msg.buf = buf;
+	msg.len = 1;
+	msg.flags = I2C_M_RD;
+	ret = i2c_transfer(a, &msg, 1);
+	if (ret != 1)
+		return -ENODEV;
+
+	buf[1] = buf[0] | (1 << 6);
+	buf[0] = 0x13;
+	msg.addr = 0x09;
+	msg.buf = buf;
+	msg.len = 2;
+	msg.flags = 0;
+	ret = i2c_transfer(a, &msg, 1);
+	if (ret != 1)
+		return -ENODEV;
+
+	return 0;
+}
 #else
 static int kfr2r09_usb0_gadget_i2c_setup(void)
+{
+	return -ENODEV;
+}
+
+static int kfr2r09_serial_i2c_setup(void)
 {
 	return -ENODEV;
 }
@@ -288,30 +459,51 @@ static int kfr2r09_usb0_gadget_setup(void)
 	if (kfr2r09_usb0_gadget_i2c_setup() != 0)
 		return -ENODEV; /* unable to configure using i2c */
 
-	ctrl_outw((ctrl_inw(PORT_MSELCRB) & ~0xc000) | 0x8000, PORT_MSELCRB);
+	__raw_writew((__raw_readw(PORT_MSELCRB) & ~0xc000) | 0x8000, PORT_MSELCRB);
 	gpio_request(GPIO_FN_PDSTATUS, NULL); /* R-standby disables USB clock */
 	gpio_request(GPIO_PTV6, NULL); /* USBCLK_ON */
 	gpio_direction_output(GPIO_PTV6, 1); /* USBCLK_ON = H */
 	msleep(20); /* wait 20ms to let the clock settle */
 	clk_enable(clk_get(NULL, "usb0"));
-	ctrl_outw(0x0600, 0xa40501d4);
+	__raw_writew(0x0600, 0xa40501d4);
 
 	return 0;
 }
 
+extern char kfr2r09_sdram_enter_start;
+extern char kfr2r09_sdram_enter_end;
+extern char kfr2r09_sdram_leave_start;
+extern char kfr2r09_sdram_leave_end;
+
 static int __init kfr2r09_devices_setup(void)
 {
+	struct clk *camera_clk;
+
+	/* register board specific self-refresh code */
+	sh_mobile_register_self_refresh(SUSP_SH_STANDBY | SUSP_SH_SF |
+					SUSP_SH_RSTANDBY,
+					&kfr2r09_sdram_enter_start,
+					&kfr2r09_sdram_enter_end,
+					&kfr2r09_sdram_leave_start,
+					&kfr2r09_sdram_leave_end);
+
+	regulator_register_always_on(0, "fixed-3.3V", fixed3v3_power_consumers,
+				     ARRAY_SIZE(fixed3v3_power_consumers), 3300000);
+
 	/* enable SCIF1 serial port for YC401 console support */
 	gpio_request(GPIO_FN_SCIF1_RXD, NULL);
 	gpio_request(GPIO_FN_SCIF1_TXD, NULL);
+	kfr2r09_serial_i2c_setup(); /* ECONTMSK(bit6=L10ONEN) set 1 */
+	gpio_request(GPIO_PTG3, NULL); /* HPON_ON */
+	gpio_direction_output(GPIO_PTG3, 1); /* HPON_ON = H */
 
 	/* setup NOR flash at CS0 */
-	ctrl_outl(0x36db0400, BSC_CS0BCR);
-	ctrl_outl(0x00000500, BSC_CS0WCR);
+	__raw_writel(0x36db0400, BSC_CS0BCR);
+	__raw_writel(0x00000500, BSC_CS0WCR);
 
 	/* setup NAND flash at CS4 */
-	ctrl_outl(0x36db0400, BSC_CS4BCR);
-	ctrl_outl(0x00000500, BSC_CS4WCR);
+	__raw_writel(0x36db0400, BSC_CS4BCR);
+	__raw_writel(0x00000500, BSC_CS4WCR);
 
 	/* setup KEYSC pins */
 	gpio_request(GPIO_FN_KEYOUT0, NULL);
@@ -361,6 +553,60 @@ static int __init kfr2r09_devices_setup(void)
 	if (kfr2r09_usb0_gadget_setup() == 0)
 		platform_device_register(&kfr2r09_usb0_gadget_device);
 
+	/* CEU */
+	gpio_request(GPIO_FN_VIO_CKO, NULL);
+	gpio_request(GPIO_FN_VIO0_CLK, NULL);
+	gpio_request(GPIO_FN_VIO0_VD, NULL);
+	gpio_request(GPIO_FN_VIO0_HD, NULL);
+	gpio_request(GPIO_FN_VIO0_FLD, NULL);
+	gpio_request(GPIO_FN_VIO0_D7, NULL);
+	gpio_request(GPIO_FN_VIO0_D6, NULL);
+	gpio_request(GPIO_FN_VIO0_D5, NULL);
+	gpio_request(GPIO_FN_VIO0_D4, NULL);
+	gpio_request(GPIO_FN_VIO0_D3, NULL);
+	gpio_request(GPIO_FN_VIO0_D2, NULL);
+	gpio_request(GPIO_FN_VIO0_D1, NULL);
+	gpio_request(GPIO_FN_VIO0_D0, NULL);
+
+	/* SDHI0 connected to yc304 */
+	gpio_request(GPIO_FN_SDHI0CD, NULL);
+	gpio_request(GPIO_FN_SDHI0D3, NULL);
+	gpio_request(GPIO_FN_SDHI0D2, NULL);
+	gpio_request(GPIO_FN_SDHI0D1, NULL);
+	gpio_request(GPIO_FN_SDHI0D0, NULL);
+	gpio_request(GPIO_FN_SDHI0CMD, NULL);
+	gpio_request(GPIO_FN_SDHI0CLK, NULL);
+
+	i2c_register_board_info(0, &kfr2r09_backlight_board_info, 1);
+
+	/* Set camera clock frequency and register and alias for rj54n1. */
+	camera_clk = clk_get(NULL, "video_clk");
+	if (!IS_ERR(camera_clk)) {
+		clk_set_rate(camera_clk,
+			     clk_round_rate(camera_clk, CEU_MCLK_FREQ));
+		clk_put(camera_clk);
+	}
+	clk_add_alias(NULL, "1-0050", "video_clk", NULL);
+
+	/* set DRVCRB
+	 *
+	 * use 1.8 V for VccQ_VIO
+	 * use 2.85V for VccQ_SR
+	 */
+	__raw_writew((__raw_readw(DRVCRB) & ~0x0003) | 0x0001, DRVCRB);
+
+	gpiod_add_lookup_table(&rj54n1_gpios);
+
+	i2c_register_board_info(1, &kfr2r09_i2c_camera, 1);
+
+	/* Initialize CEU platform device separately to map memory first */
+	device_initialize(&kfr2r09_ceu_device.dev);
+	dma_declare_coherent_memory(&kfr2r09_ceu_device.dev,
+			ceu_dma_membase, ceu_dma_membase,
+			ceu_dma_membase + CEU_BUFFER_MEMORY_SIZE - 1);
+
+	platform_device_add(&kfr2r09_ceu_device);
+
 	return platform_add_devices(kfr2r09_devices,
 				    ARRAY_SIZE(kfr2r09_devices));
 }
@@ -377,10 +623,27 @@ static int kfr2r09_mode_pins(void)
 	return MODE_PIN0 | MODE_PIN1 | MODE_PIN5 | MODE_PIN8;
 }
 
+/* Reserve a portion of memory for CEU buffers */
+static void __init kfr2r09_mv_mem_reserve(void)
+{
+	phys_addr_t phys;
+	phys_addr_t size = CEU_BUFFER_MEMORY_SIZE;
+
+	phys = memblock_phys_alloc(size, PAGE_SIZE);
+	if (!phys)
+		panic("Failed to allocate CEU memory\n");
+
+	memblock_free(phys, size);
+	memblock_remove(phys, size);
+
+	ceu_dma_membase = phys;
+}
+
 /*
  * The Machine Vector
  */
 static struct sh_machine_vector mv_kfr2r09 __initmv = {
 	.mv_name		= "kfr2r09",
 	.mv_mode_pins		= kfr2r09_mode_pins,
+	.mv_mem_reserve         = kfr2r09_mv_mem_reserve,
 };

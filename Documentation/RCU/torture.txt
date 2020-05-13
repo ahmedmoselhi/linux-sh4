@@ -10,90 +10,19 @@ status messages via printk(), which can be examined via the dmesg
 command (perhaps grepping for "torture").  The test is started
 when the module is loaded, and stops when the module is unloaded.
 
-CONFIG_RCU_TORTURE_TEST_RUNNABLE
-
-It is also possible to specify CONFIG_RCU_TORTURE_TEST=y, which will
-result in the tests being loaded into the base kernel.  In this case,
-the CONFIG_RCU_TORTURE_TEST_RUNNABLE config option is used to specify
-whether the RCU torture tests are to be started immediately during
-boot or whether the /proc/sys/kernel/rcutorture_runnable file is used
-to enable them.  This /proc file can be used to repeatedly pause and
-restart the tests, regardless of the initial state specified by the
-CONFIG_RCU_TORTURE_TEST_RUNNABLE config option.
-
-You will normally -not- want to start the RCU torture tests during boot
-(and thus the default is CONFIG_RCU_TORTURE_TEST_RUNNABLE=n), but doing
-this can sometimes be useful in finding boot-time bugs.
-
-
-MODULE PARAMETERS
-
-This module has the following parameters:
-
-irqreaders	Says to invoke RCU readers from irq level.  This is currently
-		done via timers.  Defaults to "1" for variants of RCU that
-		permit this.  (Or, more accurately, variants of RCU that do
-		-not- permit this know to ignore this variable.)
-
-nfakewriters	This is the number of RCU fake writer threads to run.  Fake
-		writer threads repeatedly use the synchronous "wait for
-		current readers" function of the interface selected by
-		torture_type, with a delay between calls to allow for various
-		different numbers of writers running in parallel.
-		nfakewriters defaults to 4, which provides enough parallelism
-		to trigger special cases caused by multiple writers, such as
-		the synchronize_srcu() early return optimization.
-
-nreaders	This is the number of RCU reading threads supported.
-		The default is twice the number of CPUs.  Why twice?
-		To properly exercise RCU implementations with preemptible
-		read-side critical sections.
-
-shuffle_interval
-		The number of seconds to keep the test threads affinitied
-		to a particular subset of the CPUs, defaults to 3 seconds.
-		Used in conjunction with test_no_idle_hz.
-
-stat_interval	The number of seconds between output of torture
-		statistics (via printk()).  Regardless of the interval,
-		statistics are printed when the module is unloaded.
-		Setting the interval to zero causes the statistics to
-		be printed -only- when the module is unloaded, and this
-		is the default.
-
-stutter		The length of time to run the test before pausing for this
-		same period of time.  Defaults to "stutter=5", so as
-		to run and pause for (roughly) five-second intervals.
-		Specifying "stutter=0" causes the test to run continuously
-		without pausing, which is the old default behavior.
-
-test_no_idle_hz	Whether or not to test the ability of RCU to operate in
-		a kernel that disables the scheduling-clock interrupt to
-		idle CPUs.  Boolean parameter, "1" to test, "0" otherwise.
-		Defaults to omitting this test.
-
-torture_type	The type of RCU to test: "rcu" for the rcu_read_lock() API,
-		"rcu_sync" for rcu_read_lock() with synchronous reclamation,
-		"rcu_bh" for the rcu_read_lock_bh() API, "rcu_bh_sync" for
-		rcu_read_lock_bh() with synchronous reclamation, "srcu" for
-		the "srcu_read_lock()" API, "sched" for the use of
-		preempt_disable() together with synchronize_sched(),
-		and "sched_expedited" for the use of preempt_disable()
-		with synchronize_sched_expedited().
-
-verbose		Enable debug printk()s.  Default is disabled.
-
+Module parameters are prefixed by "rcutorture." in
+Documentation/admin-guide/kernel-parameters.txt.
 
 OUTPUT
 
 The statistics output is as follows:
 
-	rcu-torture: --- Start of test: nreaders=16 stat_interval=0 verbose=0
-	rcu-torture: rtc: 0000000000000000 ver: 1916 tfle: 0 rta: 1916 rtaf: 0 rtf: 1915
-	rcu-torture: Reader Pipe:  1466408 9747 0 0 0 0 0 0 0 0 0
-	rcu-torture: Reader Batch:  1464477 11678 0 0 0 0 0 0 0 0
-	rcu-torture: Free-Block Circulation:  1915 1915 1915 1915 1915 1915 1915 1915 1915 1915 0
-	rcu-torture: --- End of test
+	rcu-torture:--- Start of test: nreaders=16 nfakewriters=4 stat_interval=30 verbose=0 test_no_idle_hz=1 shuffle_interval=3 stutter=5 irqreader=1 fqs_duration=0 fqs_holdoff=0 fqs_stutter=3 test_boost=1/0 test_boost_interval=7 test_boost_duration=4
+	rcu-torture: rtc:           (null) ver: 155441 tfle: 0 rta: 155441 rtaf: 8884 rtf: 155440 rtmbe: 0 rtbe: 0 rtbke: 0 rtbre: 0 rtbf: 0 rtb: 0 nt: 3055767
+	rcu-torture: Reader Pipe:  727860534 34213 0 0 0 0 0 0 0 0 0
+	rcu-torture: Reader Batch:  727877838 17003 0 0 0 0 0 0 0 0 0
+	rcu-torture: Free-Block Circulation:  155440 155440 155440 155440 155440 155440 155440 155440 155440 155440 0
+	rcu-torture:--- End of test: SUCCESS: nreaders=16 nfakewriters=4 stat_interval=30 verbose=0 test_no_idle_hz=1 shuffle_interval=3 stutter=5 irqreader=1 fqs_duration=0 fqs_holdoff=0 fqs_stutter=3 test_boost=1/0 test_boost_interval=7 test_boost_duration=4
 
 The command "dmesg | grep torture:" will extract this information on
 most systems.  On more esoteric configurations, it may be necessary to
@@ -101,25 +30,57 @@ use other commands to access the output of the printk()s used by
 the RCU torture test.  The printk()s use KERN_ALERT, so they should
 be evident.  ;-)
 
+The first and last lines show the rcutorture module parameters, and the
+last line shows either "SUCCESS" or "FAILURE", based on rcutorture's
+automatic determination as to whether RCU operated correctly.
+
 The entries are as follows:
 
 o	"rtc": The hexadecimal address of the structure currently visible
 	to readers.
 
-o	"ver": The number of times since boot that the rcutw writer task
+o	"ver": The number of times since boot that the RCU writer task
 	has changed the structure visible to readers.
 
 o	"tfle": If non-zero, indicates that the "torture freelist"
-	containing structure to be placed into the "rtc" area is empty.
+	containing structures to be placed into the "rtc" area is empty.
 	This condition is important, since it can fool you into thinking
 	that RCU is working when it is not.  :-/
 
 o	"rta": Number of structures allocated from the torture freelist.
 
 o	"rtaf": Number of allocations from the torture freelist that have
-	failed due to the list being empty.
+	failed due to the list being empty.  It is not unusual for this
+	to be non-zero, but it is bad for it to be a large fraction of
+	the value indicated by "rta".
 
 o	"rtf": Number of frees into the torture freelist.
+
+o	"rtmbe": A non-zero value indicates that rcutorture believes that
+	rcu_assign_pointer() and rcu_dereference() are not working
+	correctly.  This value should be zero.
+
+o	"rtbe": A non-zero value indicates that one of the rcu_barrier()
+	family of functions is not working correctly.
+
+o	"rtbke": rcutorture was unable to create the real-time kthreads
+	used to force RCU priority inversion.  This value should be zero.
+
+o	"rtbre": Although rcutorture successfully created the kthreads
+	used to force RCU priority inversion, it was unable to set them
+	to the real-time priority level of 1.  This value should be zero.
+
+o	"rtbf": The number of times that RCU priority boosting failed
+	to resolve RCU priority inversion.
+
+o	"rtb": The number of times that rcutorture attempted to force
+	an RCU priority inversion condition.  If you are testing RCU
+	priority boosting via the "test_boost" module parameter, this
+	value should be non-zero.
+
+o	"nt": The number of times rcutorture ran RCU read-side code from
+	within a timer handler.  This value should be non-zero only
+	if you specified the "irqreader" module parameter.
 
 o	"Reader Pipe": Histogram of "ages" of structures seen by readers.
 	If any entries past the first two are non-zero, RCU is broken.
@@ -150,50 +111,172 @@ o	"Free-Block Circulation": Shows the number of torture structures
 	somehow gets incremented farther than it should.
 
 Different implementations of RCU can provide implementation-specific
-additional information.  For example, SRCU provides the following:
+additional information.  For example, Tree SRCU provides the following
+additional line:
 
-	srcu-torture: rtc: f8cf46a8 ver: 355 tfle: 0 rta: 356 rtaf: 0 rtf: 346 rtmbe: 0
-	srcu-torture: Reader Pipe:  559738 939 0 0 0 0 0 0 0 0 0
-	srcu-torture: Reader Batch:  560434 243 0 0 0 0 0 0 0 0
-	srcu-torture: Free-Block Circulation:  355 354 353 352 351 350 349 348 347 346 0
-	srcu-torture: per-CPU(idx=1): 0(0,1) 1(0,1) 2(0,0) 3(0,1)
+	srcud-torture: Tree SRCU per-CPU(idx=0): 0(35,-21) 1(-4,24) 2(1,1) 3(-26,20) 4(28,-47) 5(-9,4) 6(-10,14) 7(-14,11) T(1,6)
 
-The first four lines are similar to those for RCU.  The last line shows
-the per-CPU counter state.  The numbers in parentheses are the values
-of the "old" and "current" counters for the corresponding CPU.  The
-"idx" value maps the "old" and "current" values to the underlying array,
-and is useful for debugging.
-
-Similarly, sched_expedited RCU provides the following:
-
-	sched_expedited-torture: rtc: d0000000016c1880 ver: 1090796 tfle: 0 rta: 1090796 rtaf: 0 rtf: 1090787 rtmbe: 0 nt: 27713319
-	sched_expedited-torture: Reader Pipe:  12660320201 95875 0 0 0 0 0 0 0 0 0
-	sched_expedited-torture: Reader Batch:  12660424885 0 0 0 0 0 0 0 0 0 0
-	sched_expedited-torture: Free-Block Circulation:  1090795 1090795 1090794 1090793 1090792 1090791 1090790 1090789 1090788 1090787 0
-	state: -1 / 0:0 3:0 4:0
-
-As before, the first four lines are similar to those for RCU.
-The last line shows the task-migration state.  The first number is
--1 if synchronize_sched_expedited() is idle, -2 if in the process of
-posting wakeups to the migration kthreads, and N when waiting on CPU N.
-Each of the colon-separated fields following the "/" is a CPU:state pair.
-Valid states are "0" for idle, "1" for waiting for quiescent state,
-"2" for passed through quiescent state, and "3" when a race with a
-CPU-hotplug event forces use of the synchronize_sched() primitive.
+This line shows the per-CPU counter state, in this case for Tree SRCU
+using a dynamically allocated srcu_struct (hence "srcud-" rather than
+"srcu-").  The numbers in parentheses are the values of the "old" and
+"current" counters for the corresponding CPU.  The "idx" value maps the
+"old" and "current" values to the underlying array, and is useful for
+debugging.  The final "T" entry contains the totals of the counters.
 
 
-USAGE
+USAGE ON SPECIFIC KERNEL BUILDS
 
-The following script may be used to torture RCU:
+It is sometimes desirable to torture RCU on a specific kernel build,
+for example, when preparing to put that kernel build into production.
+In that case, the kernel should be built with CONFIG_RCU_TORTURE_TEST=m
+so that the test can be started using modprobe and terminated using rmmod.
+
+For example, the following script may be used to torture RCU:
 
 	#!/bin/sh
 
 	modprobe rcutorture
-	sleep 100
+	sleep 3600
 	rmmod rcutorture
 	dmesg | grep torture:
 
 The output can be manually inspected for the error flag of "!!!".
 One could of course create a more elaborate script that automatically
-checked for such errors.  The "rmmod" command forces a "SUCCESS" or
-"FAILURE" indication to be printk()ed.
+checked for such errors.  The "rmmod" command forces a "SUCCESS",
+"FAILURE", or "RCU_HOTPLUG" indication to be printk()ed.  The first
+two are self-explanatory, while the last indicates that while there
+were no RCU failures, CPU-hotplug problems were detected.
+
+
+USAGE ON MAINLINE KERNELS
+
+When using rcutorture to test changes to RCU itself, it is often
+necessary to build a number of kernels in order to test that change
+across a broad range of combinations of the relevant Kconfig options
+and of the relevant kernel boot parameters.  In this situation, use
+of modprobe and rmmod can be quite time-consuming and error-prone.
+
+Therefore, the tools/testing/selftests/rcutorture/bin/kvm.sh
+script is available for mainline testing for x86, arm64, and
+powerpc.  By default, it will run the series of tests specified by
+tools/testing/selftests/rcutorture/configs/rcu/CFLIST, with each test
+running for 30 minutes within a guest OS using a minimal userspace
+supplied by an automatically generated initrd.  After the tests are
+complete, the resulting build products and console output are analyzed
+for errors and the results of the runs are summarized.
+
+On larger systems, rcutorture testing can be accelerated by passing the
+--cpus argument to kvm.sh.  For example, on a 64-CPU system, "--cpus 43"
+would use up to 43 CPUs to run tests concurrently, which as of v5.4 would
+complete all the scenarios in two batches, reducing the time to complete
+from about eight hours to about one hour (not counting the time to build
+the sixteen kernels).  The "--dryrun sched" argument will not run tests,
+but rather tell you how the tests would be scheduled into batches.  This
+can be useful when working out how many CPUs to specify in the --cpus
+argument.
+
+Not all changes require that all scenarios be run.  For example, a change
+to Tree SRCU might run only the SRCU-N and SRCU-P scenarios using the
+--configs argument to kvm.sh as follows:  "--configs 'SRCU-N SRCU-P'".
+Large systems can run multiple copies of of the full set of scenarios,
+for example, a system with 448 hardware threads can run five instances
+of the full set concurrently.  To make this happen:
+
+	kvm.sh --cpus 448 --configs '5*CFLIST'
+
+Alternatively, such a system can run 56 concurrent instances of a single
+eight-CPU scenario:
+
+	kvm.sh --cpus 448 --configs '56*TREE04'
+
+Or 28 concurrent instances of each of two eight-CPU scenarios:
+
+	kvm.sh --cpus 448 --configs '28*TREE03 28*TREE04'
+
+Of course, each concurrent instance will use memory, which can be
+limited using the --memory argument, which defaults to 512M.  Small
+values for memory may require disabling the callback-flooding tests
+using the --bootargs parameter discussed below.
+
+Sometimes additional debugging is useful, and in such cases the --kconfig
+parameter to kvm.sh may be used, for example, "--kconfig 'CONFIG_KASAN=y'".
+
+Kernel boot arguments can also be supplied, for example, to control
+rcutorture's module parameters.  For example, to test a change to RCU's
+CPU stall-warning code, use "--bootargs 'rcutorture.stall_cpu=30'".
+This will of course result in the scripting reporting a failure, namely
+the resuling RCU CPU stall warning.  As noted above, reducing memory may
+require disabling rcutorture's callback-flooding tests:
+
+	kvm.sh --cpus 448 --configs '56*TREE04' --memory 128M \
+		--bootargs 'rcutorture.fwd_progress=0'
+
+Sometimes all that is needed is a full set of kernel builds.  This is
+what the --buildonly argument does.
+
+Finally, the --trust-make argument allows each kernel build to reuse what
+it can from the previous kernel build.
+
+There are additional more arcane arguments that are documented in the
+source code of the kvm.sh script.
+
+If a run contains failures, the number of buildtime and runtime failures
+is listed at the end of the kvm.sh output, which you really should redirect
+to a file.  The build products and console output of each run is kept in
+tools/testing/selftests/rcutorture/res in timestamped directories.  A
+given directory can be supplied to kvm-find-errors.sh in order to have
+it cycle you through summaries of errors and full error logs.  For example:
+
+	tools/testing/selftests/rcutorture/bin/kvm-find-errors.sh \
+		tools/testing/selftests/rcutorture/res/2020.01.20-15.54.23
+
+However, it is often more convenient to access the files directly.
+Files pertaining to all scenarios in a run reside in the top-level
+directory (2020.01.20-15.54.23 in the example above), while per-scenario
+files reside in a subdirectory named after the scenario (for example,
+"TREE04").  If a given scenario ran more than once (as in "--configs
+'56*TREE04'" above), the directories corresponding to the second and
+subsequent runs of that scenario include a sequence number, for example,
+"TREE04.2", "TREE04.3", and so on.
+
+The most frequently used file in the top-level directory is testid.txt.
+If the test ran in a git repository, then this file contains the commit
+that was tested and any uncommitted changes in diff format.
+
+The most frequently used files in each per-scenario-run directory are:
+
+.config: This file contains the Kconfig options.
+
+Make.out: This contains build output for a specific scenario.
+
+console.log: This contains the console output for a specific scenario.
+	This file may be examined once the kernel has booted, but
+	it might not exist if the build failed.
+
+vmlinux: This contains the kernel, which can be useful with tools like
+	objdump and gdb.
+
+A number of additional files are available, but are less frequently used.
+Many are intended for debugging of rcutorture itself or of its scripting.
+
+As of v5.4, a successful run with the default set of scenarios produces
+the following summary at the end of the run on a 12-CPU system:
+
+SRCU-N ------- 804233 GPs (148.932/s) [srcu: g10008272 f0x0 ]
+SRCU-P ------- 202320 GPs (37.4667/s) [srcud: g1809476 f0x0 ]
+SRCU-t ------- 1122086 GPs (207.794/s) [srcu: g0 f0x0 ]
+SRCU-u ------- 1111285 GPs (205.794/s) [srcud: g1 f0x0 ]
+TASKS01 ------- 19666 GPs (3.64185/s) [tasks: g0 f0x0 ]
+TASKS02 ------- 20541 GPs (3.80389/s) [tasks: g0 f0x0 ]
+TASKS03 ------- 19416 GPs (3.59556/s) [tasks: g0 f0x0 ]
+TINY01 ------- 836134 GPs (154.84/s) [rcu: g0 f0x0 ] n_max_cbs: 34198
+TINY02 ------- 850371 GPs (157.476/s) [rcu: g0 f0x0 ] n_max_cbs: 2631
+TREE01 ------- 162625 GPs (30.1157/s) [rcu: g1124169 f0x0 ]
+TREE02 ------- 333003 GPs (61.6672/s) [rcu: g2647753 f0x0 ] n_max_cbs: 35844
+TREE03 ------- 306623 GPs (56.782/s) [rcu: g2975325 f0x0 ] n_max_cbs: 1496497
+CPU count limited from 16 to 12
+TREE04 ------- 246149 GPs (45.5831/s) [rcu: g1695737 f0x0 ] n_max_cbs: 434961
+TREE05 ------- 314603 GPs (58.2598/s) [rcu: g2257741 f0x2 ] n_max_cbs: 193997
+TREE07 ------- 167347 GPs (30.9902/s) [rcu: g1079021 f0x0 ] n_max_cbs: 478732
+CPU count limited from 16 to 12
+TREE09 ------- 752238 GPs (139.303/s) [rcu: g13075057 f0x0 ] n_max_cbs: 99011

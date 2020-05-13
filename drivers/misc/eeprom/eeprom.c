@@ -1,29 +1,16 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
-    Copyright (C) 1998, 1999  Frodo Looijaard <frodol@dds.nl> and
-			       Philip Edelbrock <phil@netroedge.com>
-    Copyright (C) 2003 Greg Kroah-Hartman <greg@kroah.com>
-    Copyright (C) 2003 IBM Corp.
-    Copyright (C) 2004 Jean Delvare <khali@linux-fr.org>
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-*/
+ * Copyright (C) 1998, 1999  Frodo Looijaard <frodol@dds.nl> and
+ *                           Philip Edelbrock <phil@netroedge.com>
+ * Copyright (C) 2003 Greg Kroah-Hartman <greg@kroah.com>
+ * Copyright (C) 2003 IBM Corp.
+ * Copyright (C) 2004 Jean Delvare <jdelvare@suse.de>
+ */
 
 #include <linux/kernel.h>
-#include <linux/init.h>
 #include <linux/module.h>
-#include <linux/slab.h>
+#include <linux/device.h>
+#include <linux/capability.h>
 #include <linux/jiffies.h>
 #include <linux/i2c.h>
 #include <linux/mutex.h>
@@ -31,9 +18,6 @@
 /* Addresses to scan */
 static const unsigned short normal_i2c[] = { 0x50, 0x51, 0x52, 0x53, 0x54,
 					0x55, 0x56, 0x57, I2C_CLIENT_END };
-
-/* Insmod parameters */
-I2C_CLIENT_INSMOD_1(eeprom);
 
 
 /* Size of EEPROM in bytes */
@@ -88,17 +72,13 @@ exit:
 	mutex_unlock(&data->update_lock);
 }
 
-static ssize_t eeprom_read(struct kobject *kobj, struct bin_attribute *bin_attr,
+static ssize_t eeprom_read(struct file *filp, struct kobject *kobj,
+			   struct bin_attribute *bin_attr,
 			   char *buf, loff_t off, size_t count)
 {
-	struct i2c_client *client = to_i2c_client(container_of(kobj, struct device, kobj));
+	struct i2c_client *client = to_i2c_client(kobj_to_dev(kobj));
 	struct eeprom_data *data = i2c_get_clientdata(client);
 	u8 slice;
-
-	if (off > EEPROM_SIZE)
-		return 0;
-	if (off + count > EEPROM_SIZE)
-		count = EEPROM_SIZE - off;
 
 	/* Only refresh slices which contain requested bytes */
 	for (slice = off >> 5; slice <= (off + count - 1) >> 5; slice++)
@@ -125,7 +105,7 @@ static ssize_t eeprom_read(struct kobject *kobj, struct bin_attribute *bin_attr,
 	return count;
 }
 
-static struct bin_attribute eeprom_attr = {
+static const struct bin_attribute eeprom_attr = {
 	.attr = {
 		.name = "eeprom",
 		.mode = S_IRUGO,
@@ -135,8 +115,7 @@ static struct bin_attribute eeprom_attr = {
 };
 
 /* Return 0 if detection is successful, -ENODEV otherwise */
-static int eeprom_detect(struct i2c_client *client, int kind,
-			 struct i2c_board_info *info)
+static int eeprom_detect(struct i2c_client *client, struct i2c_board_info *info)
 {
 	struct i2c_adapter *adapter = client->adapter;
 
@@ -167,12 +146,11 @@ static int eeprom_probe(struct i2c_client *client,
 {
 	struct i2c_adapter *adapter = client->adapter;
 	struct eeprom_data *data;
-	int err;
 
-	if (!(data = kzalloc(sizeof(struct eeprom_data), GFP_KERNEL))) {
-		err = -ENOMEM;
-		goto exit;
-	}
+	data = devm_kzalloc(&client->dev, sizeof(struct eeprom_data),
+			    GFP_KERNEL);
+	if (!data)
+		return -ENOMEM;
 
 	memset(data->data, 0xff, EEPROM_SIZE);
 	i2c_set_clientdata(client, data);
@@ -197,23 +175,17 @@ static int eeprom_probe(struct i2c_client *client,
 		}
 	}
 
+	/* Let the users know they are using deprecated driver */
+	dev_notice(&client->dev,
+		   "eeprom driver is deprecated, please use at24 instead\n");
+
 	/* create the sysfs eeprom file */
-	err = sysfs_create_bin_file(&client->dev.kobj, &eeprom_attr);
-	if (err)
-		goto exit_kfree;
-
-	return 0;
-
-exit_kfree:
-	kfree(data);
-exit:
-	return err;
+	return sysfs_create_bin_file(&client->dev.kobj, &eeprom_attr);
 }
 
 static int eeprom_remove(struct i2c_client *client)
 {
 	sysfs_remove_bin_file(&client->dev.kobj, &eeprom_attr);
-	kfree(i2c_get_clientdata(client));
 
 	return 0;
 }
@@ -233,25 +205,13 @@ static struct i2c_driver eeprom_driver = {
 
 	.class		= I2C_CLASS_DDC | I2C_CLASS_SPD,
 	.detect		= eeprom_detect,
-	.address_data	= &addr_data,
+	.address_list	= normal_i2c,
 };
 
-static int __init eeprom_init(void)
-{
-	return i2c_add_driver(&eeprom_driver);
-}
-
-static void __exit eeprom_exit(void)
-{
-	i2c_del_driver(&eeprom_driver);
-}
-
+module_i2c_driver(eeprom_driver);
 
 MODULE_AUTHOR("Frodo Looijaard <frodol@dds.nl> and "
 		"Philip Edelbrock <phil@netroedge.com> and "
 		"Greg Kroah-Hartman <greg@kroah.com>");
 MODULE_DESCRIPTION("I2C EEPROM driver");
 MODULE_LICENSE("GPL");
-
-module_init(eeprom_init);
-module_exit(eeprom_exit);

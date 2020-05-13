@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *
  * INET		An implementation of the TCP/IP protocol suite for the LINUX
@@ -22,22 +23,18 @@
  *		data-registers to hold input values and one tries to
  *		specify d0 and d1 as scratch registers. Letting gcc
  *		choose these registers itself solves the problem.
- *
- *		This program is free software; you can redistribute it and/or
- *		modify it under the terms of the GNU General Public License
- *		as published by the Free Software Foundation; either version
- *		2 of the License, or (at your option) any later version.
  */
 
 /* Revised by Kenneth Albanowski for m68knommu. Basic problem: unaligned access
  kills, so most of the assembly has to go. */
 
-#include <linux/module.h>
+#include <linux/export.h>
 #include <net/checksum.h>
 
 #include <asm/byteorder.h>
 
-static inline unsigned short from32to16(unsigned long x)
+#ifndef do_csum
+static inline unsigned short from32to16(unsigned int x)
 {
 	/* add up 16-bit and 16-bit for 16+c bit */
 	x = (x & 0xffff) + (x >> 16);
@@ -48,40 +45,37 @@ static inline unsigned short from32to16(unsigned long x)
 
 static unsigned int do_csum(const unsigned char *buff, int len)
 {
-	int odd, count;
-	unsigned long result = 0;
+	int odd;
+	unsigned int result = 0;
 
 	if (len <= 0)
 		goto out;
 	odd = 1 & (unsigned long) buff;
 	if (odd) {
 #ifdef __LITTLE_ENDIAN
-		result = *buff;
-#else
 		result += (*buff << 8);
+#else
+		result = *buff;
 #endif
 		len--;
 		buff++;
 	}
-	count = len >> 1;		/* nr of 16-bit words.. */
-	if (count) {
+	if (len >= 2) {
 		if (2 & (unsigned long) buff) {
 			result += *(unsigned short *) buff;
-			count--;
 			len -= 2;
 			buff += 2;
 		}
-		count >>= 1;		/* nr of 32-bit words.. */
-		if (count) {
-			unsigned long carry = 0;
+		if (len >= 4) {
+			const unsigned char *end = buff + ((unsigned)len & ~3);
+			unsigned int carry = 0;
 			do {
-				unsigned long w = *(unsigned int *) buff;
-				count--;
+				unsigned int w = *(unsigned int *) buff;
 				buff += 4;
 				result += carry;
 				result += w;
 				carry = (w > result);
-			} while (count);
+			} while (buff < end);
 			result += carry;
 			result = (result & 0xffff) + (result >> 16);
 		}
@@ -102,7 +96,9 @@ static unsigned int do_csum(const unsigned char *buff, int len)
 out:
 	return result;
 }
+#endif
 
+#ifndef ip_fast_csum
 /*
  *	This is a version of ip_compute_csum() optimized for IP headers,
  *	which always checksum on 4 octet boundaries.
@@ -112,6 +108,7 @@ __sum16 ip_fast_csum(const void *iph, unsigned int ihl)
 	return (__force __sum16)~do_csum(iph, ihl*4);
 }
 EXPORT_SYMBOL(ip_fast_csum);
+#endif
 
 /*
  * computes the checksum of a memory block at buff, length len,
@@ -180,10 +177,17 @@ csum_partial_copy(const void *src, void *dst, int len, __wsum sum)
 EXPORT_SYMBOL(csum_partial_copy);
 
 #ifndef csum_tcpudp_nofold
+static inline u32 from64to32(u64 x)
+{
+	/* add up 32-bit and 32-bit for 32+c bit */
+	x = (x & 0xffffffff) + (x >> 32);
+	/* add up carry.. */
+	x = (x & 0xffffffff) + (x >> 32);
+	return (u32)x;
+}
+
 __wsum csum_tcpudp_nofold(__be32 saddr, __be32 daddr,
-			unsigned short len,
-			unsigned short proto,
-			__wsum sum)
+			  __u32 len, __u8 proto, __wsum sum)
 {
 	unsigned long long s = (__force u32)sum;
 
@@ -194,8 +198,7 @@ __wsum csum_tcpudp_nofold(__be32 saddr, __be32 daddr,
 #else
 	s += (proto + len) << 8;
 #endif
-	s += (s >> 32);
-	return (__force __wsum)s;
+	return (__force __wsum)from64to32(s);
 }
 EXPORT_SYMBOL(csum_tcpudp_nofold);
 #endif

@@ -1,31 +1,21 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * asynchronous raid6 recovery self test
  * Copyright (c) 2009, Intel Corporation.
  *
  * based on drivers/md/raid6test/test.c:
  * 	Copyright 2002-2007 H. Peter Anvin
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
- *
  */
 #include <linux/async_tx.h>
+#include <linux/gfp.h>
+#include <linux/mm.h>
 #include <linux/random.h>
+#include <linux/module.h>
 
 #undef pr
 #define pr(fmt, args...) pr_info("raid6test: " fmt, ##args)
 
-#define NDISKS 16 /* Including P and Q */
+#define NDISKS 64 /* Including P and Q */
 
 static struct page *dataptrs[NDISKS];
 static addr_conv_t addr_conv[NDISKS];
@@ -43,15 +33,10 @@ static void callback(void *param)
 
 static void makedata(int disks)
 {
-	int i, j;
+	int i;
 
 	for (i = 0; i < disks; i++) {
-		for (j = 0; j < PAGE_SIZE/sizeof(u32); j += sizeof(u32)) {
-			u32 *p = page_address(data[i]) + j;
-
-			*p = random32();
-		}
-
+		prandom_bytes(page_address(data[i]), PAGE_SIZE);
 		dataptrs[i] = data[i];
 	}
 }
@@ -83,10 +68,12 @@ static void raid6_dual_recov(int disks, size_t bytes, int faila, int failb, stru
 			init_async_submit(&submit, 0, NULL, NULL, NULL, addr_conv);
 			tx = async_gen_syndrome(ptrs, 0, disks, bytes, &submit);
 		} else {
-			struct page *blocks[disks];
+			struct page *blocks[NDISKS];
 			struct page *dest;
 			int count = 0;
 			int i;
+
+			BUG_ON(disks > NDISKS);
 
 			/* data+Q failure.  Reconstruct data from P,
 			 * then rebuild syndrome
@@ -214,6 +201,21 @@ static int raid6_test(void)
 		err += test(4, &tests);
 	if (NDISKS > 5)
 		err += test(5, &tests);
+	/* the 11 and 12 disk cases are special for ioatdma (p-disabled
+	 * q-continuation without extended descriptor)
+	 */
+	if (NDISKS > 12) {
+		err += test(11, &tests);
+		err += test(12, &tests);
+	}
+
+	/* the 24 disk case is special for ioatdma as it is the boudary point
+	 * at which it needs to switch from 8-source ops to 16-source
+	 * ops for continuation (assumes DMA_HAS_PQ_CONTINUE is not set)
+	 */
+	if (NDISKS > 24)
+		err += test(24, &tests);
+
 	err += test(NDISKS, &tests);
 
 	pr("\n");

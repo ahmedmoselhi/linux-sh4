@@ -1,9 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_SH_PCI_H
 #define __ASM_SH_PCI_H
 
 #ifdef __KERNEL__
-
-#include <linux/dma-mapping.h>
 
 /* Can be used to override the logic in pci_scan_bus for skipping
    already-configured bus numbers - to be used for buggy BIOSes
@@ -17,75 +16,60 @@
  */
 struct pci_channel {
 	struct pci_channel	*next;
+	struct pci_bus		*bus;
 
 	struct pci_ops		*pci_ops;
-	struct resource		*io_resource;
-	struct resource		*mem_resource;
+
+	struct resource		*resources;
+	unsigned int		nr_resources;
 
 	unsigned long		io_offset;
 	unsigned long		mem_offset;
 
 	unsigned long		reg_base;
-
 	unsigned long		io_map_base;
+
+	unsigned int		index;
+	unsigned int		need_domain_info;
+
+	/* Optional error handling */
+	struct timer_list	err_timer, serr_timer;
+	unsigned int		err_irq, serr_irq;
 };
 
-extern void register_pci_controller(struct pci_channel *hose);
+/* arch/sh/drivers/pci/pci.c */
+extern raw_spinlock_t pci_config_lock;
+
+extern int register_pci_controller(struct pci_channel *hose);
+extern void pcibios_report_status(unsigned int status_mask, int warn);
+
+/* arch/sh/drivers/pci/common.c */
+extern int early_read_config_byte(struct pci_channel *hose, int top_bus,
+				  int bus, int devfn, int offset, u8 *value);
+extern int early_read_config_word(struct pci_channel *hose, int top_bus,
+				  int bus, int devfn, int offset, u16 *value);
+extern int early_read_config_dword(struct pci_channel *hose, int top_bus,
+				   int bus, int devfn, int offset, u32 *value);
+extern int early_write_config_byte(struct pci_channel *hose, int top_bus,
+				   int bus, int devfn, int offset, u8 value);
+extern int early_write_config_word(struct pci_channel *hose, int top_bus,
+				   int bus, int devfn, int offset, u16 value);
+extern int early_write_config_dword(struct pci_channel *hose, int top_bus,
+				    int bus, int devfn, int offset, u32 value);
+extern void pcibios_enable_timers(struct pci_channel *hose);
+extern unsigned int pcibios_handle_status_errors(unsigned long addr,
+				 unsigned int status, struct pci_channel *hose);
+extern int pci_is_66mhz_capable(struct pci_channel *hose,
+				int top_bus, int current_bus);
 
 extern unsigned long PCIBIOS_MIN_IO, PCIBIOS_MIN_MEM;
 
-struct pci_dev;
-
 #define HAVE_PCI_MMAP
-extern int pci_mmap_page_range(struct pci_dev *dev, struct vm_area_struct *vma,
-	enum pci_mmap_state mmap_state, int write_combine);
-extern void pcibios_set_master(struct pci_dev *dev);
-
-static inline void pcibios_penalize_isa_irq(int irq, int active)
-{
-	/* We don't do dynamic PCI IRQ allocation */
-}
+#define ARCH_GENERIC_PCI_MMAP_RESOURCE
 
 /* Dynamic DMA mapping stuff.
  * SuperH has everything mapped statically like x86.
  */
-
-/* The PCI address space does equal the physical memory
- * address space.  The networking and block device layers use
- * this boolean for bounce buffer decisions.
- */
-#define PCI_DMA_BUS_IS_PHYS	(1)
-
-#include <linux/types.h>
-#include <linux/slab.h>
-#include <asm/scatterlist.h>
-#include <linux/string.h>
-#include <asm/io.h>
-
-/* pci_unmap_{single,page} being a nop depends upon the
- * configuration.
- */
-#ifdef CONFIG_SH_PCIDMA_NONCOHERENT
-#define DECLARE_PCI_UNMAP_ADDR(ADDR_NAME)	\
-	dma_addr_t ADDR_NAME;
-#define DECLARE_PCI_UNMAP_LEN(LEN_NAME)		\
-	__u32 LEN_NAME;
-#define pci_unmap_addr(PTR, ADDR_NAME)			\
-	((PTR)->ADDR_NAME)
-#define pci_unmap_addr_set(PTR, ADDR_NAME, VAL)		\
-	(((PTR)->ADDR_NAME) = (VAL))
-#define pci_unmap_len(PTR, LEN_NAME)			\
-	((PTR)->LEN_NAME)
-#define pci_unmap_len_set(PTR, LEN_NAME, VAL)		\
-	(((PTR)->LEN_NAME) = (VAL))
-#else
-#define DECLARE_PCI_UNMAP_ADDR(ADDR_NAME)
-#define DECLARE_PCI_UNMAP_LEN(LEN_NAME)
-#define pci_unmap_addr(PTR, ADDR_NAME)		(0)
-#define pci_unmap_addr_set(PTR, ADDR_NAME, VAL)	do { } while (0)
-#define pci_unmap_len(PTR, LEN_NAME)		(0)
-#define pci_unmap_len_set(PTR, LEN_NAME, VAL)	do { } while (0)
-#endif
 
 #ifdef CONFIG_PCI
 /*
@@ -93,57 +77,24 @@ static inline void pcibios_penalize_isa_irq(int irq, int active)
  * direct memory write.
  */
 #define PCI_DISABLE_MWI
-
-static inline void pci_dma_burst_advice(struct pci_dev *pdev,
-					enum pci_dma_burst_strategy *strat,
-					unsigned long *strategy_parameter)
-{
-	unsigned long cacheline_size;
-	u8 byte;
-
-	pci_read_config_byte(pdev, PCI_CACHE_LINE_SIZE, &byte);
-
-	if (byte == 0)
-		cacheline_size = L1_CACHE_BYTES;
-	else
-		cacheline_size = byte << 2;
-
-	*strat = PCI_DMA_BURST_MULTIPLE;
-	*strategy_parameter = cacheline_size;
-}
-#endif
-
-#if defined(CONFIG_SUPERH32) && !defined(CONFIG_CPU_SUBTYPE_ST40)
-/*
- * If we're on an SH7751 or SH7780 PCI controller, PCI memory is mapped
- * at the end of the address space in a special non-translatable area.
- */
-#define PCI_MEM_FIXED_START	0xfd000000
-#define PCI_MEM_FIXED_END	(PCI_MEM_FIXED_START + 0x01000000)
-
-#define is_pci_memory_fixed_range(s, e)	\
-	((s) >= PCI_MEM_FIXED_START && (e) < PCI_MEM_FIXED_END)
-#else
-#define is_pci_memory_fixed_range(s, e)	(0)
 #endif
 
 /* Board-specific fixup routines. */
-int pcibios_map_platform_irq(struct pci_dev *dev, u8 slot, u8 pin);
+int pcibios_map_platform_irq(const struct pci_dev *dev, u8 slot, u8 pin);
 
-extern void pcibios_resource_to_bus(struct pci_dev *dev,
-	struct pci_bus_region *region, struct resource *res);
+#define pci_domain_nr(bus) ((struct pci_channel *)(bus)->sysdata)->index
 
-extern void pcibios_bus_to_resource(struct pci_dev *dev, struct resource *res,
-				    struct pci_bus_region *region);
+static inline int pci_proc_domain(struct pci_bus *bus)
+{
+	struct pci_channel *hose = bus->sysdata;
+	return hose->need_domain_info;
+}
 
 /* Chances are this interrupt is wired PC-style ...  */
 static inline int pci_get_legacy_ide_irq(struct pci_dev *dev, int channel)
 {
 	return channel ? 15 : 14;
 }
-
-/* generic DMA-mapping stuff */
-#include <asm-generic/pci-dma-compat.h>
 
 #endif /* __KERNEL__ */
 #endif /* __ASM_SH_PCI_H */

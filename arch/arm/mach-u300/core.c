@@ -1,39 +1,164 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *
  * arch/arm/mach-u300/core.c
  *
- *
- * Copyright (C) 2007-2009 ST-Ericsson AB
- * License terms: GNU General Public License (GPL) version 2
+ * Copyright (C) 2007-2012 ST-Ericsson SA
  * Core platform support, IRQ handling and device definitions.
  * Author: Linus Walleij <linus.walleij@stericsson.com>
  */
 #include <linux/kernel.h>
-#include <linux/init.h>
-#include <linux/spinlock.h>
-#include <linux/interrupt.h>
-#include <linux/bitops.h>
-#include <linux/device.h>
-#include <linux/mm.h>
-#include <linux/termios.h>
-#include <linux/amba/bus.h>
-#include <linux/platform_device.h>
-#include <linux/gpio.h>
+#include <linux/pinctrl/machine.h>
+#include <linux/pinctrl/pinconf-generic.h>
+#include <linux/platform_data/clk-u300.h>
+#include <linux/irqchip.h>
+#include <linux/of_address.h>
+#include <linux/of_platform.h>
+#include <linux/clocksource.h>
+#include <linux/clk.h>
 
-#include <asm/types.h>
-#include <asm/setup.h>
-#include <asm/memory.h>
-#include <asm/hardware/vic.h>
 #include <asm/mach/map.h>
-#include <asm/mach/irq.h>
+#include <asm/mach/arch.h>
 
-#include <mach/hardware.h>
-#include <mach/syscon.h>
+/*
+ * These are the large blocks of memory allocated for I/O.
+ * the defines are used for setting up the I/O memory mapping.
+ */
 
-#include "clock.h"
-#include "mmc.h"
-#include "spi.h"
-#include "i2c.h"
+/* NAND Flash CS0 */
+#define U300_NAND_CS0_PHYS_BASE		0x80000000
+/* NFIF */
+#define U300_NAND_IF_PHYS_BASE		0x9f800000
+/* ALE, CLE offset for FSMC NAND */
+#define PLAT_NAND_CLE			(1 << 16)
+#define PLAT_NAND_ALE			(1 << 17)
+/* AHB Peripherals */
+#define U300_AHB_PER_PHYS_BASE		0xa0000000
+#define U300_AHB_PER_VIRT_BASE		0xff010000
+/* FAST Peripherals */
+#define U300_FAST_PER_PHYS_BASE		0xc0000000
+#define U300_FAST_PER_VIRT_BASE		0xff020000
+/* SLOW Peripherals */
+#define U300_SLOW_PER_PHYS_BASE		0xc0010000
+#define U300_SLOW_PER_VIRT_BASE		0xff000000
+/* Boot ROM */
+#define U300_BOOTROM_PHYS_BASE		0xffff0000
+#define U300_BOOTROM_VIRT_BASE		0xffff0000
+/* SEMI config base */
+#define U300_SEMI_CONFIG_BASE		0x2FFE0000
+
+/*
+ * AHB peripherals
+ */
+
+/* AHB Peripherals Bridge Controller */
+#define U300_AHB_BRIDGE_BASE		(U300_AHB_PER_PHYS_BASE+0x0000)
+/* Vectored Interrupt Controller 0, servicing 32 interrupts */
+#define U300_INTCON0_BASE		(U300_AHB_PER_PHYS_BASE+0x1000)
+#define U300_INTCON0_VBASE		IOMEM(U300_AHB_PER_VIRT_BASE+0x1000)
+/* Vectored Interrupt Controller 1, servicing 32 interrupts */
+#define U300_INTCON1_BASE		(U300_AHB_PER_PHYS_BASE+0x2000)
+#define U300_INTCON1_VBASE		IOMEM(U300_AHB_PER_VIRT_BASE+0x2000)
+/* Memory Stick Pro (MSPRO) controller */
+#define U300_MSPRO_BASE			(U300_AHB_PER_PHYS_BASE+0x3000)
+/* EMIF Configuration Area */
+#define U300_EMIF_CFG_BASE		(U300_AHB_PER_PHYS_BASE+0x4000)
+
+/*
+ * FAST peripherals
+ */
+
+/* FAST bridge control */
+#define U300_FAST_BRIDGE_BASE		(U300_FAST_PER_PHYS_BASE+0x0000)
+/* MMC/SD controller */
+#define U300_MMCSD_BASE			(U300_FAST_PER_PHYS_BASE+0x1000)
+/* PCM I2S0 controller */
+#define U300_PCM_I2S0_BASE		(U300_FAST_PER_PHYS_BASE+0x2000)
+/* PCM I2S1 controller */
+#define U300_PCM_I2S1_BASE		(U300_FAST_PER_PHYS_BASE+0x3000)
+/* I2C0 controller */
+#define U300_I2C0_BASE			(U300_FAST_PER_PHYS_BASE+0x4000)
+/* I2C1 controller */
+#define U300_I2C1_BASE			(U300_FAST_PER_PHYS_BASE+0x5000)
+/* SPI controller */
+#define U300_SPI_BASE			(U300_FAST_PER_PHYS_BASE+0x6000)
+/* Fast UART1 on U335 only */
+#define U300_UART1_BASE			(U300_FAST_PER_PHYS_BASE+0x7000)
+
+/*
+ * SLOW peripherals
+ */
+
+/* SLOW bridge control */
+#define U300_SLOW_BRIDGE_BASE		(U300_SLOW_PER_PHYS_BASE)
+/* SYSCON */
+#define U300_SYSCON_BASE		(U300_SLOW_PER_PHYS_BASE+0x1000)
+#define U300_SYSCON_VBASE		IOMEM(U300_SLOW_PER_VIRT_BASE+0x1000)
+/* Watchdog */
+#define U300_WDOG_BASE			(U300_SLOW_PER_PHYS_BASE+0x2000)
+/* UART0 */
+#define U300_UART0_BASE			(U300_SLOW_PER_PHYS_BASE+0x3000)
+/* APP side special timer */
+#define U300_TIMER_APP_BASE		(U300_SLOW_PER_PHYS_BASE+0x4000)
+#define U300_TIMER_APP_VBASE		IOMEM(U300_SLOW_PER_VIRT_BASE+0x4000)
+/* Keypad */
+#define U300_KEYPAD_BASE		(U300_SLOW_PER_PHYS_BASE+0x5000)
+/* GPIO */
+#define U300_GPIO_BASE			(U300_SLOW_PER_PHYS_BASE+0x6000)
+/* RTC */
+#define U300_RTC_BASE			(U300_SLOW_PER_PHYS_BASE+0x7000)
+/* Bus tracer */
+#define U300_BUSTR_BASE			(U300_SLOW_PER_PHYS_BASE+0x8000)
+/* Event handler (hardware queue) */
+#define U300_EVHIST_BASE		(U300_SLOW_PER_PHYS_BASE+0x9000)
+/* Genric Timer */
+#define U300_TIMER_BASE			(U300_SLOW_PER_PHYS_BASE+0xa000)
+/* PPM */
+#define U300_PPM_BASE			(U300_SLOW_PER_PHYS_BASE+0xb000)
+
+/*
+ * REST peripherals
+ */
+
+/* ISP (image signal processor) */
+#define U300_ISP_BASE			(0xA0008000)
+/* DMA Controller base */
+#define U300_DMAC_BASE			(0xC0020000)
+/* MSL Base */
+#define U300_MSL_BASE			(0xc0022000)
+/* APEX Base */
+#define U300_APEX_BASE			(0xc0030000)
+/* Video Encoder Base */
+#define U300_VIDEOENC_BASE		(0xc0080000)
+/* XGAM Base */
+#define U300_XGAM_BASE			(0xd0000000)
+
+/*
+ * SYSCON addresses applicable to the core machine.
+ */
+
+/* Chip ID register 16bit (R/-) */
+#define U300_SYSCON_CIDR					(0x400)
+/* SMCR */
+#define U300_SYSCON_SMCR					(0x4d0)
+#define U300_SYSCON_SMCR_FIELD_MASK				(0x000e)
+#define U300_SYSCON_SMCR_SEMI_SREFACK_IND			(0x0008)
+#define U300_SYSCON_SMCR_SEMI_SREFREQ_ENABLE			(0x0004)
+#define U300_SYSCON_SMCR_SEMI_EXT_BOOT_MODE_ENABLE		(0x0002)
+/* CPU_SW_DBGEN Software Debug Enable 16bit (R/W) */
+#define U300_SYSCON_CSDR					(0x4f0)
+#define U300_SYSCON_CSDR_SW_DEBUG_ENABLE			(0x0001)
+/* PRINT_CONTROL Print Control 16bit (R/-) */
+#define U300_SYSCON_PCR						(0x4f8)
+#define U300_SYSCON_PCR_SERV_IND				(0x0001)
+/* BOOT_CONTROL 16bit (R/-) */
+#define U300_SYSCON_BCR						(0x4fc)
+#define U300_SYSCON_BCR_ACC_CPU_SUBSYS_VINITHI_IND		(0x0400)
+#define U300_SYSCON_BCR_APP_CPU_SUBSYS_VINITHI_IND		(0x0200)
+#define U300_SYSCON_BCR_EXTRA_BOOT_OPTION_MASK			(0x01FC)
+#define U300_SYSCON_BCR_APP_BOOT_SERV_MASK			(0x0003)
+
+static void __iomem *syscon_base;
 
 /*
  * Static I/O mappings that are needed for booting the U300 platforms. The
@@ -60,411 +185,39 @@ static struct map_desc u300_io_desc[] __initdata = {
 		.length		= SZ_32K,
 		.type		= MT_DEVICE,
 	},
-	{
-		.virtual	= 0xffff2000, /* TCM memory */
-		.pfn		= __phys_to_pfn(0xffff2000),
-		.length		= SZ_16K,
-		.type		= MT_DEVICE,
-	},
-
-	/*
-	 * This overlaps with the IRQ vectors etc at 0xffff0000, so these
-	 * may have to be moved to 0x00000000 in order to use the ROM.
-	 */
-	/*
-	{
-		.virtual	= U300_BOOTROM_VIRT_BASE,
-		.pfn		= __phys_to_pfn(U300_BOOTROM_PHYS_BASE),
-		.length		= SZ_64K,
-		.type		= MT_ROM,
-	},
-	*/
 };
 
-void __init u300_map_io(void)
+static void __init u300_map_io(void)
 {
 	iotable_init(u300_io_desc, ARRAY_SIZE(u300_io_desc));
 }
 
-/*
- * Declaration of devices found on the U300 board and
- * their respective memory locations.
- */
-static struct amba_device uart0_device = {
-	.dev = {
-		.init_name = "uart0", /* Slow device at 0x3000 offset */
-		.platform_data = NULL,
-	},
-	.res = {
-		.start = U300_UART0_BASE,
-		.end   = U300_UART0_BASE + SZ_4K - 1,
-		.flags = IORESOURCE_MEM,
-	},
-	.irq = { IRQ_U300_UART0, NO_IRQ },
+static unsigned long pin_pullup_conf[] = {
+	PIN_CONF_PACKED(PIN_CONFIG_BIAS_PULL_UP, 1),
 };
 
-/* The U335 have an additional UART1 on the APP CPU */
-#ifdef CONFIG_MACH_U300_BS335
-static struct amba_device uart1_device = {
-	.dev = {
-		.init_name = "uart1", /* Fast device at 0x7000 offset */
-		.platform_data = NULL,
-	},
-	.res = {
-		.start = U300_UART1_BASE,
-		.end   = U300_UART1_BASE + SZ_4K - 1,
-		.flags = IORESOURCE_MEM,
-	},
-	.irq = { IRQ_U300_UART1, NO_IRQ },
-};
-#endif
-
-static struct amba_device pl172_device = {
-	.dev = {
-		.init_name = "pl172", /* AHB device at 0x4000 offset */
-		.platform_data = NULL,
-	},
-	.res = {
-		.start = U300_EMIF_CFG_BASE,
-		.end   = U300_EMIF_CFG_BASE + SZ_4K - 1,
-		.flags = IORESOURCE_MEM,
-	},
+static unsigned long pin_highz_conf[] = {
+	PIN_CONF_PACKED(PIN_CONFIG_BIAS_HIGH_IMPEDANCE, 0),
 };
 
-
-/*
- * Everything within this next ifdef deals with external devices connected to
- * the APP SPI bus.
- */
-static struct amba_device pl022_device = {
-	.dev = {
-		.coherent_dma_mask = ~0,
-		.init_name = "pl022", /* Fast device at 0x6000 offset */
-	},
-	.res = {
-		.start = U300_SPI_BASE,
-		.end   = U300_SPI_BASE + SZ_4K - 1,
-		.flags = IORESOURCE_MEM,
-	},
-	.irq = {IRQ_U300_SPI, NO_IRQ },
-	/*
-	 * This device has a DMA channel but the Linux driver does not use
-	 * it currently.
-	 */
+/* Pin control settings */
+static const struct pinctrl_map u300_pinmux_map[] = {
+	/* anonymous maps for chip power and EMIFs */
+	PIN_MAP_MUX_GROUP_HOG_DEFAULT("pinctrl-u300", NULL, "power"),
+	PIN_MAP_MUX_GROUP_HOG_DEFAULT("pinctrl-u300", NULL, "emif0"),
+	PIN_MAP_MUX_GROUP_HOG_DEFAULT("pinctrl-u300", NULL, "emif1"),
+	/* per-device maps for MMC/SD, SPI and UART */
+	PIN_MAP_MUX_GROUP_DEFAULT("mmci",  "pinctrl-u300", NULL, "mmc0"),
+	PIN_MAP_MUX_GROUP_DEFAULT("pl022", "pinctrl-u300", NULL, "spi0"),
+	PIN_MAP_MUX_GROUP_DEFAULT("uart0", "pinctrl-u300", NULL, "uart0"),
+	/* This pin is used for clock return rather than GPIO */
+	PIN_MAP_CONFIGS_PIN_DEFAULT("mmci", "pinctrl-u300", "PIO APP GPIO 11",
+				    pin_pullup_conf),
+	/* This pin is used for card detect */
+	PIN_MAP_CONFIGS_PIN_DEFAULT("mmci", "pinctrl-u300", "PIO MS INS",
+				    pin_highz_conf),
 };
 
-static struct amba_device mmcsd_device = {
-	.dev = {
-		.init_name = "mmci", /* Fast device at 0x1000 offset */
-		.platform_data = NULL, /* Added later */
-	},
-	.res = {
-		.start = U300_MMCSD_BASE,
-		.end   = U300_MMCSD_BASE + SZ_4K - 1,
-		.flags = IORESOURCE_MEM,
-	},
-	.irq = {IRQ_U300_MMCSD_MCIINTR0, IRQ_U300_MMCSD_MCIINTR1 },
-	/*
-	 * This device has a DMA channel but the Linux driver does not use
-	 * it currently.
-	 */
-};
-
-/*
- * The order of device declaration may be important, since some devices
- * have dependencies on other devices being initialized first.
- */
-static struct amba_device *amba_devs[] __initdata = {
-	&uart0_device,
-#ifdef CONFIG_MACH_U300_BS335
-	&uart1_device,
-#endif
-	&pl022_device,
-	&pl172_device,
-	&mmcsd_device,
-};
-
-/* Here follows a list of all hw resources that the platform devices
- * allocate. Note, clock dependencies are not included
- */
-
-static struct resource gpio_resources[] = {
-	{
-		.start = U300_GPIO_BASE,
-		.end   = (U300_GPIO_BASE + SZ_4K - 1),
-		.flags = IORESOURCE_MEM,
-	},
-	{
-		.name  = "gpio0",
-		.start = IRQ_U300_GPIO_PORT0,
-		.end   = IRQ_U300_GPIO_PORT0,
-		.flags = IORESOURCE_IRQ,
-	},
-	{
-		.name  = "gpio1",
-		.start = IRQ_U300_GPIO_PORT1,
-		.end   = IRQ_U300_GPIO_PORT1,
-		.flags = IORESOURCE_IRQ,
-	},
-	{
-		.name  = "gpio2",
-		.start = IRQ_U300_GPIO_PORT2,
-		.end   = IRQ_U300_GPIO_PORT2,
-		.flags = IORESOURCE_IRQ,
-	},
-#ifdef U300_COH901571_3
-	{
-		.name  = "gpio3",
-		.start = IRQ_U300_GPIO_PORT3,
-		.end   = IRQ_U300_GPIO_PORT3,
-		.flags = IORESOURCE_IRQ,
-	},
-	{
-		.name  = "gpio4",
-		.start = IRQ_U300_GPIO_PORT4,
-		.end   = IRQ_U300_GPIO_PORT4,
-		.flags = IORESOURCE_IRQ,
-	},
-#ifdef CONFIG_MACH_U300_BS335
-	{
-		.name  = "gpio5",
-		.start = IRQ_U300_GPIO_PORT5,
-		.end   = IRQ_U300_GPIO_PORT5,
-		.flags = IORESOURCE_IRQ,
-	},
-	{
-		.name  = "gpio6",
-		.start = IRQ_U300_GPIO_PORT6,
-		.end   = IRQ_U300_GPIO_PORT6,
-		.flags = IORESOURCE_IRQ,
-	},
-#endif /* CONFIG_MACH_U300_BS335 */
-#endif /* U300_COH901571_3 */
-};
-
-static struct resource keypad_resources[] = {
-	{
-		.start = U300_KEYPAD_BASE,
-		.end   = U300_KEYPAD_BASE + SZ_4K - 1,
-		.flags = IORESOURCE_MEM,
-	},
-	{
-		.name  = "coh901461-press",
-		.start = IRQ_U300_KEYPAD_KEYBF,
-		.end   = IRQ_U300_KEYPAD_KEYBF,
-		.flags = IORESOURCE_IRQ,
-	},
-	{
-		.name  = "coh901461-release",
-		.start = IRQ_U300_KEYPAD_KEYBR,
-		.end   = IRQ_U300_KEYPAD_KEYBR,
-		.flags = IORESOURCE_IRQ,
-	},
-};
-
-static struct resource rtc_resources[] = {
-	{
-		.start = U300_RTC_BASE,
-		.end   = U300_RTC_BASE + SZ_4K - 1,
-		.flags = IORESOURCE_MEM,
-	},
-	{
-		.start = IRQ_U300_RTC,
-		.end   = IRQ_U300_RTC,
-		.flags = IORESOURCE_IRQ,
-	},
-};
-
-/*
- * Fsmc does have IRQs: #43 and #44 (NFIF and NFIF2)
- * but these are not yet used by the driver.
- */
-static struct resource fsmc_resources[] = {
-	{
-		.start = U300_NAND_IF_PHYS_BASE,
-		.end   = U300_NAND_IF_PHYS_BASE + SZ_4K - 1,
-		.flags = IORESOURCE_MEM,
-	},
-};
-
-static struct resource i2c0_resources[] = {
-	{
-		.start = U300_I2C0_BASE,
-		.end   = U300_I2C0_BASE + SZ_4K - 1,
-		.flags = IORESOURCE_MEM,
-	},
-	{
-		.start = IRQ_U300_I2C0,
-		.end   = IRQ_U300_I2C0,
-		.flags = IORESOURCE_IRQ,
-	},
-};
-
-static struct resource i2c1_resources[] = {
-	{
-		.start = U300_I2C1_BASE,
-		.end   = U300_I2C1_BASE + SZ_4K - 1,
-		.flags = IORESOURCE_MEM,
-	},
-	{
-		.start = IRQ_U300_I2C1,
-		.end   = IRQ_U300_I2C1,
-		.flags = IORESOURCE_IRQ,
-	},
-
-};
-
-static struct resource wdog_resources[] = {
-	{
-		.start = U300_WDOG_BASE,
-		.end   = U300_WDOG_BASE + SZ_4K - 1,
-		.flags = IORESOURCE_MEM,
-	},
-	{
-		.start = IRQ_U300_WDOG,
-		.end   = IRQ_U300_WDOG,
-		.flags = IORESOURCE_IRQ,
-	}
-};
-
-/* TODO: These should be protected by suitable #ifdef's */
-static struct resource ave_resources[] = {
-	{
-		.name  = "AVE3e I/O Area",
-		.start = U300_VIDEOENC_BASE,
-		.end   = U300_VIDEOENC_BASE + SZ_512K - 1,
-		.flags = IORESOURCE_MEM,
-	},
-	{
-		.name  = "AVE3e IRQ0",
-		.start = IRQ_U300_VIDEO_ENC_0,
-		.end   = IRQ_U300_VIDEO_ENC_0,
-		.flags = IORESOURCE_IRQ,
-	},
-	{
-		.name  = "AVE3e IRQ1",
-		.start = IRQ_U300_VIDEO_ENC_1,
-		.end   = IRQ_U300_VIDEO_ENC_1,
-		.flags = IORESOURCE_IRQ,
-	},
-	{
-		.name  = "AVE3e Physmem Area",
-		.start = 0, /* 0 will be remapped to reserved memory */
-		.end   = SZ_1M - 1,
-		.flags = IORESOURCE_MEM,
-	},
-	/*
-	 * The AVE3e requires two regions of 256MB that it considers
-	 * "invisible". The hardware will not be able to access these
-	 * adresses, so they should never point to system RAM.
-	 */
-	{
-		.name  = "AVE3e Reserved 0",
-		.start = 0xd0000000,
-		.end   = 0xd0000000 + SZ_256M - 1,
-		.flags = IORESOURCE_MEM,
-	},
-	{
-		.name  = "AVE3e Reserved 1",
-		.start = 0xe0000000,
-		.end   = 0xe0000000 + SZ_256M - 1,
-		.flags = IORESOURCE_MEM,
-	},
-};
-
-static struct platform_device wdog_device = {
-	.name = "wdog",
-	.id = -1,
-	.num_resources = ARRAY_SIZE(wdog_resources),
-	.resource = wdog_resources,
-};
-
-static struct platform_device i2c0_device = {
-	.name = "stu300",
-	.id = 0,
-	.num_resources = ARRAY_SIZE(i2c0_resources),
-	.resource = i2c0_resources,
-};
-
-static struct platform_device i2c1_device = {
-	.name = "stu300",
-	.id = 1,
-	.num_resources = ARRAY_SIZE(i2c1_resources),
-	.resource = i2c1_resources,
-};
-
-static struct platform_device gpio_device = {
-	.name = "u300-gpio",
-	.id = -1,
-	.num_resources = ARRAY_SIZE(gpio_resources),
-	.resource = gpio_resources,
-};
-
-static struct platform_device keypad_device = {
-	.name = "keypad",
-	.id = -1,
-	.num_resources = ARRAY_SIZE(keypad_resources),
-	.resource = keypad_resources,
-};
-
-static struct platform_device rtc_device = {
-	.name = "rtc-coh901331",
-	.id = -1,
-	.num_resources = ARRAY_SIZE(rtc_resources),
-	.resource = rtc_resources,
-};
-
-static struct platform_device fsmc_device = {
-	.name = "nandif",
-	.id = -1,
-	.num_resources = ARRAY_SIZE(fsmc_resources),
-	.resource = fsmc_resources,
-};
-
-static struct platform_device ave_device = {
-	.name = "video_enc",
-	.id = -1,
-	.num_resources = ARRAY_SIZE(ave_resources),
-	.resource = ave_resources,
-};
-
-/*
- * Notice that AMBA devices are initialized before platform devices.
- *
- */
-static struct platform_device *platform_devs[] __initdata = {
-	&i2c0_device,
-	&i2c1_device,
-	&keypad_device,
-	&rtc_device,
-	&gpio_device,
-	&fsmc_device,
-	&wdog_device,
-	&ave_device
-};
-
-
-/*
- * Interrupts: the U300 platforms have two pl190 ARM PrimeCells connected
- * together so some interrupts are connected to the first one and some
- * to the second one.
- */
-void __init u300_init_irq(void)
-{
-	u32 mask[2] = {0, 0};
-	int i;
-
-	for (i = 0; i < NR_IRQS; i++)
-		set_bit(i, (unsigned long *) &mask[0]);
-	u300_enable_intcon_clock();
-	vic_init((void __iomem *) U300_INTCON0_VBASE, 0, mask[0], mask[0]);
-	vic_init((void __iomem *) U300_INTCON1_VBASE, 32, mask[1], mask[1]);
-}
-
-
-/*
- * U300 platforms peripheral handling
- */
 struct db_chip {
 	u16 chipid;
 	const char *name;
@@ -521,7 +274,7 @@ static void __init u300_init_check_chip(void)
 	const char unknown[] = "UNKNOWN";
 
 	/* Read out and print chip ID */
-	val = readw(U300_SYSCON_VBASE + U300_SYSCON_CIDR);
+	val = readw(syscon_base + U300_SYSCON_CIDR);
 	/* This is in funky bigendian order... */
 	val = (val & 0xFFU) << 8 | (val >> 8);
 	chip = db_chips;
@@ -536,124 +289,125 @@ static void __init u300_init_check_chip(void)
 	printk(KERN_INFO "Initializing U300 system on %s baseband chip " \
 	       "(chip ID 0x%04x)\n", chipname, val);
 
-#ifdef CONFIG_MACH_U300_BS26
-	if ((val & 0xFF00U) != 0xc800) {
-		printk(KERN_ERR "Platform configured for BS25/BS26 " \
-		       "with DB3150 but %s detected, expect problems!",
-		       chipname);
-	}
-#endif
-#ifdef CONFIG_MACH_U300_BS330
-	if ((val & 0xFF00U) != 0xd800) {
-		printk(KERN_ERR "Platform configured for BS330 " \
-		       "with DB3200 but %s detected, expect problems!",
-		       chipname);
-	}
-#endif
-#ifdef CONFIG_MACH_U300_BS335
 	if ((val & 0xFF00U) != 0xf000 && (val & 0xFF00U) != 0xf100) {
-		printk(KERN_ERR "Platform configured for BS365 " \
+		printk(KERN_ERR "Platform configured for BS335 " \
 		       " with DB3350 but %s detected, expect problems!",
 		       chipname);
 	}
-#endif
-#ifdef CONFIG_MACH_U300_BS365
-	if ((val & 0xFF00U) != 0xe800) {
-		printk(KERN_ERR "Platform configured for BS365 " \
-		       "with DB3210 but %s detected, expect problems!",
-		       chipname);
-	}
-#endif
-
-
 }
 
-/*
- * Some devices and their resources require reserved physical memory from
- * the end of the available RAM. This function traverses the list of devices
- * and assigns actual adresses to these.
- */
-static void __init u300_assign_physmem(void)
+/* Forward declare this function from the watchdog */
+void coh901327_watchdog_reset(void);
+
+static void u300_restart(enum reboot_mode mode, const char *cmd)
 {
-	unsigned long curr_start = __pa(high_memory);
-	int i, j;
-
-	for (i = 0; i < ARRAY_SIZE(platform_devs); i++) {
-		for (j = 0; j < platform_devs[i]->num_resources; j++) {
-			struct resource *const res =
-			  &platform_devs[i]->resource[j];
-
-			if (IORESOURCE_MEM == res->flags &&
-				     0 == res->start) {
-				res->start  = curr_start;
-				res->end   += curr_start;
-				curr_start += (res->end - res->start + 1);
-
-				printk(KERN_INFO "core.c: Mapping RAM " \
-				       "%#x-%#x to device %s:%s\n",
-					res->start, res->end,
-				       platform_devs[i]->name, res->name);
-			}
-		}
+	switch (mode) {
+	case REBOOT_SOFT:
+	case REBOOT_HARD:
+#ifdef CONFIG_COH901327_WATCHDOG
+		coh901327_watchdog_reset();
+#endif
+		break;
+	default:
+		/* Do nothing */
+		break;
 	}
+	/* Wait for system do die/reset. */
+	while (1);
 }
 
-void __init u300_init_devices(void)
+/* These are mostly to get the right device names for the clock lookups */
+static struct of_dev_auxdata u300_auxdata_lookup[] __initdata = {
+	OF_DEV_AUXDATA("stericsson,pinctrl-u300", U300_SYSCON_BASE,
+		"pinctrl-u300", NULL),
+	OF_DEV_AUXDATA("stericsson,gpio-coh901", U300_GPIO_BASE,
+		"u300-gpio", NULL),
+	OF_DEV_AUXDATA("stericsson,coh901327", U300_WDOG_BASE,
+		"coh901327_wdog", NULL),
+	OF_DEV_AUXDATA("stericsson,coh901331", U300_RTC_BASE,
+		"rtc-coh901331", NULL),
+	OF_DEV_AUXDATA("stericsson,coh901318", U300_DMAC_BASE,
+		"coh901318", NULL),
+	OF_DEV_AUXDATA("stericsson,fsmc-nand", U300_NAND_IF_PHYS_BASE,
+		"fsmc-nand", NULL),
+	OF_DEV_AUXDATA("arm,primecell", U300_UART0_BASE,
+		"uart0", NULL),
+	OF_DEV_AUXDATA("arm,primecell", U300_UART1_BASE,
+		"uart1", NULL),
+	OF_DEV_AUXDATA("arm,primecell", U300_SPI_BASE,
+		"pl022", NULL),
+	OF_DEV_AUXDATA("st,ddci2c", U300_I2C0_BASE,
+		"stu300.0", NULL),
+	OF_DEV_AUXDATA("st,ddci2c", U300_I2C1_BASE,
+		"stu300.1", NULL),
+	OF_DEV_AUXDATA("arm,primecell", U300_MMCSD_BASE,
+		"mmci", NULL),
+	{ /* sentinel */ },
+};
+
+static void __init u300_init_irq_dt(void)
 {
-	int i;
+	struct device_node *syscon;
+	struct clk *clk;
+
+	syscon = of_find_node_by_path("/syscon@c0011000");
+	if (!syscon) {
+		pr_crit("could not find syscon node\n");
+		return;
+	}
+	syscon_base = of_iomap(syscon, 0);
+	if (!syscon_base) {
+		pr_crit("could not remap syscon\n");
+		return;
+	}
+	/* initialize clocking early, we want to clock the INTCON */
+	u300_clk_init(syscon_base);
+
+	/* Bootstrap EMIF and SEMI clocks */
+	clk = clk_get_sys("pl172", NULL);
+	BUG_ON(IS_ERR(clk));
+	clk_prepare_enable(clk);
+	clk = clk_get_sys("semi", NULL);
+	BUG_ON(IS_ERR(clk));
+	clk_prepare_enable(clk);
+
+	/* Clock the interrupt controller */
+	clk = clk_get_sys("intcon", NULL);
+	BUG_ON(IS_ERR(clk));
+	clk_prepare_enable(clk);
+
+	irqchip_init();
+}
+
+static void __init u300_init_machine_dt(void)
+{
 	u16 val;
 
 	/* Check what platform we run and print some status information */
 	u300_init_check_chip();
 
-	/* Set system to run at PLL208, max performance, a known state. */
-	val = readw(U300_SYSCON_VBASE + U300_SYSCON_CCR);
-	val &= ~U300_SYSCON_CCR_CLKING_PERFORMANCE_MASK;
-	writew(val, U300_SYSCON_VBASE + U300_SYSCON_CCR);
-	/* Wait for the PLL208 to lock if not locked in yet */
-	while (!(readw(U300_SYSCON_VBASE + U300_SYSCON_CSR) &
-		 U300_SYSCON_CSR_PLL208_LOCK_IND));
-	/* Initialize SPI device with some board specifics */
-	u300_spi_init(&pl022_device);
+	/* Initialize pinmuxing */
+	pinctrl_register_mappings(u300_pinmux_map,
+				  ARRAY_SIZE(u300_pinmux_map));
 
-	/* Register the AMBA devices in the AMBA bus abstraction layer */
-	u300_clock_primecells();
-	for (i = 0; i < ARRAY_SIZE(amba_devs); i++) {
-		struct amba_device *d = amba_devs[i];
-		amba_device_register(d, &iomem_resource);
-	}
-	u300_unclock_primecells();
+	of_platform_default_populate(NULL, u300_auxdata_lookup, NULL);
 
-	u300_assign_physmem();
-
-	/* Register subdevices on the I2C buses */
-	u300_i2c_register_board_devices();
-
-	/* Register subdevices on the SPI bus */
-	u300_spi_register_board_devices();
-
-	/* Register the platform devices */
-	platform_add_devices(platform_devs, ARRAY_SIZE(platform_devs));
-
-#ifndef CONFIG_MACH_U300_SEMI_IS_SHARED
-	/*
-	 * Enable SEMI self refresh. Self-refresh of the SDRAM is entered when
-	 * both subsystems are requesting this mode.
-	 * If we not share the Acc SDRAM, this is never the case. Therefore
-	 * enable it here from the App side.
-	 */
-	val = readw(U300_SYSCON_VBASE + U300_SYSCON_SMCR) |
+	/* Enable SEMI self refresh */
+	val = readw(syscon_base + U300_SYSCON_SMCR) |
 		U300_SYSCON_SMCR_SEMI_SREFREQ_ENABLE;
-	writew(val, U300_SYSCON_VBASE + U300_SYSCON_SMCR);
-#endif /* CONFIG_MACH_U300_SEMI_IS_SHARED */
+	writew(val, syscon_base + U300_SYSCON_SMCR);
 }
 
-static int core_module_init(void)
-{
-	/*
-	 * This needs to be initialized later: it needs the input framework
-	 * to be initialized first.
-	 */
-	return mmc_init(&mmcsd_device);
-}
-module_init(core_module_init);
+static const char * u300_board_compat[] = {
+	"stericsson,u300",
+	NULL,
+};
+
+DT_MACHINE_START(U300_DT, "U300 S335/B335 (Device Tree)")
+	.map_io		= u300_map_io,
+	.init_irq	= u300_init_irq_dt,
+	.init_time	= timer_probe,
+	.init_machine	= u300_init_machine_dt,
+	.restart	= u300_restart,
+	.dt_compat      = u300_board_compat,
+MACHINE_END

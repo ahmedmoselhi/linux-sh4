@@ -1,46 +1,14 @@
+// SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0
 /******************************************************************************
  *
  * Module Name: evxfregn - External Interfaces, ACPI Operation Regions and
  *                         Address Spaces.
  *
+ * Copyright (C) 2000 - 2020, Intel Corp.
+ *
  *****************************************************************************/
 
-/*
- * Copyright (C) 2000 - 2008, Intel Corp.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions, and the following disclaimer,
- *    without modification.
- * 2. Redistributions in binary form must reproduce at minimum a disclaimer
- *    substantially similar to the "NO WARRANTY" disclaimer below
- *    ("Disclaimer") and any redistribution must be conditioned upon
- *    including a substantially similar Disclaimer requirement for further
- *    binary redistribution.
- * 3. Neither the names of the above-listed copyright holders nor the names
- *    of any contributors may be used to endorse or promote products derived
- *    from this software without specific prior written permission.
- *
- * Alternatively, this software may be distributed under the terms of the
- * GNU General Public License ("GPL") version 2 as published by the Free
- * Software Foundation.
- *
- * NO WARRANTY
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
- * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
- * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGES.
- */
+#define EXPORT_ACPI_INTERFACES
 
 #include <acpi/acpi.h>
 #include "accommon.h"
@@ -54,15 +22,21 @@ ACPI_MODULE_NAME("evxfregn")
  *
  * FUNCTION:    acpi_install_address_space_handler
  *
- * PARAMETERS:  Device          - Handle for the device
+ * PARAMETERS:  device          - Handle for the device
  *              space_id        - The address space ID
- *              Handler         - Address of the handler
- *              Setup           - Address of the setup function
- *              Context         - Value passed to the handler on each access
+ *              handler         - Address of the handler
+ *              setup           - Address of the setup function
+ *              context         - Value passed to the handler on each access
  *
  * RETURN:      Status
  *
  * DESCRIPTION: Install a handler for all op_regions of a given space_id.
+ *
+ * NOTE: This function should only be called after acpi_enable_subsystem has
+ * been called. This is because any _REG methods associated with the Space ID
+ * are executed here, and these methods can only be safely executed after
+ * the default handlers have been installed and the hardware has been
+ * initialized (via acpi_enable_subsystem.)
  *
  ******************************************************************************/
 acpi_status
@@ -89,7 +63,7 @@ acpi_install_address_space_handler(acpi_handle device,
 
 	/* Convert and validate the device handle */
 
-	node = acpi_ns_map_handle_to_node(device);
+	node = acpi_ns_validate_handle(device);
 	if (!node) {
 		status = AE_BAD_PARAMETER;
 		goto unlock_and_exit;
@@ -106,9 +80,9 @@ acpi_install_address_space_handler(acpi_handle device,
 
 	/* Run all _REG methods for this address space */
 
-	status = acpi_ev_execute_reg_methods(node, space_id);
+	acpi_ev_execute_reg_methods(node, space_id, ACPI_REG_CONNECT);
 
-      unlock_and_exit:
+unlock_and_exit:
 	(void)acpi_ut_release_mutex(ACPI_MTX_NAMESPACE);
 	return_ACPI_STATUS(status);
 }
@@ -119,9 +93,9 @@ ACPI_EXPORT_SYMBOL(acpi_install_address_space_handler)
  *
  * FUNCTION:    acpi_remove_address_space_handler
  *
- * PARAMETERS:  Device          - Handle for the device
+ * PARAMETERS:  device          - Handle for the device
  *              space_id        - The address space ID
- *              Handler         - Address of the handler
+ *              handler         - Address of the handler
  *
  * RETURN:      Status
  *
@@ -155,7 +129,7 @@ acpi_remove_address_space_handler(acpi_handle device,
 
 	/* Convert and validate the device handle */
 
-	node = acpi_ns_map_handle_to_node(device);
+	node = acpi_ns_validate_handle(device);
 	if (!node ||
 	    ((node->type != ACPI_TYPE_DEVICE) &&
 	     (node->type != ACPI_TYPE_PROCESSOR) &&
@@ -175,8 +149,8 @@ acpi_remove_address_space_handler(acpi_handle device,
 
 	/* Find the address handler the user requested */
 
-	handler_obj = obj_desc->device.handler;
-	last_obj_ptr = &obj_desc->device.handler;
+	handler_obj = obj_desc->common_notify.handler;
+	last_obj_ptr = &obj_desc->common_notify.handler;
 	while (handler_obj) {
 
 		/* We have a handler, see if user requested this one */
@@ -219,7 +193,6 @@ acpi_remove_address_space_handler(acpi_handle device,
 				 */
 				region_obj =
 				    handler_obj->address_space.region_list;
-
 			}
 
 			/* Remove this Handler object from the list */
@@ -247,7 +220,7 @@ acpi_remove_address_space_handler(acpi_handle device,
 
 	status = AE_NOT_EXIST;
 
-      unlock_and_exit:
+unlock_and_exit:
 	(void)acpi_ut_release_mutex(ACPI_MTX_NAMESPACE);
 	return_ACPI_STATUS(status);
 }

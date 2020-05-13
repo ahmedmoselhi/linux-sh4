@@ -1,7 +1,9 @@
-Started by Paul Jackson <pj@sgi.com>
-
+====================
 The robust futex ABI
---------------------
+====================
+
+:Author: Started by Paul Jackson <pj@sgi.com>
+
 
 Robust_futexes provide a mechanism that is used in addition to normal
 futexes, for kernel assist of cleanup of held locks on task exit.
@@ -32,7 +34,7 @@ probably causing deadlock or other such failure of the other threads
 waiting on the same locks.
 
 A thread that anticipates possibly using robust_futexes should first
-issue the system call:
+issue the system call::
 
     asmlinkage long
     sys_set_robust_list(struct robust_list_head __user *head, size_t len);
@@ -59,8 +61,8 @@ setup that list.
   address of the associated 'lock entry', plus or minus, of what will
   be called the 'lock word', from that 'lock entry'.  The 'lock word'
   is always a 32 bit word, unlike the other words above.  The 'lock
-  word' holds 3 flag bits in the upper 3 bits, and the thread id (TID)
-  of the thread holding the lock in the bottom 29 bits.  See further
+  word' holds 2 flag bits in the upper 2 bits, and the thread id (TID)
+  of the thread holding the lock in the bottom 30 bits.  See further
   below for a description of the flag bits.
 
   The third word, called 'list_op_pending', contains transient copy of
@@ -91,7 +93,7 @@ that lock using the futex mechanism.
 When a thread has invoked the above system call to indicate it
 anticipates using robust_futexes, the kernel stores the passed in 'head'
 pointer for that task.  The task may retrieve that value later on by
-using the system call:
+using the system call::
 
     asmlinkage long
     sys_get_robust_list(int pid, struct robust_list_head __user **head_ptr,
@@ -126,7 +128,7 @@ that thread's robust_futex linked lock list a given time.
 A given futex lock structure in a user shared memory region may be held
 at different times by any of the threads with access to that region. The
 thread currently holding such a lock, if any, is marked with the threads
-TID in the lower 29 bits of the 'lock word'.
+TID in the lower 30 bits of the 'lock word'.
 
 When adding or removing a lock from its list of held locks, in order for
 the kernel to correctly handle lock cleanup regardless of when the task
@@ -135,23 +137,25 @@ manipulating this list), the user code must observe the following
 protocol on 'lock entry' insertion and removal:
 
 On insertion:
+
  1) set the 'list_op_pending' word to the address of the 'lock entry'
     to be inserted,
  2) acquire the futex lock,
- 3) add the lock entry, with its thread id (TID) in the bottom 29 bits
+ 3) add the lock entry, with its thread id (TID) in the bottom 30 bits
     of the 'lock word', to the linked list starting at 'head', and
  4) clear the 'list_op_pending' word.
 
 On removal:
+
  1) set the 'list_op_pending' word to the address of the 'lock entry'
     to be removed,
  2) remove the lock entry for this lock from the 'head' list,
- 2) release the futex lock, and
- 2) clear the 'lock_op_pending' word.
+ 3) release the futex lock, and
+ 4) clear the 'lock_op_pending' word.
 
 On exit, the kernel will consider the address stored in
 'list_op_pending' and the address of each 'lock word' found by walking
-the list starting at 'head'.  For each such address, if the bottom 29
+the list starting at 'head'.  For each such address, if the bottom 30
 bits of the 'lock word' at offset 'offset' from that address equals the
 exiting threads TID, then the kernel will do two things:
 
@@ -176,7 +180,5 @@ any point:
     future kernel configuration changes) elements.
 
 When the kernel sees a list entry whose 'lock word' doesn't have the
-current threads TID in the lower 29 bits, it does nothing with that
+current threads TID in the lower 30 bits, it does nothing with that
 entry, and goes on to the next entry.
-
-Bit 29 (0x20000000) of the 'lock word' is reserved for future use.

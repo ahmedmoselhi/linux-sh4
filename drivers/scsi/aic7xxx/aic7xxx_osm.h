@@ -82,11 +82,6 @@
 /* Core SCSI definitions */
 #define AIC_LIB_PREFIX ahc
 
-/* Name space conflict with BSD queue macros */
-#ifdef LIST_HEAD
-#undef LIST_HEAD
-#endif
-
 #include "cam.h"
 #include "queue.h"
 #include "scsi_message.h"
@@ -368,13 +363,6 @@ struct ahc_platform_data {
 	resource_size_t 	 mem_busaddr;	/* Mem Base Addr */
 };
 
-/************************** OS Utility Wrappers *******************************/
-#define printf printk
-#define M_NOWAIT GFP_ATOMIC
-#define M_WAITOK 0
-#define malloc(size, type, flags) kmalloc(size, flags)
-#define free(ptr, type) kfree(ptr)
-
 void ahc_delay(long);
 
 
@@ -389,14 +377,6 @@ void ahc_insb(struct ahc_softc * ahc, long port,
 /**************************** Initialization **********************************/
 int		ahc_linux_register_host(struct ahc_softc *,
 					struct scsi_host_template *);
-
-/*************************** Pretty Printing **********************************/
-struct info_str {
-	char *buffer;
-	int length;
-	off_t offset;
-	int pos;
-};
 
 /******************************** Locking *************************************/
 /* Lock protecting internal data structures */
@@ -530,8 +510,8 @@ ahc_flush_device_writes(struct ahc_softc *ahc)
 }
 
 /**************************** Proc FS Support *********************************/
-int	ahc_linux_proc_info(struct Scsi_Host *, char *, char **,
-			    off_t, int, int);
+int	ahc_proc_write_seeprom(struct Scsi_Host *, char *, int);
+int	ahc_linux_show_info(struct seq_file *, struct Scsi_Host *);
 
 /*************************** Domain Validation ********************************/
 /*********************** Transaction Access Wrappers *************************/
@@ -708,7 +688,6 @@ void	ahc_done(struct ahc_softc*, struct scb*);
 void	ahc_send_async(struct ahc_softc *, char channel,
 		       u_int target, u_int lun, ac_code);
 void	ahc_print_path(struct ahc_softc *, struct scb *);
-void	ahc_platform_dump_card_state(struct ahc_softc *ahc);
 
 #ifdef CONFIG_PCI
 #define AHC_PCI_CONFIG 1

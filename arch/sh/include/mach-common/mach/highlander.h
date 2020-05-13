@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_SH_RENESAS_R7780RP_H
 #define __ASM_SH_RENESAS_R7780RP_H
 
@@ -17,14 +18,14 @@
 #define PA_IRLPRI4      (PA_BCR+0x000a) /* Interrupt Priorty 4 */
 #define PA_RSTCTL       (PA_BCR+0x000c) /* Reset Control */
 #define PA_PCIBD        (PA_BCR+0x000e) /* PCI Board detect control */
-#define PA_PCICD        (PA_BCR+0x0010) /* PCI Conector detect control */
+#define PA_PCICD        (PA_BCR+0x0010) /* PCI Connector detect control */
 #define PA_EXTGIO       (PA_BCR+0x0016) /* Extension GPIO Control */
 #define PA_IVDRMON      (PA_BCR+0x0018) /* iVDR Moniter control */
 #define PA_IVDRCTL      (PA_BCR+0x001a) /* iVDR control */
 #define PA_OBLED        (PA_BCR+0x001c) /* On Board LED control */
 #define PA_OBSW         (PA_BCR+0x001e) /* On Board Switch control */
 #define PA_AUDIOSEL     (PA_BCR+0x0020) /* Sound Interface Select control */
-#define PA_EXTPLR       (PA_BCR+0x001e) /* Extention Pin Polarity control */
+#define PA_EXTPLR       (PA_BCR+0x001e) /* Extension Pin Polarity control */
 #define PA_TPCTL        (PA_BCR+0x0100) /* Touch Panel Access control */
 #define PA_TPDCKCTL     (PA_BCR+0x0102) /* Touch Panel Access data control */
 #define PA_TPCTLCLR     (PA_BCR+0x0104) /* Touch Panel Access control */
@@ -79,7 +80,7 @@
 #define	PA_SDPOW	(PA_BCR+0x0004)	/* SD Power control */
 #define	PA_RSTCTL	(PA_BCR+0x0006)	/* Device Reset control */
 #define	PA_PCIBD	(PA_BCR+0x0008)	/* PCI Board detect control */
-#define	PA_PCICD	(PA_BCR+0x000a)	/* PCI Conector detect control */
+#define	PA_PCICD	(PA_BCR+0x000a)	/* PCI Connector detect control */
 #define	PA_ZIGIO1	(PA_BCR+0x000c)	/* Zigbee IO control 1 */
 #define	PA_ZIGIO2	(PA_BCR+0x000e)	/* Zigbee IO control 2 */
 #define	PA_ZIGIO3	(PA_BCR+0x0010)	/* Zigbee IO control 3 */
@@ -89,7 +90,7 @@
 #define PA_OBLED	(PA_BCR+0x0018)	/* On Board LED control */
 #define PA_OBSW		(PA_BCR+0x001a)	/* On Board Switch control */
 #define PA_AUDIOSEL	(PA_BCR+0x001c)	/* Sound Interface Select control */
-#define PA_EXTPLR	(PA_BCR+0x001e)	/* Extention Pin Polarity control */
+#define PA_EXTPLR	(PA_BCR+0x001e)	/* Extension Pin Polarity control */
 #define PA_TPCTL	(PA_BCR+0x0100)	/* Touch Panel Access control */
 #define PA_TPDCKCTL	(PA_BCR+0x0102)	/* Touch Panel Access data control */
 #define PA_TPCTLCLR	(PA_BCR+0x0104)	/* Touch Panel Access control */

@@ -1,5 +1,6 @@
-#ifndef _CAN_PLATFORM_SJA1000_H_
-#define _CAN_PLATFORM_SJA1000_H_
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef _CAN_PLATFORM_SJA1000_H
+#define _CAN_PLATFORM_SJA1000_H
 
 /* clock divider register */
 #define CDR_CLKOUT_MASK 0x07
@@ -26,10 +27,10 @@
 #define OCR_TX_SHIFT      2
 
 struct sja1000_platform_data {
-	u32 clock;	/* CAN bus oscillator frequency in Hz */
+	u32 osc_freq;	/* CAN bus oscillator frequency in Hz */
 
 	u8 ocr;		/* output control register */
 	u8 cdr;		/* clock divider register */
 };
 
-#endif	/* !_CAN_PLATFORM_SJA1000_H_ */
+#endif	/* !_CAN_PLATFORM_SJA1000_H */

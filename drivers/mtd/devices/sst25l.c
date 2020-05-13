@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * sst25l.c
  *
@@ -5,21 +6,16 @@
  *
  * Copyright © 2009 Bluewater Systems Ltd
  * Author: Andre Renaud <andre@bluewatersys.com>
- * Author: Ryan Mallon <ryan@bluewatersys.com>
+ * Author: Ryan Mallon
  *
  * Based on m25p80.c
- *
- * This code is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  */
 
-#include <linux/init.h>
 #include <linux/module.h>
 #include <linux/device.h>
 #include <linux/mutex.h>
 #include <linux/interrupt.h>
+#include <linux/slab.h>
 #include <linux/sched.h>
 
 #include <linux/mtd/mtd.h>
@@ -51,8 +47,6 @@ struct sst25l_flash {
 	struct spi_device	*spi;
 	struct mutex		lock;
 	struct mtd_info		mtd;
-
-	int 			partitioned;
 };
 
 struct flash_info {
@@ -65,22 +59,32 @@ struct flash_info {
 
 #define to_sst25l_flash(x) container_of(x, struct sst25l_flash, mtd)
 
-static struct flash_info __initdata sst25l_flash_info[] = {
+static struct flash_info sst25l_flash_info[] = {
 	{"sst25lf020a", 0xbf43, 256, 1024, 4096},
 	{"sst25lf040a",	0xbf44,	256, 2048, 4096},
 };
 
 static int sst25l_status(struct sst25l_flash *flash, int *status)
 {
-	unsigned char command, response;
+	struct spi_message m;
+	struct spi_transfer t;
+	unsigned char cmd_resp[2];
 	int err;
 
-	command = SST25L_CMD_RDSR;
-	err = spi_write_then_read(flash->spi, &command, 1, &response, 1);
+	spi_message_init(&m);
+	memset(&t, 0, sizeof(struct spi_transfer));
+
+	cmd_resp[0] = SST25L_CMD_RDSR;
+	cmd_resp[1] = 0xff;
+	t.tx_buf = cmd_resp;
+	t.rx_buf = cmd_resp;
+	t.len = sizeof(cmd_resp);
+	spi_message_add_tail(&t, &m);
+	err = spi_sync(flash->spi, &m);
 	if (err < 0)
 		return err;
 
-	*status = response;
+	*status = cmd_resp[1];
 	return 0;
 }
 
@@ -166,9 +170,6 @@ static int sst25l_erase(struct mtd_info *mtd, struct erase_info *instr)
 	int err;
 
 	/* Sanity checks */
-	if (instr->addr + instr->len > flash->mtd.size)
-		return -EINVAL;
-
 	if ((uint32_t)instr->len % mtd->erasesize)
 		return -EINVAL;
 
@@ -190,7 +191,6 @@ static int sst25l_erase(struct mtd_info *mtd, struct erase_info *instr)
 		err = sst25l_erase_sector(flash, addr);
 		if (err) {
 			mutex_unlock(&flash->lock);
-			instr->state = MTD_ERASE_FAILED;
 			dev_err(&flash->spi->dev, "Erase failed\n");
 			return err;
 		}
@@ -200,8 +200,6 @@ static int sst25l_erase(struct mtd_info *mtd, struct erase_info *instr)
 
 	mutex_unlock(&flash->lock);
 
-	instr->state = MTD_ERASE_DONE;
-	mtd_erase_callback(instr);
 	return 0;
 }
 
@@ -213,16 +211,6 @@ static int sst25l_read(struct mtd_info *mtd, loff_t from, size_t len,
 	struct spi_message message;
 	unsigned char command[4];
 	int ret;
-
-	/* Sanity checking */
-	if (len == 0)
-		return 0;
-
-	if (from + len > flash->mtd.size)
-		return -EINVAL;
-
-	if (retlen)
-		*retlen = 0;
 
 	spi_message_init(&message);
 	memset(&transfer, 0, sizeof(transfer));
@@ -264,13 +252,6 @@ static int sst25l_write(struct mtd_info *mtd, loff_t to, size_t len,
 	struct sst25l_flash *flash = to_sst25l_flash(mtd);
 	int i, j, ret, bytes, copied = 0;
 	unsigned char command[5];
-
-	/* Sanity checks */
-	if (!len)
-		return 0;
-
-	if (to + len > flash->mtd.size)
-		return -EINVAL;
 
 	if ((uint32_t)to % mtd->writesize)
 		return -EINVAL;
@@ -324,36 +305,35 @@ out:
 	return ret;
 }
 
-static struct flash_info *__init sst25l_match_device(struct spi_device *spi)
+static struct flash_info *sst25l_match_device(struct spi_device *spi)
 {
 	struct flash_info *flash_info = NULL;
-	unsigned char command[4], response;
+	struct spi_message m;
+	struct spi_transfer t;
+	unsigned char cmd_resp[6];
 	int i, err;
 	uint16_t id;
 
-	command[0] = SST25L_CMD_READ_ID;
-	command[1] = 0;
-	command[2] = 0;
-	command[3] = 0;
-	err = spi_write_then_read(spi, command, sizeof(command), &response, 1);
+	spi_message_init(&m);
+	memset(&t, 0, sizeof(struct spi_transfer));
+
+	cmd_resp[0] = SST25L_CMD_READ_ID;
+	cmd_resp[1] = 0;
+	cmd_resp[2] = 0;
+	cmd_resp[3] = 0;
+	cmd_resp[4] = 0xff;
+	cmd_resp[5] = 0xff;
+	t.tx_buf = cmd_resp;
+	t.rx_buf = cmd_resp;
+	t.len = sizeof(cmd_resp);
+	spi_message_add_tail(&t, &m);
+	err = spi_sync(spi, &m);
 	if (err < 0) {
-		dev_err(&spi->dev, "error reading device id msb\n");
+		dev_err(&spi->dev, "error reading device id\n");
 		return NULL;
 	}
 
-	id = response << 8;
-
-	command[0] = SST25L_CMD_READ_ID;
-	command[1] = 0;
-	command[2] = 0;
-	command[3] = 1;
-	err = spi_write_then_read(spi, command, sizeof(command), &response, 1);
-	if (err < 0) {
-		dev_err(&spi->dev, "error reading device id lsb\n");
-		return NULL;
-	}
-
-	id |= response;
+	id = (cmd_resp[4] << 8) | cmd_resp[5];
 
 	for (i = 0; i < ARRAY_SIZE(sst25l_flash_info); i++)
 		if (sst25l_flash_info[i].device_id == id)
@@ -365,149 +345,77 @@ static struct flash_info *__init sst25l_match_device(struct spi_device *spi)
 	return flash_info;
 }
 
-static int __init sst25l_probe(struct spi_device *spi)
+static int sst25l_probe(struct spi_device *spi)
 {
 	struct flash_info *flash_info;
 	struct sst25l_flash *flash;
 	struct flash_platform_data *data;
-	int ret, i;
+	int ret;
 
 	flash_info = sst25l_match_device(spi);
 	if (!flash_info)
 		return -ENODEV;
 
-	flash = kzalloc(sizeof(struct sst25l_flash), GFP_KERNEL);
+	flash = devm_kzalloc(&spi->dev, sizeof(*flash), GFP_KERNEL);
 	if (!flash)
 		return -ENOMEM;
 
 	flash->spi = spi;
 	mutex_init(&flash->lock);
-	dev_set_drvdata(&spi->dev, flash);
+	spi_set_drvdata(spi, flash);
 
-	data = spi->dev.platform_data;
+	data = dev_get_platdata(&spi->dev);
 	if (data && data->name)
 		flash->mtd.name = data->name;
-	else
-		flash->mtd.name = dev_name(&spi->dev);
 
+	flash->mtd.dev.parent   = &spi->dev;
 	flash->mtd.type		= MTD_NORFLASH;
 	flash->mtd.flags	= MTD_CAP_NORFLASH;
 	flash->mtd.erasesize	= flash_info->erase_size;
 	flash->mtd.writesize	= flash_info->page_size;
+	flash->mtd.writebufsize	= flash_info->page_size;
 	flash->mtd.size		= flash_info->page_size * flash_info->nr_pages;
-	flash->mtd.erase	= sst25l_erase;
-	flash->mtd.read		= sst25l_read;
-	flash->mtd.write 	= sst25l_write;
+	flash->mtd._erase	= sst25l_erase;
+	flash->mtd._read		= sst25l_read;
+	flash->mtd._write 	= sst25l_write;
 
 	dev_info(&spi->dev, "%s (%lld KiB)\n", flash_info->name,
 		 (long long)flash->mtd.size >> 10);
 
-	DEBUG(MTD_DEBUG_LEVEL2,
-	      "mtd .name = %s, .size = 0x%llx (%lldMiB) "
+	pr_debug("mtd .name = %s, .size = 0x%llx (%lldMiB) "
 	      ".erasesize = 0x%.8x (%uKiB) .numeraseregions = %d\n",
 	      flash->mtd.name,
 	      (long long)flash->mtd.size, (long long)(flash->mtd.size >> 20),
 	      flash->mtd.erasesize, flash->mtd.erasesize / 1024,
 	      flash->mtd.numeraseregions);
 
-	if (flash->mtd.numeraseregions)
-		for (i = 0; i < flash->mtd.numeraseregions; i++)
-			DEBUG(MTD_DEBUG_LEVEL2,
-			      "mtd.eraseregions[%d] = { .offset = 0x%llx, "
-			      ".erasesize = 0x%.8x (%uKiB), "
-			      ".numblocks = %d }\n",
-			      i, (long long)flash->mtd.eraseregions[i].offset,
-			      flash->mtd.eraseregions[i].erasesize,
-			      flash->mtd.eraseregions[i].erasesize / 1024,
-			      flash->mtd.eraseregions[i].numblocks);
 
-	if (mtd_has_partitions()) {
-		struct mtd_partition *parts = NULL;
-		int nr_parts = 0;
-
-		if (mtd_has_cmdlinepart()) {
-			static const char *part_probes[] =
-				{"cmdlinepart", NULL};
-
-			nr_parts = parse_mtd_partitions(&flash->mtd,
-							part_probes,
-							&parts, 0);
-		}
-
-		if (nr_parts <= 0 && data && data->parts) {
-			parts = data->parts;
-			nr_parts = data->nr_parts;
-		}
-
-		if (nr_parts > 0) {
-			for (i = 0; i < nr_parts; i++) {
-				DEBUG(MTD_DEBUG_LEVEL2, "partitions[%d] = "
-				      "{.name = %s, .offset = 0x%llx, "
-				      ".size = 0x%llx (%lldKiB) }\n",
-				      i, parts[i].name,
-				      (long long)parts[i].offset,
-				      (long long)parts[i].size,
-				      (long long)(parts[i].size >> 10));
-			}
-
-			flash->partitioned = 1;
-			return add_mtd_partitions(&flash->mtd,
-						  parts, nr_parts);
-		}
-
-	} else if (data->nr_parts) {
-		dev_warn(&spi->dev, "ignoring %d default partitions on %s\n",
-			 data->nr_parts, data->name);
-	}
-
-	ret = add_mtd_device(&flash->mtd);
-	if (ret == 1) {
-		kfree(flash);
-		dev_set_drvdata(&spi->dev, NULL);
+	ret = mtd_device_register(&flash->mtd, data ? data->parts : NULL,
+				  data ? data->nr_parts : 0);
+	if (ret)
 		return -ENODEV;
-	}
 
 	return 0;
 }
 
-static int __exit sst25l_remove(struct spi_device *spi)
+static int sst25l_remove(struct spi_device *spi)
 {
-	struct sst25l_flash *flash = dev_get_drvdata(&spi->dev);
-	int ret;
+	struct sst25l_flash *flash = spi_get_drvdata(spi);
 
-	if (mtd_has_partitions() && flash->partitioned)
-		ret = del_mtd_partitions(&flash->mtd);
-	else
-		ret = del_mtd_device(&flash->mtd);
-	if (ret == 0)
-		kfree(flash);
-	return ret;
+	return mtd_device_unregister(&flash->mtd);
 }
 
 static struct spi_driver sst25l_driver = {
 	.driver = {
 		.name	= "sst25l",
-		.bus	= &spi_bus_type,
-		.owner	= THIS_MODULE,
 	},
 	.probe		= sst25l_probe,
-	.remove		= __exit_p(sst25l_remove),
+	.remove		= sst25l_remove,
 };
 
-static int __init sst25l_init(void)
-{
-	return spi_register_driver(&sst25l_driver);
-}
-
-static void __exit sst25l_exit(void)
-{
-	spi_unregister_driver(&sst25l_driver);
-}
-
-module_init(sst25l_init);
-module_exit(sst25l_exit);
+module_spi_driver(sst25l_driver);
 
 MODULE_DESCRIPTION("MTD SPI driver for SST25L Flash chips");
 MODULE_AUTHOR("Andre Renaud <andre@bluewatersys.com>, "
-	      "Ryan Mallon <ryan@bluewatersys.com>");
+	      "Ryan Mallon");
 MODULE_LICENSE("GPL");

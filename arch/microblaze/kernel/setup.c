@@ -9,12 +9,15 @@
  */
 
 #include <linux/init.h>
+#include <linux/clk-provider.h>
+#include <linux/clocksource.h>
 #include <linux/string.h>
 #include <linux/seq_file.h>
 #include <linux/cpu.h>
 #include <linux/initrd.h>
 #include <linux/console.h>
 #include <linux/debugfs.h>
+#include <linux/of_fdt.h>
 
 #include <asm/setup.h>
 #include <asm/sections.h>
@@ -22,13 +25,14 @@
 #include <linux/io.h>
 #include <linux/bug.h>
 #include <linux/param.h>
+#include <linux/pci.h>
 #include <linux/cache.h>
+#include <linux/of.h>
+#include <linux/dma-mapping.h>
 #include <asm/cacheflush.h>
 #include <asm/entry.h>
 #include <asm/cpuinfo.h>
 
-#include <asm/system.h>
-#include <asm/prom.h>
 #include <asm/pgtable.h>
 
 DEFINE_PER_CPU(unsigned int, KSP);	/* Saved kernel stack pointer */
@@ -37,42 +41,28 @@ DEFINE_PER_CPU(unsigned int, ENTRY_SP);	/* Saved SP on kernel entry */
 DEFINE_PER_CPU(unsigned int, R11_SAVE);	/* Temp variable for entry */
 DEFINE_PER_CPU(unsigned int, CURRENT_SAVE);	/* Saved current pointer */
 
-unsigned int boot_cpuid;
-char cmd_line[COMMAND_LINE_SIZE];
+/*
+ * Placed cmd_line to .data section because can be initialized from
+ * ASM code. Default position is BSS section which is cleared
+ * in machine_early_init().
+ */
+char cmd_line[COMMAND_LINE_SIZE] __attribute__ ((section(".data")));
 
 void __init setup_arch(char **cmdline_p)
 {
-	*cmdline_p = cmd_line;
+	*cmdline_p = boot_command_line;
+
+	setup_memory();
 
 	console_verbose();
 
 	unflatten_device_tree();
 
-	/* NOTE I think that this function is not necessary to call */
-	/* irq_early_init(); */
 	setup_cpuinfo();
 
-	__invalidate_icache_all();
-	__enable_icache();
+	microblaze_cache_init();
 
-	__invalidate_dcache_all();
-	__enable_dcache();
-
-	panic_timeout = 120;
-
-	setup_memory();
-
-#if defined(CONFIG_SELFMOD_INTC) || defined(CONFIG_SELFMOD_TIMER)
-	printk(KERN_NOTICE "Self modified code enable\n");
-#endif
-
-#ifdef CONFIG_VT
-#if defined(CONFIG_XILINX_CONSOLE)
-	conswitchp = &xil_con;
-#elif defined(CONFIG_DUMMY_CONSOLE)
-	conswitchp = &dummy_con;
-#endif
-#endif
+	xilinx_pci_init();
 }
 
 #ifdef CONFIG_MTD_UCLINUX
@@ -93,10 +83,14 @@ inline unsigned get_romfs_len(unsigned *addr)
 }
 #endif	/* CONFIG_MTD_UCLINUX_EBSS */
 
+unsigned long kernel_tlb;
+
 void __init machine_early_init(const char *cmdline, unsigned int ram,
-		unsigned int fdt, unsigned int msr)
+		unsigned int fdt, unsigned int msr, unsigned int tlb0,
+		unsigned int tlb1)
 {
-	unsigned long *src, *dst = (unsigned long *)0x0;
+	unsigned long *src, *dst;
+	unsigned int offset = 0;
 
 	/* If CONFIG_MTD_UCLINUX is defined, assume ROMFS is at the
 	 * end of kernel. There are two position which we want to check.
@@ -116,7 +110,7 @@ void __init machine_early_init(const char *cmdline, unsigned int ram,
 
 	/* Move ROMFS out of BSS before clearing it */
 	if (romfs_size > 0) {
-		memmove(&_ebss, (int *)romfs_base, romfs_size);
+		memmove(&__bss_stop, (int *)romfs_base, romfs_size);
 		klimit += romfs_size;
 	}
 #endif
@@ -125,54 +119,65 @@ void __init machine_early_init(const char *cmdline, unsigned int ram,
 	memset(__bss_start, 0, __bss_stop-__bss_start);
 	memset(_ssbss, 0, _esbss-_ssbss);
 
-	/* Copy command line passed from bootloader */
-#ifndef CONFIG_CMDLINE_BOOL
-	if (cmdline && cmdline[0] != '\0')
-		strlcpy(cmd_line, cmdline, COMMAND_LINE_SIZE);
-#endif
-
 /* initialize device tree for usage in early_printk */
-	early_init_devtree((void *)_fdt_start);
+	early_init_devtree(_fdt_start);
 
-#ifdef CONFIG_EARLY_PRINTK
-	setup_early_printk(NULL);
-#endif
+	/* setup kernel_tlb after BSS cleaning
+	 * Maybe worth to move to asm code */
+	kernel_tlb = tlb0 + tlb1;
+	/* printk("TLB1 0x%08x, TLB0 0x%08x, tlb 0x%x\n", tlb0,
+							tlb1, kernel_tlb); */
 
-	early_printk("Ramdisk addr 0x%08x, ", ram);
+	pr_info("Ramdisk addr 0x%08x, ", ram);
 	if (fdt)
-		early_printk("FDT at 0x%08x\n", fdt);
+		pr_info("FDT at 0x%08x\n", fdt);
 	else
-		early_printk("Compiled-in FDT at 0x%08x\n",
-					(unsigned int)_fdt_start);
+		pr_info("Compiled-in FDT at %p\n", _fdt_start);
 
 #ifdef CONFIG_MTD_UCLINUX
-	early_printk("Found romfs @ 0x%08x (0x%08x)\n",
+	pr_info("Found romfs @ 0x%08x (0x%08x)\n",
 			romfs_base, romfs_size);
-	early_printk("#### klimit %p ####\n", old_klimit);
+	pr_info("#### klimit %p ####\n", old_klimit);
 	BUG_ON(romfs_size < 0); /* What else can we do? */
 
-	early_printk("Moved 0x%08x bytes from 0x%08x to 0x%08x\n",
-			romfs_size, romfs_base, (unsigned)&_ebss);
+	pr_info("Moved 0x%08x bytes from 0x%08x to 0x%08x\n",
+			romfs_size, romfs_base, (unsigned)&__bss_stop);
 
-	early_printk("New klimit: 0x%08x\n", (unsigned)klimit);
+	pr_info("New klimit: 0x%08x\n", (unsigned)klimit);
 #endif
 
 #if CONFIG_XILINX_MICROBLAZE0_USE_MSR_INSTR
-	if (msr)
-		early_printk("!!!Your kernel has setup MSR instruction but "
-				"CPU don't have it %d\n", msr);
+	if (msr) {
+		pr_info("!!!Your kernel has setup MSR instruction but ");
+		pr_cont("CPU don't have it %x\n", msr);
+	}
 #else
-	if (!msr)
-		early_printk("!!!Your kernel not setup MSR instruction but "
-				"CPU have it %d\n", msr);
+	if (!msr) {
+		pr_info("!!!Your kernel not setup MSR instruction but ");
+		pr_cont("CPU have it %x\n", msr);
+	}
 #endif
 
-	for (src = __ivt_start; src < __ivt_end; src++, dst++)
+	/* Do not copy reset vectors. offset = 0x2 means skip the first
+	 * two instructions. dst is pointer to MB vectors which are placed
+	 * in block ram. If you want to copy reset vector setup offset to 0x0 */
+#if !CONFIG_MANUAL_RESET_VECTOR
+	offset = 0x2;
+#endif
+	dst = (unsigned long *) (offset * sizeof(u32));
+	for (src = __ivt_start + offset; src < __ivt_end; src++, dst++)
 		*dst = *src;
 
 	/* Initialize global data */
 	per_cpu(KM, 0) = 0x1;	/* We start in kernel mode */
 	per_cpu(CURRENT_SAVE, 0) = (unsigned long)current;
+}
+
+void __init time_init(void)
+{
+	of_clk_init(NULL);
+	setup_cpuinfo_clk();
+	timer_probe();
 }
 
 #ifdef CONFIG_DEBUG_FS
@@ -181,37 +186,16 @@ struct dentry *of_debugfs_root;
 static int microblaze_debugfs_init(void)
 {
 	of_debugfs_root = debugfs_create_dir("microblaze", NULL);
-
-	return of_debugfs_root == NULL;
+	return 0;
 }
 arch_initcall(microblaze_debugfs_init);
+
+# ifdef CONFIG_MMU
+static int __init debugfs_tlb(void)
+{
+	debugfs_create_u32("tlb_skip", S_IRUGO, of_debugfs_root, &tlb_skip);
+	return 0;
+}
+device_initcall(debugfs_tlb);
+# endif
 #endif
-
-void machine_restart(char *cmd)
-{
-	printk(KERN_NOTICE "Machine restart...\n");
-	dump_stack();
-	while (1)
-		;
-}
-
-void machine_shutdown(void)
-{
-	printk(KERN_NOTICE "Machine shutdown...\n");
-	while (1)
-		;
-}
-
-void machine_halt(void)
-{
-	printk(KERN_NOTICE "Machine halt...\n");
-	while (1)
-		;
-}
-
-void machine_power_off(void)
-{
-	printk(KERN_NOTICE "Machine power off...\n");
-	while (1)
-		;
-}

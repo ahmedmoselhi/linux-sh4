@@ -36,7 +36,6 @@
 #include <linux/serio.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/init.h>
 #include <linux/completion.h>
 #include <linux/slab.h>
 #include <linux/pci_ids.h>
@@ -232,15 +231,16 @@ static void hil_dev_handle_ptr_events(struct hil_dev *ptr)
 		if (absdev) {
 			val = lo + (hi << 8);
 #ifdef TABLET_AUTOADJUST
-			if (val < dev->absmin[ABS_X + i])
-				dev->absmin[ABS_X + i] = val;
-			if (val > dev->absmax[ABS_X + i])
-				dev->absmax[ABS_X + i] = val;
+			if (val < input_abs_get_min(dev, ABS_X + i))
+				input_abs_set_min(dev, ABS_X + i, val);
+			if (val > input_abs_get_max(dev, ABS_X + i))
+				input_abs_set_max(dev, ABS_X + i, val);
 #endif
-			if (i%3) val = dev->absmax[ABS_X + i] - val;
+			if (i % 3)
+				val = input_abs_get_max(dev, ABS_X + i) - val;
 			input_report_abs(dev, ABS_X + i, val);
 		} else {
-			val = (int) (((int8_t)lo) | ((int8_t)hi << 8));
+			val = (int) (((int8_t) lo) | ((int8_t) hi << 8));
 			if (i % 3)
 				val *= -1;
 			input_report_rel(dev, REL_X + i, val);
@@ -387,9 +387,11 @@ static void hil_dev_pointer_setup(struct hil_dev *ptr)
 
 #ifdef TABLET_AUTOADJUST
 		for (i = 0; i < ABS_MAX; i++) {
-			int diff = input_dev->absmax[ABS_X + i] / 10;
-			input_dev->absmin[ABS_X + i] += diff;
-			input_dev->absmax[ABS_X + i] -= diff;
+			int diff = input_abs_get_max(input_dev, ABS_X + i) / 10;
+			input_abs_set_min(input_dev, ABS_X + i,
+				input_abs_get_min(input_dev, ABS_X + i) + diff);
+			input_abs_set_max(input_dev, ABS_X + i,
+				input_abs_get_max(input_dev, ABS_X + i) - diff);
 		}
 #endif
 
@@ -471,7 +473,7 @@ static int hil_dev_connect(struct serio *serio, struct serio_driver *drv)
 	if (error)
 		goto bail1;
 
-	init_completion(&dev->cmd_done);
+	reinit_completion(&dev->cmd_done);
 	serio_write(serio, 0);
 	serio_write(serio, 0);
 	serio_write(serio, HIL_PKT_CMD >> 8);
@@ -480,7 +482,7 @@ static int hil_dev_connect(struct serio *serio, struct serio_driver *drv)
 	if (error)
 		goto bail1;
 
-	init_completion(&dev->cmd_done);
+	reinit_completion(&dev->cmd_done);
 	serio_write(serio, 0);
 	serio_write(serio, 0);
 	serio_write(serio, HIL_PKT_CMD >> 8);
@@ -489,7 +491,7 @@ static int hil_dev_connect(struct serio *serio, struct serio_driver *drv)
 	if (error)
 		goto bail1;
 
-	init_completion(&dev->cmd_done);
+	reinit_completion(&dev->cmd_done);
 	serio_write(serio, 0);
 	serio_write(serio, 0);
 	serio_write(serio, HIL_PKT_CMD >> 8);
@@ -557,7 +559,7 @@ static int hil_dev_connect(struct serio *serio, struct serio_driver *drv)
 	return error;
 }
 
-static struct serio_device_id hil_dev_ids[] = {
+static const struct serio_device_id hil_dev_ids[] = {
 	{
 		.type = SERIO_HIL_MLC,
 		.proto = SERIO_HIL,
@@ -566,6 +568,8 @@ static struct serio_device_id hil_dev_ids[] = {
 	},
 	{ 0 }
 };
+
+MODULE_DEVICE_TABLE(serio, hil_dev_ids);
 
 static struct serio_driver hil_serio_drv = {
 	.driver		= {
@@ -578,15 +582,4 @@ static struct serio_driver hil_serio_drv = {
 	.interrupt	= hil_dev_interrupt
 };
 
-static int __init hil_dev_init(void)
-{
-	return serio_register_driver(&hil_serio_drv);
-}
-
-static void __exit hil_dev_exit(void)
-{
-	serio_unregister_driver(&hil_serio_drv);
-}
-
-module_init(hil_dev_init);
-module_exit(hil_dev_exit);
+module_serio_driver(hil_serio_drv);

@@ -1,19 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *   Copyright (C) International Business Machines Corp., 2000-2004
- *
- *   This program is free software;  you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY;  without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See
- *   the GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program;  if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 #include <linux/fs.h>
@@ -126,7 +113,7 @@ extAlloc(struct inode *ip, s64 xlen, s64 pno, xad_t * xp, bool abnr)
 
 	/* allocate the disk blocks for the extent.  initially, extBalloc()
 	 * will try to allocate disk blocks for the requested size (xlen).
-	 * if this fails (xlen contiguous free blocks not avaliable), it'll
+	 * if this fails (xlen contiguous free blocks not available), it'll
 	 * try to allocate a smaller number of blocks (producing a smaller
 	 * extent), with this smaller number of blocks consisting of the
 	 * requested number of blocks rounded down to the next smaller
@@ -141,10 +128,11 @@ extAlloc(struct inode *ip, s64 xlen, s64 pno, xad_t * xp, bool abnr)
 	}
 
 	/* Allocate blocks to quota. */
-	if (vfs_dq_alloc_block(ip, nxlen)) {
+	rc = dquot_alloc_block(ip, nxlen);
+	if (rc) {
 		dbFree(ip, nxaddr, (s64) nxlen);
 		mutex_unlock(&JFS_IP(ip)->commit_mutex);
-		return -EDQUOT;
+		return rc;
 	}
 
 	/* determine the value of the extent flag */
@@ -164,7 +152,7 @@ extAlloc(struct inode *ip, s64 xlen, s64 pno, xad_t * xp, bool abnr)
 	 */
 	if (rc) {
 		dbFree(ip, nxaddr, nxlen);
-		vfs_dq_free_block(ip, nxlen);
+		dquot_free_block(ip, nxlen);
 		mutex_unlock(&JFS_IP(ip)->commit_mutex);
 		return (rc);
 	}
@@ -256,10 +244,11 @@ int extRealloc(struct inode *ip, s64 nxlen, xad_t * xp, bool abnr)
 		goto exit;
 
 	/* Allocat blocks to quota. */
-	if (vfs_dq_alloc_block(ip, nxlen)) {
+	rc = dquot_alloc_block(ip, nxlen);
+	if (rc) {
 		dbFree(ip, nxaddr, (s64) nxlen);
 		mutex_unlock(&JFS_IP(ip)->commit_mutex);
-		return -EDQUOT;
+		return rc;
 	}
 
 	delta = nxlen - xlen;
@@ -297,7 +286,7 @@ int extRealloc(struct inode *ip, s64 nxlen, xad_t * xp, bool abnr)
 		/* extend the extent */
 		if ((rc = xtExtend(0, ip, xoff + xlen, (int) nextend, 0))) {
 			dbFree(ip, xaddr + xlen, delta);
-			vfs_dq_free_block(ip, nxlen);
+			dquot_free_block(ip, nxlen);
 			goto exit;
 		}
 	} else {
@@ -308,7 +297,7 @@ int extRealloc(struct inode *ip, s64 nxlen, xad_t * xp, bool abnr)
 		 */
 		if ((rc = xtTailgate(0, ip, xoff, (int) ntail, nxaddr, 0))) {
 			dbFree(ip, nxaddr, nxlen);
-			vfs_dq_free_block(ip, nxlen);
+			dquot_free_block(ip, nxlen);
 			goto exit;
 		}
 	}
@@ -386,7 +375,7 @@ int extHint(struct inode *ip, s64 offset, xad_t * xp)
 
 	if ((rc == 0) && xlen) {
 		if (xlen != nbperpage) {
-			jfs_error(ip->i_sb, "extHint: corrupt xtree");
+			jfs_error(ip->i_sb, "corrupt xtree\n");
 			rc = -EIO;
 		}
 		XADaddress(xp, xaddr);
@@ -479,7 +468,7 @@ int extFill(struct inode *ip, xad_t * xp)
  *
  *		initially, we will try to allocate disk blocks for the
  *		requested size (nblocks).  if this fails (nblocks
- *		contiguous free blocks not avaliable), we'll try to allocate
+ *		contiguous free blocks not available), we'll try to allocate
  *		a smaller number of blocks (producing a smaller extent), with
  *		this smaller number of blocks consisting of the requested
  *		number of blocks rounded down to the next smaller power of 2
@@ -573,7 +562,7 @@ extBalloc(struct inode *ip, s64 hint, s64 * nblocks, s64 * blkno)
  *		to a new set of blocks.  If moving the extent, we initially
  *		will try to allocate disk blocks for the requested size
  *		(newnblks).  if this fails (new contiguous free blocks not
- *		avaliable), we'll try to allocate a smaller number of
+ *		available), we'll try to allocate a smaller number of
  *		blocks (producing a smaller extent), with this smaller
  *		number of blocks consisting of the requested number of
  *		blocks rounded down to the next smaller power of 2

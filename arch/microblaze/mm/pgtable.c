@@ -26,31 +26,23 @@
  *
  */
 
+#include <linux/export.h>
 #include <linux/kernel.h>
-#include <linux/module.h>
 #include <linux/types.h>
 #include <linux/vmalloc.h>
 #include <linux/init.h>
+#include <linux/mm_types.h>
 
 #include <asm/pgtable.h>
 #include <asm/pgalloc.h>
 #include <linux/io.h>
 #include <asm/mmu.h>
 #include <asm/sections.h>
-
-#define flush_HPTE(X, va, pg)	_tlbie(va)
+#include <asm/fixmap.h>
 
 unsigned long ioremap_base;
 unsigned long ioremap_bot;
-
-/* The maximum lowmem defaults to 768Mb, but this can be configured to
- * another value.
- */
-#define MAX_LOW_MEM	CONFIG_LOWMEM_SIZE
-
-#ifndef CONFIG_SMP
-struct pgtable_cache_struct quicklists;
-#endif
+EXPORT_SYMBOL(ioremap_bot);
 
 static void __iomem *__ioremap(phys_addr_t addr, unsigned long size,
 		unsigned long flags)
@@ -74,13 +66,13 @@ static void __iomem *__ioremap(phys_addr_t addr, unsigned long size,
 	 *
 	 * However, allow remap of rootfs: TBD
 	 */
+
 	if (mem_init_done &&
 		p >= memory_start && p < virt_to_phys(high_memory) &&
-		!(p >= virt_to_phys((unsigned long)&__bss_stop) &&
-		p < virt_to_phys((unsigned long)__bss_stop))) {
-		printk(KERN_WARNING "__ioremap(): phys addr "PTE_FMT
-			" is RAM lr %p\n", (unsigned long)p,
-			__builtin_return_address(0));
+		!(p >= __virt_to_phys((phys_addr_t)__bss_stop) &&
+		p < __virt_to_phys((phys_addr_t)__bss_stop))) {
+		pr_warn("__ioremap(): phys addr "PTE_FMT" is RAM lr %ps\n",
+			(unsigned long)p, __builtin_return_address(0));
 		return NULL;
 	}
 
@@ -103,7 +95,7 @@ static void __iomem *__ioremap(phys_addr_t addr, unsigned long size,
 		area = get_vm_area(size, VM_IOREMAP);
 		if (area == NULL)
 			return NULL;
-		v = VMALLOC_VMADDR(area->addr);
+		v = (unsigned long) area->addr;
 	} else {
 		v = (ioremap_bot -= size);
 	}
@@ -131,9 +123,10 @@ void __iomem *ioremap(phys_addr_t addr, unsigned long size)
 }
 EXPORT_SYMBOL(ioremap);
 
-void iounmap(void *addr)
+void iounmap(volatile void __iomem *addr)
 {
-	if (addr > high_memory && (unsigned long) addr < ioremap_bot)
+	if ((__force void *)addr > high_memory &&
+					(unsigned long) addr < ioremap_bot)
 		vfree((void *) (PAGE_MASK & (unsigned long) addr));
 }
 EXPORT_SYMBOL(iounmap);
@@ -141,12 +134,16 @@ EXPORT_SYMBOL(iounmap);
 
 int map_page(unsigned long va, phys_addr_t pa, int flags)
 {
+	p4d_t *p4d;
+	pud_t *pud;
 	pmd_t *pd;
 	pte_t *pg;
 	int err = -ENOMEM;
-	/* spin_lock(&init_mm.page_table_lock); */
+
 	/* Use upper 10 bits of VA to index the first level map */
-	pd = pmd_offset(pgd_offset_k(va), va);
+	p4d = p4d_offset(pgd_offset_k(va), va);
+	pud = pud_offset(p4d, va);
+	pd = pmd_offset(pud, va);
 	/* Use middle 10 bits of VA to index the second-level map */
 	pg = pte_alloc_kernel(pd, va); /* from powerpc - pgtable.c */
 	/* pg = pte_alloc_kernel(&init_mm, pd, va); */
@@ -155,37 +152,10 @@ int map_page(unsigned long va, phys_addr_t pa, int flags)
 		err = 0;
 		set_pte_at(&init_mm, va, pg, pfn_pte(pa >> PAGE_SHIFT,
 				__pgprot(flags)));
-		if (mem_init_done)
-			flush_HPTE(0, va, pmd_val(*pd));
-			/* flush_HPTE(0, va, pg); */
-
+		if (unlikely(mem_init_done))
+			_tlbie(va);
 	}
-	/* spin_unlock(&init_mm.page_table_lock); */
 	return err;
-}
-
-void __init adjust_total_lowmem(void)
-{
-/* TBD */
-#if 0
-	unsigned long max_low_mem = MAX_LOW_MEM;
-
-	if (total_lowmem > max_low_mem) {
-		total_lowmem = max_low_mem;
-#ifndef CONFIG_HIGHMEM
-		printk(KERN_INFO "Warning, memory limited to %ld Mb, use "
-				"CONFIG_HIGHMEM to reach %ld Mb\n",
-				max_low_mem >> 20, total_memory >> 20);
-		total_memory = total_lowmem;
-#endif /* CONFIG_HIGHMEM */
-	}
-#endif
-}
-
-static void show_tmem(unsigned long tmem)
-{
-	volatile unsigned long a;
-	a = a + tmem;
 }
 
 /*
@@ -197,8 +167,7 @@ void __init mapin_ram(void)
 
 	v = CONFIG_KERNEL_START;
 	p = memory_start;
-	show_tmem(memory_size);
-	for (s = 0; s < memory_size; s += PAGE_SIZE) {
+	for (s = 0; s < lowmem_size; s += PAGE_SIZE) {
 		f = _PAGE_PRESENT | _PAGE_ACCESSED |
 				_PAGE_SHARED | _PAGE_HWEXEC;
 		if ((char *) v < _stext || (char *) v >= _etext)
@@ -216,24 +185,6 @@ void __init mapin_ram(void)
 /* is x a power of 2? */
 #define is_power_of_2(x)	((x) != 0 && (((x) & ((x) - 1)) == 0))
 
-/*
- * Set up a mapping for a block of I/O.
- * virt, phys, size must all be page-aligned.
- * This should only be called before ioremap is called.
- */
-void __init io_block_mapping(unsigned long virt, phys_addr_t phys,
-			     unsigned int size, int flags)
-{
-	int i;
-
-	if (virt > CONFIG_KERNEL_START && virt < ioremap_bot)
-		ioremap_bot = ioremap_base = virt;
-
-	/* Put it in the page tables. */
-	for (i = 0; i < size; i += PAGE_SIZE)
-		map_page(virt + i, phys + i, flags);
-}
-
 /* Scan the real Linux page tables and return a PTE pointer for
  * a virtual address in a context.
  * Returns true (1) if PTE was found, zero otherwise.  The pointer to
@@ -242,13 +193,17 @@ void __init io_block_mapping(unsigned long virt, phys_addr_t phys,
 static int get_pteptr(struct mm_struct *mm, unsigned long addr, pte_t **ptep)
 {
 	pgd_t	*pgd;
+	p4d_t	*p4d;
+	pud_t	*pud;
 	pmd_t	*pmd;
 	pte_t	*pte;
 	int     retval = 0;
 
 	pgd = pgd_offset(mm, addr & PAGE_MASK);
 	if (pgd) {
-		pmd = pmd_offset(pgd, addr & PAGE_MASK);
+		p4d = p4d_offset(pgd, addr & PAGE_MASK);
+		pud = pud_offset(p4d, addr & PAGE_MASK);
+		pmd = pmd_offset(pud, addr & PAGE_MASK);
 		if (pmd_present(*pmd)) {
 			pte = pte_offset_kernel(pmd, addr & PAGE_MASK);
 			if (pte) {
@@ -283,4 +238,27 @@ unsigned long iopa(unsigned long addr)
 		pa = (pte_val(*pte) & PAGE_MASK) | (addr & ~PAGE_MASK);
 
 	return pa;
+}
+
+__ref pte_t *pte_alloc_one_kernel(struct mm_struct *mm)
+{
+	pte_t *pte;
+	if (mem_init_done) {
+		pte = (pte_t *)__get_free_page(GFP_KERNEL | __GFP_ZERO);
+	} else {
+		pte = (pte_t *)early_get_page();
+		if (pte)
+			clear_page(pte);
+	}
+	return pte;
+}
+
+void __set_fixmap(enum fixed_addresses idx, phys_addr_t phys, pgprot_t flags)
+{
+	unsigned long address = __fix_to_virt(idx);
+
+	if (idx >= __end_of_fixed_addresses)
+		BUG();
+
+	map_page(address, phys, pgprot_val(flags));
 }

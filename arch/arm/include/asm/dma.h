@@ -1,13 +1,17 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_ARM_DMA_H
 #define __ASM_ARM_DMA_H
-
-#include <asm/memory.h>
 
 /*
  * This is the maximum virtual address which can be DMA'd from.
  */
-#ifndef MAX_DMA_ADDRESS
-#define MAX_DMA_ADDRESS	0xffffffff
+#ifndef CONFIG_ZONE_DMA
+#define MAX_DMA_ADDRESS	0xffffffffUL
+#else
+#define MAX_DMA_ADDRESS	({ \
+	extern phys_addr_t arm_dma_zone_size; \
+	arm_dma_zone_size && arm_dma_zone_size < (0x10000000 - PAGE_OFFSET) ? \
+		(PAGE_OFFSET + arm_dma_zone_size) : 0xffffffffUL; })
 #endif
 
 #ifdef CONFIG_ISA_DMA_API
@@ -16,8 +20,7 @@
  * It should not be re-used except for that purpose.
  */
 #include <linux/spinlock.h>
-#include <asm/system.h>
-#include <asm/scatterlist.h>
+#include <linux/scatterlist.h>
 
 #include <mach/isa-dma.h>
 
@@ -31,18 +34,18 @@
 #define DMA_MODE_CASCADE 0xc0
 #define DMA_AUTOINIT	 0x10
 
-extern spinlock_t  dma_spin_lock;
+extern raw_spinlock_t  dma_spin_lock;
 
 static inline unsigned long claim_dma_lock(void)
 {
 	unsigned long flags;
-	spin_lock_irqsave(&dma_spin_lock, flags);
+	raw_spin_lock_irqsave(&dma_spin_lock, flags);
 	return flags;
 }
 
 static inline void release_dma_lock(unsigned long flags)
 {
-	spin_unlock_irqrestore(&dma_spin_lock, flags);
+	raw_spin_unlock_irqrestore(&dma_spin_lock, flags);
 }
 
 /* Clear the 'DMA Pointer Flip Flop'.
@@ -103,7 +106,7 @@ extern void set_dma_sg(unsigned int chan, struct scatterlist *sg, int nr_sg);
  */
 extern void __set_dma_addr(unsigned int chan, void *addr);
 #define set_dma_addr(chan, addr)				\
-	__set_dma_addr(chan, bus_to_virt(addr))
+	__set_dma_addr(chan, (void *)__bus_to_virt(addr))
 
 /* Set the DMA byte count for this channel
  *
@@ -138,12 +141,12 @@ extern int  get_dma_residue(unsigned int chan);
 #define NO_DMA	255
 #endif
 
+#endif /* CONFIG_ISA_DMA_API */
+
 #ifdef CONFIG_PCI
 extern int isa_dma_bridge_buggy;
 #else
 #define isa_dma_bridge_buggy    (0)
 #endif
-
-#endif /* CONFIG_ISA_DMA_API */
 
 #endif /* __ASM_ARM_DMA_H */

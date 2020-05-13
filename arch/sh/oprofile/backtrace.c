@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * SH specific backtracing code for oprofile
  *
@@ -7,11 +8,6 @@
  *
  * Based on ARM oprofile backtrace code by Richard Purdie and in turn, i386
  * oprofile backtrace code by John Levon, David Smith
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  */
 #include <linux/oprofile.h>
 #include <linux/sched.h>
@@ -19,20 +15,9 @@
 #include <linux/mm.h>
 #include <asm/unwinder.h>
 #include <asm/ptrace.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/sections.h>
 #include <asm/stacktrace.h>
-
-static void backtrace_warning_symbol(void *data, char *msg,
-				     unsigned long symbol)
-{
-	/* Ignore warnings */
-}
-
-static void backtrace_warning(void *data, char *msg)
-{
-	/* Ignore warnings */
-}
 
 static int backtrace_stack(void *data, char *name)
 {
@@ -49,8 +34,6 @@ static void backtrace_address(void *data, unsigned long addr, int reliable)
 }
 
 static struct stacktrace_ops backtrace_ops = {
-	.warning = backtrace_warning,
-	.warning_symbol = backtrace_warning_symbol,
 	.stack = backtrace_stack,
 	.address = backtrace_address,
 };
@@ -64,7 +47,7 @@ user_backtrace(unsigned long *stackaddr, struct pt_regs *regs)
 	unsigned long buf_stack;
 
 	/* Also check accessibility of address */
-	if (!access_ok(VERIFY_READ, stackaddr, sizeof(unsigned long)))
+	if (!access_ok(stackaddr, sizeof(unsigned long)))
 		return NULL;
 
 	if (__copy_from_user_inatomic(&buf_stack, stackaddr, sizeof(unsigned long)))
@@ -84,7 +67,6 @@ user_backtrace(unsigned long *stackaddr, struct pt_regs *regs)
 void sh_backtrace(struct pt_regs * const regs, unsigned int depth)
 {
 	unsigned long *stackaddr;
-	unsigned long *fp = NULL;
 
 	/*
 	 * Paranoia - clip max depth as we could get lost in the weeds.
@@ -92,15 +74,11 @@ void sh_backtrace(struct pt_regs * const regs, unsigned int depth)
 	if (depth > backtrace_limit)
 		depth = backtrace_limit;
 
-	stackaddr = (unsigned long *)regs->regs[15];
-#ifdef CONFIG_FRAME_POINTER
-	fp = (unsigned long *)regs->regs[14];
-#endif
+	stackaddr = (unsigned long *)kernel_stack_pointer(regs);
 	if (!user_mode(regs)) {
 		if (depth)
-			unwind_stack(NULL, regs, stackaddr, fp,
-				(unsigned long) sh_backtrace,
-				&backtrace_ops, &depth);
+			unwind_stack(NULL, regs, stackaddr,
+				     &backtrace_ops, &depth);
 		return;
 	}
 

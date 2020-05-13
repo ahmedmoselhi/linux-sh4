@@ -1,7 +1,10 @@
-#ifndef _UM_SECTIONS_H
-#define _UM_SECTIONS_H
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef __UM_SECTIONS_H
+#define __UM_SECTIONS_H
 
-/* nothing to see, move along */
 #include <asm-generic/sections.h>
+
+extern char __binary_start[];
+extern char __syscall_stub_start[], __syscall_stub_end[];
 
 #endif

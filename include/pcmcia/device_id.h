@@ -1,9 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * device_id.h -- PCMCIA driver matching helpers
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  * (C) 2003 - 2004	David Woodhouse
  * (C) 2003 - 2004	Dominik Brodowski
@@ -33,6 +30,11 @@
 	.match_flags = PCMCIA_DEV_ID_MATCH_PROD_ID2, \
 	.prod_id = { NULL, (v2), NULL, NULL },  \
 	.prod_id_hash = { 0, (vh2), 0, 0 }, }
+
+#define PCMCIA_DEVICE_PROD_ID3(v3, vh3) { \
+	.match_flags = PCMCIA_DEV_ID_MATCH_PROD_ID3, \
+	.prod_id = { NULL, NULL, (v3), NULL },  \
+	.prod_id_hash = { 0, 0, (vh3), 0 }, }
 
 #define PCMCIA_DEVICE_PROD_ID12(v1, v2, vh1, vh2) { \
 	.match_flags = PCMCIA_DEV_ID_MATCH_PROD_ID1| \
@@ -89,6 +91,15 @@
 	.card_id = (card), \
 	.prod_id = { (v1), NULL, NULL, NULL }, \
 	.prod_id_hash = { (vh1), 0, 0, 0 }, }
+
+#define PCMCIA_DEVICE_MANF_CARD_PROD_ID3(manf, card, v3, vh3) { \
+	.match_flags = PCMCIA_DEV_ID_MATCH_MANF_ID| \
+			PCMCIA_DEV_ID_MATCH_CARD_ID| \
+			PCMCIA_DEV_ID_MATCH_PROD_ID3, \
+	.manf_id = (manf), \
+	.card_id = (card), \
+	.prod_id = { NULL, NULL, (v3), NULL }, \
+	.prod_id_hash = { 0, 0, (vh3), 0 }, }
 
 
 /* multi-function devices */

@@ -1,13 +1,11 @@
-/*
- * Hitachi Audio Controller (AC97) support for SH7760/SH7780
- *
- * Copyright (c) 2007 Manuel Lauss <mano@roarinelk.homelinux.net>
- *  licensed under the terms outlined in the file COPYING at the root
- *  of the linux kernel sources.
- *
- * dont forget to set IPSEL/OMSEL register bits (in your board code) to
- * enable HAC output pins!
- */
+// SPDX-License-Identifier: GPL-2.0
+//
+// Hitachi Audio Controller (AC97) support for SH7760/SH7780
+//
+// Copyright (c) 2007 Manuel Lauss <mano@roarinelk.homelinux.net>
+//
+// dont forget to set IPSEL/OMSEL register bits (in your board code) to
+// enable HAC output pins!
 
 /* BIG FAT FIXME: although the SH7760 has 2 independent AC97 units, only
  * the FIRST can be used since ASoC does not pass any information to the
@@ -227,20 +225,18 @@ static void hac_ac97_coldrst(struct snd_ac97 *ac97)
 	hac_ac97_warmrst(ac97);
 }
 
-struct snd_ac97_bus_ops soc_ac97_ops = {
+static struct snd_ac97_bus_ops hac_ac97_ops = {
 	.read	= hac_ac97_read,
 	.write	= hac_ac97_write,
 	.reset	= hac_ac97_coldrst,
 	.warm_reset = hac_ac97_warmrst,
 };
-EXPORT_SYMBOL_GPL(soc_ac97_ops);
 
 static int hac_hw_params(struct snd_pcm_substream *substream,
 			 struct snd_pcm_hw_params *params,
 			 struct snd_soc_dai *dai)
 {
-	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct hac_priv *hac = &hac_cpu_data[rtd->dai->cpu_dai->id];
+	struct hac_priv *hac = &hac_cpu_data[dai->id];
 	int d = substream->stream == SNDRV_PCM_STREAM_PLAYBACK ? 0 : 1;
 
 	switch (params->msbits) {
@@ -267,15 +263,13 @@ static int hac_hw_params(struct snd_pcm_substream *substream,
 #define AC97_FMTS	\
 	SNDRV_PCM_FMTBIT_S16_LE
 
-static struct snd_soc_dai_ops hac_dai_ops = {
+static const struct snd_soc_dai_ops hac_dai_ops = {
 	.hw_params	= hac_hw_params,
 };
 
-struct snd_soc_dai sh4_hac_dai[] = {
+static struct snd_soc_dai_driver sh4_hac_dai[] = {
 {
-	.name			= "HAC0",
-	.id			= 0,
-	.ac97_control		= 1,
+	.name			= "hac-dai.0",
 	.playback = {
 		.rates		= AC97_RATES,
 		.formats	= AC97_FMTS,
@@ -292,8 +286,7 @@ struct snd_soc_dai sh4_hac_dai[] = {
 },
 #ifdef CONFIG_CPU_SUBTYPE_SH7760
 {
-	.name			= "HAC1",
-	.ac97_control		= 1,
+	.name			= "hac-dai.1",
 	.id			= 1,
 	.playback = {
 		.rates		= AC97_RATES,
@@ -312,20 +305,40 @@ struct snd_soc_dai sh4_hac_dai[] = {
 },
 #endif
 };
-EXPORT_SYMBOL_GPL(sh4_hac_dai);
 
-static int __init sh4_hac_init(void)
+static const struct snd_soc_component_driver sh4_hac_component = {
+	.name		= "sh4-hac",
+};
+
+static int hac_soc_platform_probe(struct platform_device *pdev)
 {
-	return snd_soc_register_dais(sh4_hac_dai, ARRAY_SIZE(sh4_hac_dai));
-}
-module_init(sh4_hac_init);
+	int ret;
 
-static void __exit sh4_hac_exit(void)
+	ret = snd_soc_set_ac97_ops(&hac_ac97_ops);
+	if (ret != 0)
+		return ret;
+
+	return devm_snd_soc_register_component(&pdev->dev, &sh4_hac_component,
+					  sh4_hac_dai, ARRAY_SIZE(sh4_hac_dai));
+}
+
+static int hac_soc_platform_remove(struct platform_device *pdev)
 {
-	snd_soc_unregister_dais(sh4_hac_dai, ARRAY_SIZE(sh4_hac_dai));
+	snd_soc_set_ac97_ops(NULL);
+	return 0;
 }
-module_exit(sh4_hac_exit);
 
-MODULE_LICENSE("GPL");
+static struct platform_driver hac_pcm_driver = {
+	.driver = {
+			.name = "hac-pcm-audio",
+	},
+
+	.probe = hac_soc_platform_probe,
+	.remove = hac_soc_platform_remove,
+};
+
+module_platform_driver(hac_pcm_driver);
+
+MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("SuperH onchip HAC (AC97) audio driver");
 MODULE_AUTHOR("Manuel Lauss <mano@roarinelk.homelinux.net>");

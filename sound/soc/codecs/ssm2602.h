@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * File:         sound/soc/codecs/ssm2602.h
  * Author:       Cliff Cai <Cliff.Cai@analog.com>
@@ -8,25 +9,24 @@
  *               Copyright 2008 Analog Devices Inc.
  *
  * Bugs:         Enter bugs at http://blackfin.uclinux.org/
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, see the file COPYING, or write
- * to the Free Software Foundation, Inc.,
- * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
 #ifndef _SSM2602_H
 #define _SSM2602_H
+
+#include <linux/regmap.h>
+
+struct device;
+
+enum ssm2602_type {
+	SSM2602,
+	SSM2604,
+};
+
+extern const struct regmap_config ssm2602_regmap_config;
+
+int ssm2602_probe(struct device *dev, enum ssm2602_type type,
+	struct regmap *regmap);
 
 /* SSM2602 Codec Register definitions */
 
@@ -116,15 +116,10 @@
 
 #define SSM2602_CACHEREGNUM 	10
 
-#define SSM2602_SYSCLK	0
-#define SSM2602_DAI		0
-
-struct ssm2602_setup_data {
-	int i2c_bus;
-	unsigned short i2c_address;
+enum ssm2602_clk {
+	SSM2602_SYSCLK,
+	SSM2602_CLK_CLKOUT,
+	SSM2602_CLK_XTO
 };
-
-extern struct snd_soc_dai ssm2602_dai;
-extern struct snd_soc_codec_device soc_codec_dev_ssm2602;
 
 #endif

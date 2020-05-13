@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * 32-bit compatibility support for ELF format executables and core dumps.
  *
  * Copyright (C) 2007 Red Hat, Inc.  All rights reserved.
- *
- * This copyrighted material is made available to anyone wishing to use,
- * modify, copy, or redistribute it subject to the terms and conditions
- * of the GNU General Public License v.2.
  *
  * Red Hat Author: Roland McGrath.
  *
@@ -28,12 +25,21 @@
 
 #undef	elfhdr
 #undef	elf_phdr
+#undef	elf_shdr
 #undef	elf_note
 #undef	elf_addr_t
 #define elfhdr		elf32_hdr
 #define elf_phdr	elf32_phdr
+#define elf_shdr	elf32_shdr
 #define elf_note	elf32_note
 #define elf_addr_t	Elf32_Addr
+
+/*
+ * Some data types as stored in coredump.
+ */
+#define user_long_t		compat_long_t
+#define user_siginfo_t		compat_siginfo_t
+#define copy_siginfo_to_user	copy_siginfo_to_user32
 
 /*
  * The machine-dependent core note format types are defined in elfcore-compat.h,
@@ -42,22 +48,8 @@
 #define elf_prstatus	compat_elf_prstatus
 #define elf_prpsinfo	compat_elf_prpsinfo
 
-/*
- * Compat version of cputime_to_compat_timeval, perhaps this
- * should be an inline in <linux/compat.h>.
- */
-static void cputime_to_compat_timeval(const cputime_t cputime,
-				      struct compat_timeval *value)
-{
-	struct timeval tv;
-	cputime_to_timeval(cputime, &tv);
-	value->tv_sec = tv.tv_sec;
-	value->tv_usec = tv.tv_usec;
-}
-
-#undef cputime_to_timeval
-#define cputime_to_timeval cputime_to_compat_timeval
-
+#undef ns_to_kernel_old_timeval
+#define ns_to_kernel_old_timeval ns_to_old_timeval32
 
 /*
  * To use this file, asm/elf.h must define compat_elf_check_arch.
@@ -77,6 +69,11 @@ static void cputime_to_compat_timeval(const cputime_t cputime,
 #ifdef	COMPAT_ELF_HWCAP
 #undef	ELF_HWCAP
 #define	ELF_HWCAP		COMPAT_ELF_HWCAP
+#endif
+
+#ifdef	COMPAT_ELF_HWCAP2
+#undef	ELF_HWCAP2
+#define	ELF_HWCAP2		COMPAT_ELF_HWCAP2
 #endif
 
 #ifdef	COMPAT_ARCH_DLINFO

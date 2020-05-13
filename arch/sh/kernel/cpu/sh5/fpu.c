@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * arch/sh/kernel/cpu/sh5/fpu.c
  *
@@ -7,34 +8,12 @@
  *
  * Started from SH4 version:
  *   Copyright (C) 1999, 2000  Kaz Kojima & Niibe Yutaka
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 #include <linux/sched.h>
 #include <linux/signal.h>
 #include <asm/processor.h>
-#include <asm/user.h>
-#include <asm/io.h>
-#include <asm/fpu.h>
 
-/*
- * Initially load the FPU with signalling NANS.  This bit pattern
- * has the property that no matter whether considered as single or as
- * double precision, it still represents a signalling NAN.
- */
-#define sNAN64		0xFFFFFFFFFFFFFFFFULL
-#define sNAN32		0xFFFFFFFFUL
-
-static union sh_fpu_union init_fpuregs = {
-	.hard = {
-		.fp_regs = { [0 ... 63] = sNAN32 },
-		.fpscr = FPSCR_INIT
-	}
-};
-
-void save_fpu(struct task_struct *tsk, struct pt_regs *regs)
+void save_fpu(struct task_struct *tsk)
 {
 	asm volatile("fst.p     %0, (0*8), fp0\n\t"
 		     "fst.p     %0, (1*8), fp2\n\t"
@@ -72,12 +51,11 @@ void save_fpu(struct task_struct *tsk, struct pt_regs *regs)
 		     "fgetscr   fr63\n\t"
 		     "fst.s     %0, (32*8), fr63\n\t"
 		: /* no output */
-		: "r" (&tsk->thread.fpu.hard)
+		: "r" (&tsk->thread.xstate->hardfpu)
 		: "memory");
 }
 
-static inline void
-fpload(struct sh_fpu_hard_struct *fpregs)
+void restore_fpu(struct task_struct *tsk)
 {
 	asm volatile("fld.p     %0, (0*8), fp0\n\t"
 		     "fld.p     %0, (1*8), fp2\n\t"
@@ -116,52 +94,13 @@ fpload(struct sh_fpu_hard_struct *fpregs)
 
 		     "fld.p     %0, (31*8), fp62\n\t"
 		: /* no output */
-		: "r" (fpregs) );
+		: "r" (&tsk->thread.xstate->hardfpu)
+		: "memory");
 }
 
-void fpinit(struct sh_fpu_hard_struct *fpregs)
+asmlinkage void do_fpu_error(unsigned long ex, struct pt_regs *regs)
 {
-	*fpregs = init_fpuregs.hard;
-}
-
-asmlinkage void
-do_fpu_error(unsigned long ex, struct pt_regs *regs)
-{
-	struct task_struct *tsk = current;
-
 	regs->pc += 4;
 
-	tsk->thread.trap_no = 11;
-	tsk->thread.error_code = 0;
-	force_sig(SIGFPE, tsk);
-}
-
-
-asmlinkage void
-do_fpu_state_restore(unsigned long ex, struct pt_regs *regs)
-{
-	void die(const char *str, struct pt_regs *regs, long err);
-
-	if (! user_mode(regs))
-		die("FPU used in kernel", regs, ex);
-
-	regs->sr &= ~SR_FD;
-
-	if (last_task_used_math == current)
-		return;
-
-	enable_fpu();
-	if (last_task_used_math != NULL)
-		/* Other processes fpu state, save away */
-		save_fpu(last_task_used_math, regs);
-
-        last_task_used_math = current;
-        if (used_math()) {
-                fpload(&current->thread.fpu.hard);
-        } else {
-		/* First time FPU user.  */
-		fpload(&init_fpuregs.hard);
-                set_used_math();
-        }
-	disable_fpu();
+	force_sig(SIGFPE);
 }

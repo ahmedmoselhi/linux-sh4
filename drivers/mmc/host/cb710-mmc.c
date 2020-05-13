@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  cb710/mmc.c
  *
  *  Copyright by Michał Mirosław, 2008-2009
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -205,7 +202,7 @@ static int cb710_wait_while_busy(struct cb710_slot *slot, uint8_t mask)
 			"WAIT12: waited %d loops, mask %02X, entry val %08X, exit val %08X\n",
 			limit, mask, e, x);
 #endif
-	return 0;
+	return err;
 }
 
 static void cb710_mmc_set_transfer_size(struct cb710_slot *slot,
@@ -566,30 +563,32 @@ static void cb710_mmc_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 
 	cb710_mmc_select_clock_divider(mmc, ios->clock);
 
-	if (ios->power_mode != reader->last_power_mode)
-	switch (ios->power_mode) {
-	case MMC_POWER_ON:
-		err = cb710_mmc_powerup(slot);
-		if (err) {
-			dev_warn(cb710_slot_dev(slot),
-				"powerup failed (%d)- retrying\n", err);
-			cb710_mmc_powerdown(slot);
-			udelay(1);
+	if (ios->power_mode != reader->last_power_mode) {
+		switch (ios->power_mode) {
+		case MMC_POWER_ON:
 			err = cb710_mmc_powerup(slot);
-			if (err)
+			if (err) {
 				dev_warn(cb710_slot_dev(slot),
-					"powerup retry failed (%d) - expect errors\n",
+					"powerup failed (%d)- retrying\n", err);
+				cb710_mmc_powerdown(slot);
+				udelay(1);
+				err = cb710_mmc_powerup(slot);
+				if (err)
+					dev_warn(cb710_slot_dev(slot),
+						"powerup retry failed (%d) - expect errors\n",
 					err);
+			}
+			reader->last_power_mode = MMC_POWER_ON;
+			break;
+		case MMC_POWER_OFF:
+			cb710_mmc_powerdown(slot);
+			reader->last_power_mode = MMC_POWER_OFF;
+			break;
+		case MMC_POWER_UP:
+		default:
+			/* ignore */
+			break;
 		}
-		reader->last_power_mode = MMC_POWER_ON;
-		break;
-	case MMC_POWER_OFF:
-		cb710_mmc_powerdown(slot);
-		reader->last_power_mode = MMC_POWER_OFF;
-		break;
-	case MMC_POWER_UP:
-	default:
-		/* ignore */;
 	}
 
 	cb710_mmc_enable_4bit_data(slot, ios->bus_width != MMC_BUS_WIDTH_1);
@@ -667,12 +666,6 @@ static const struct mmc_host_ops cb710_mmc_host = {
 static int cb710_mmc_suspend(struct platform_device *pdev, pm_message_t state)
 {
 	struct cb710_slot *slot = cb710_pdev_to_slot(pdev);
-	struct mmc_host *mmc = cb710_slot_to_mmc(slot);
-	int err;
-
-	err = mmc_suspend_host(mmc);
-	if (err)
-		return err;
 
 	cb710_mmc_enable_irq(slot, 0, ~0);
 	return 0;
@@ -681,16 +674,14 @@ static int cb710_mmc_suspend(struct platform_device *pdev, pm_message_t state)
 static int cb710_mmc_resume(struct platform_device *pdev)
 {
 	struct cb710_slot *slot = cb710_pdev_to_slot(pdev);
-	struct mmc_host *mmc = cb710_slot_to_mmc(slot);
 
 	cb710_mmc_enable_irq(slot, 0, ~0);
-
-	return mmc_resume_host(mmc);
+	return 0;
 }
 
 #endif /* CONFIG_PM */
 
-static int __devinit cb710_mmc_init(struct platform_device *pdev)
+static int cb710_mmc_init(struct platform_device *pdev)
 {
 	struct cb710_slot *slot = cb710_pdev_to_slot(pdev);
 	struct cb710_chip *chip = cb710_slot_to_chip(slot);
@@ -703,7 +694,7 @@ static int __devinit cb710_mmc_init(struct platform_device *pdev)
 	if (!mmc)
 		return -ENOMEM;
 
-	dev_set_drvdata(&pdev->dev, mmc);
+	platform_set_drvdata(pdev, mmc);
 
 	/* harmless (maybe) magic */
 	pci_read_config_dword(chip->pdev, 0x48, &val);
@@ -746,7 +737,7 @@ err_free_mmc:
 	return err;
 }
 
-static int __devexit cb710_mmc_exit(struct platform_device *pdev)
+static int cb710_mmc_exit(struct platform_device *pdev)
 {
 	struct cb710_slot *slot = cb710_pdev_to_slot(pdev);
 	struct mmc_host *mmc = cb710_slot_to_mmc(slot);
@@ -773,25 +764,14 @@ static int __devexit cb710_mmc_exit(struct platform_device *pdev)
 static struct platform_driver cb710_mmc_driver = {
 	.driver.name = "cb710-mmc",
 	.probe = cb710_mmc_init,
-	.remove = __devexit_p(cb710_mmc_exit),
+	.remove = cb710_mmc_exit,
 #ifdef CONFIG_PM
 	.suspend = cb710_mmc_suspend,
 	.resume = cb710_mmc_resume,
 #endif
 };
 
-static int __init cb710_mmc_init_module(void)
-{
-	return platform_driver_register(&cb710_mmc_driver);
-}
-
-static void __exit cb710_mmc_cleanup_module(void)
-{
-	platform_driver_unregister(&cb710_mmc_driver);
-}
-
-module_init(cb710_mmc_init_module);
-module_exit(cb710_mmc_cleanup_module);
+module_platform_driver(cb710_mmc_driver);
 
 MODULE_AUTHOR("Michał Mirosław <mirq-linux@rere.qmqm.pl>");
 MODULE_DESCRIPTION("ENE CB710 memory card reader driver - MMC/SD part");

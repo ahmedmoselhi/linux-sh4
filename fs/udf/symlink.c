@@ -20,25 +20,22 @@
  */
 
 #include "udfdecl.h"
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/errno.h>
 #include <linux/fs.h>
 #include <linux/time.h>
 #include <linux/mm.h>
 #include <linux/stat.h>
-#include <linux/slab.h>
 #include <linux/pagemap.h>
-#include <linux/smp_lock.h>
-#include <linux/buffer_head.h>
 #include "udf_i.h"
 
-static int udf_pc_to_char(struct super_block *sb, char *from,
-			  int fromlen, char *to, int tolen)
+static int udf_pc_to_char(struct super_block *sb, unsigned char *from,
+			  int fromlen, unsigned char *to, int tolen)
 {
 	struct pathComponent *pc;
 	int elen = 0;
 	int comp_len;
-	char *p = to;
+	unsigned char *p = to;
 
 	/* Reserve one byte for terminating \0 */
 	tolen--;
@@ -85,6 +82,9 @@ static int udf_pc_to_char(struct super_block *sb, char *from,
 			comp_len = udf_get_filename(sb, pc->componentIdent,
 						    pc->lengthComponentIdent,
 						    p, tolen);
+			if (comp_len < 0)
+				return comp_len;
+
 			p += comp_len;
 			tolen -= comp_len;
 			if (tolen == 0)
@@ -105,10 +105,11 @@ static int udf_symlink_filler(struct file *file, struct page *page)
 {
 	struct inode *inode = page->mapping->host;
 	struct buffer_head *bh = NULL;
-	char *symlink;
+	unsigned char *symlink;
 	int err;
-	char *p = kmap(page);
+	unsigned char *p = page_address(page);
 	struct udf_inode_info *iinfo;
+	uint32_t pos;
 
 	/* We don't support symlinks longer than one block */
 	if (inode->i_size > inode->i_sb->s_blocksize) {
@@ -116,12 +117,14 @@ static int udf_symlink_filler(struct file *file, struct page *page)
 		goto out_unmap;
 	}
 
-	lock_kernel();
 	iinfo = UDF_I(inode);
+	pos = udf_block_map(inode, 0);
+
+	down_read(&iinfo->i_data_sem);
 	if (iinfo->i_alloc_type == ICBTAG_FLAG_AD_IN_ICB) {
 		symlink = iinfo->i_ext.i_data + iinfo->i_lenEAttr;
 	} else {
-		bh = sb_bread(inode->i_sb, udf_block_map(inode, 0));
+		bh = sb_bread(inode->i_sb, pos);
 
 		if (!bh) {
 			err = -EIO;
@@ -136,19 +139,43 @@ static int udf_symlink_filler(struct file *file, struct page *page)
 	if (err)
 		goto out_unlock_inode;
 
-	unlock_kernel();
+	up_read(&iinfo->i_data_sem);
 	SetPageUptodate(page);
-	kunmap(page);
 	unlock_page(page);
 	return 0;
 
 out_unlock_inode:
-	unlock_kernel();
+	up_read(&iinfo->i_data_sem);
 	SetPageError(page);
 out_unmap:
-	kunmap(page);
 	unlock_page(page);
 	return err;
+}
+
+static int udf_symlink_getattr(const struct path *path, struct kstat *stat,
+				u32 request_mask, unsigned int flags)
+{
+	struct dentry *dentry = path->dentry;
+	struct inode *inode = d_backing_inode(dentry);
+	struct page *page;
+
+	generic_fillattr(inode, stat);
+	page = read_mapping_page(inode->i_mapping, 0, NULL);
+	if (IS_ERR(page))
+		return PTR_ERR(page);
+	/*
+	 * UDF uses non-trivial encoding of symlinks so i_size does not match
+	 * number of characters reported by readlink(2) which apparently some
+	 * applications expect. Also POSIX says that "The value returned in the
+	 * st_size field shall be the length of the contents of the symbolic
+	 * link, and shall not count a trailing null if one is present." So
+	 * let's report the length of string returned by readlink(2) for
+	 * st_size.
+	 */
+	stat->size = strlen(page_address(page));
+	put_page(page);
+
+	return 0;
 }
 
 /*
@@ -156,4 +183,9 @@ out_unmap:
  */
 const struct address_space_operations udf_symlink_aops = {
 	.readpage		= udf_symlink_filler,
+};
+
+const struct inode_operations udf_symlink_inode_operations = {
+	.get_link	= page_get_link,
+	.getattr	= udf_symlink_getattr,
 };

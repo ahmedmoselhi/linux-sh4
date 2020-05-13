@@ -1,25 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Intel Wireless WiMAX Connection 2400m
  * Implement backend for the WiMAX stack rfkill support
  *
- *
  * Copyright (C) 2007-2008 Intel Corporation <linux-wimax@intel.com>
  * Inaky Perez-Gonzalez <inaky.perez-gonzalez@intel.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License version
- * 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
- *
  *
  * The WiMAX kernel stack integrates into RF-Kill and keeps the
  * switches's status. We just need to:
@@ -27,13 +12,14 @@
  * - report changes in the HW RF Kill switch [with
  *   wimax_rfkill_{sw,hw}_report(), which happens when we detect those
  *   indications coming through hardware reports]. We also do it on
- *   initialization to let the stack know the intial HW state.
+ *   initialization to let the stack know the initial HW state.
  *
  * - implement indications from the stack to change the SW RF Kill
  *   switch (coming from sysfs, the wimax stack or user space).
  */
 #include "i2400m.h"
 #include <linux/wimax/i2400m.h>
+#include <linux/slab.h>
 
 
 
@@ -72,7 +58,7 @@ int i2400m_radio_is(struct i2400m *i2400m, enum wimax_rf_state state)
  * Generic Netlink will call this function when a message is sent from
  * userspace to change the software RF-Kill switch status.
  *
- * This function will set the device's sofware RF-Kill switch state to
+ * This function will set the device's software RF-Kill switch state to
  * match what is requested.
  *
  * NOTE: the i2400m has a strict state machine; we can only set the
@@ -90,7 +76,7 @@ int i2400m_op_rfkill_sw_toggle(struct wimax_dev *wimax_dev,
 	struct {
 		struct i2400m_l3l4_hdr hdr;
 		struct i2400m_tlv_rf_operation sw_rf;
-	} __attribute__((packed)) *cmd;
+	} __packed *cmd;
 	char strerr[32];
 
 	d_fnstart(4, dev, "(wimax_dev %p state %d)\n", wimax_dev, state);
@@ -146,6 +132,7 @@ error_msg_to_dev:
 error_alloc:
 	d_fnend(4, dev, "(wimax_dev %p state %d) = %d\n",
 		wimax_dev, state, result);
+	kfree(cmd);
 	return result;
 }
 

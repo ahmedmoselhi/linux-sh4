@@ -9,6 +9,8 @@
  *
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/fs.h>
@@ -92,15 +94,23 @@ static struct posix_acl *jffs2_acl_from_medium(void *value, size_t size)
 			case ACL_MASK:
 			case ACL_OTHER:
 				value += sizeof(struct jffs2_acl_entry_short);
-				acl->a_entries[i].e_id = ACL_UNDEFINED_ID;
 				break;
 
 			case ACL_USER:
+				value += sizeof(struct jffs2_acl_entry);
+				if (value > end)
+					goto fail;
+				acl->a_entries[i].e_uid =
+					make_kuid(&init_user_ns,
+						  je32_to_cpu(entry->e_id));
+				break;
 			case ACL_GROUP:
 				value += sizeof(struct jffs2_acl_entry);
 				if (value > end)
 					goto fail;
-				acl->a_entries[i].e_id = je32_to_cpu(entry->e_id);
+				acl->a_entries[i].e_gid =
+					make_kgid(&init_user_ns,
+						  je32_to_cpu(entry->e_id));
 				break;
 
 			default:
@@ -123,19 +133,26 @@ static void *jffs2_acl_to_medium(const struct posix_acl *acl, size_t *size)
 	size_t i;
 
 	*size = jffs2_acl_size(acl->a_count);
-	header = kmalloc(sizeof(*header) + acl->a_count * sizeof(*entry), GFP_KERNEL);
+	header = kmalloc(struct_size(header, a_entries, acl->a_count),
+			GFP_KERNEL);
 	if (!header)
 		return ERR_PTR(-ENOMEM);
 	header->a_version = cpu_to_je32(JFFS2_ACL_VERSION);
 	e = header + 1;
 	for (i=0; i < acl->a_count; i++) {
+		const struct posix_acl_entry *acl_e = &acl->a_entries[i];
 		entry = e;
-		entry->e_tag = cpu_to_je16(acl->a_entries[i].e_tag);
-		entry->e_perm = cpu_to_je16(acl->a_entries[i].e_perm);
-		switch(acl->a_entries[i].e_tag) {
+		entry->e_tag = cpu_to_je16(acl_e->e_tag);
+		entry->e_perm = cpu_to_je16(acl_e->e_perm);
+		switch(acl_e->e_tag) {
 			case ACL_USER:
+				entry->e_id = cpu_to_je32(
+					from_kuid(&init_user_ns, acl_e->e_uid));
+				e += sizeof(struct jffs2_acl_entry);
+				break;
 			case ACL_GROUP:
-				entry->e_id = cpu_to_je32(acl->a_entries[i].e_id);
+				entry->e_id = cpu_to_je32(
+					from_kgid(&init_user_ns, acl_e->e_gid));
 				e += sizeof(struct jffs2_acl_entry);
 				break;
 
@@ -156,15 +173,11 @@ static void *jffs2_acl_to_medium(const struct posix_acl *acl, size_t *size)
 	return ERR_PTR(-EINVAL);
 }
 
-static struct posix_acl *jffs2_get_acl(struct inode *inode, int type)
+struct posix_acl *jffs2_get_acl(struct inode *inode, int type)
 {
 	struct posix_acl *acl;
 	char *value = NULL;
 	int rc, xprefix;
-
-	acl = get_cached_acl(inode, type);
-	if (acl != ACL_NOT_CACHED)
-		return acl;
 
 	switch (type) {
 	case ACL_TYPE_ACCESS:
@@ -190,10 +203,7 @@ static struct posix_acl *jffs2_get_acl(struct inode *inode, int type)
 	} else {
 		acl = ERR_PTR(rc);
 	}
-	if (value)
-		kfree(value);
-	if (!IS_ERR(acl))
-		set_cached_acl(inode, type, acl);
+	kfree(value);
 	return acl;
 }
 
@@ -216,32 +226,29 @@ static int __jffs2_set_acl(struct inode *inode, int xprefix, struct posix_acl *a
 	return rc;
 }
 
-static int jffs2_set_acl(struct inode *inode, int type, struct posix_acl *acl)
+int jffs2_set_acl(struct inode *inode, struct posix_acl *acl, int type)
 {
 	int rc, xprefix;
-
-	if (S_ISLNK(inode->i_mode))
-		return -EOPNOTSUPP;
 
 	switch (type) {
 	case ACL_TYPE_ACCESS:
 		xprefix = JFFS2_XPREFIX_ACL_ACCESS;
 		if (acl) {
-			mode_t mode = inode->i_mode;
-			rc = posix_acl_equiv_mode(acl, &mode);
-			if (rc < 0)
+			umode_t mode;
+
+			rc = posix_acl_update_mode(inode, &mode, &acl);
+			if (rc)
 				return rc;
 			if (inode->i_mode != mode) {
 				struct iattr attr;
 
-				attr.ia_valid = ATTR_MODE;
+				attr.ia_valid = ATTR_MODE | ATTR_CTIME;
 				attr.ia_mode = mode;
+				attr.ia_ctime = current_time(inode);
 				rc = jffs2_do_setattr(inode, &attr);
 				if (rc < 0)
 					return rc;
 			}
-			if (rc == 0)
-				acl = NULL;
 		}
 		break;
 	case ACL_TYPE_DEFAULT:
@@ -258,54 +265,24 @@ static int jffs2_set_acl(struct inode *inode, int type, struct posix_acl *acl)
 	return rc;
 }
 
-int jffs2_check_acl(struct inode *inode, int mask)
+int jffs2_init_acl_pre(struct inode *dir_i, struct inode *inode, umode_t *i_mode)
 {
-	struct posix_acl *acl;
-	int rc;
-
-	acl = jffs2_get_acl(inode, ACL_TYPE_ACCESS);
-	if (IS_ERR(acl))
-		return PTR_ERR(acl);
-	if (acl) {
-		rc = posix_acl_permission(inode, acl, mask);
-		posix_acl_release(acl);
-		return rc;
-	}
-	return -EAGAIN;
-}
-
-int jffs2_init_acl_pre(struct inode *dir_i, struct inode *inode, int *i_mode)
-{
-	struct posix_acl *acl, *clone;
+	struct posix_acl *default_acl, *acl;
 	int rc;
 
 	cache_no_acl(inode);
 
-	if (S_ISLNK(*i_mode))
-		return 0;	/* Symlink always has no-ACL */
+	rc = posix_acl_create(dir_i, i_mode, &default_acl, &acl);
+	if (rc)
+		return rc;
 
-	acl = jffs2_get_acl(dir_i, ACL_TYPE_DEFAULT);
-	if (IS_ERR(acl))
-		return PTR_ERR(acl);
-
-	if (!acl) {
-		*i_mode &= ~current_umask();
-	} else {
-		if (S_ISDIR(*i_mode))
-			set_cached_acl(inode, ACL_TYPE_DEFAULT, acl);
-
-		clone = posix_acl_clone(acl, GFP_KERNEL);
-		if (!clone)
-			return -ENOMEM;
-		rc = posix_acl_create_masq(clone, (mode_t *)i_mode);
-		if (rc < 0) {
-			posix_acl_release(clone);
-			return rc;
-		}
-		if (rc > 0)
-			set_cached_acl(inode, ACL_TYPE_ACCESS, clone);
-
-		posix_acl_release(clone);
+	if (default_acl) {
+		set_cached_acl(inode, ACL_TYPE_DEFAULT, default_acl);
+		posix_acl_release(default_acl);
+	}
+	if (acl) {
+		set_cached_acl(inode, ACL_TYPE_ACCESS, acl);
+		posix_acl_release(acl);
 	}
 	return 0;
 }
@@ -328,130 +305,3 @@ int jffs2_init_acl_post(struct inode *inode)
 
 	return 0;
 }
-
-int jffs2_acl_chmod(struct inode *inode)
-{
-	struct posix_acl *acl, *clone;
-	int rc;
-
-	if (S_ISLNK(inode->i_mode))
-		return -EOPNOTSUPP;
-	acl = jffs2_get_acl(inode, ACL_TYPE_ACCESS);
-	if (IS_ERR(acl) || !acl)
-		return PTR_ERR(acl);
-	clone = posix_acl_clone(acl, GFP_KERNEL);
-	posix_acl_release(acl);
-	if (!clone)
-		return -ENOMEM;
-	rc = posix_acl_chmod_masq(clone, inode->i_mode);
-	if (!rc)
-		rc = jffs2_set_acl(inode, ACL_TYPE_ACCESS, clone);
-	posix_acl_release(clone);
-	return rc;
-}
-
-static size_t jffs2_acl_access_listxattr(struct inode *inode, char *list, size_t list_size,
-					 const char *name, size_t name_len)
-{
-	const int retlen = sizeof(POSIX_ACL_XATTR_ACCESS);
-
-	if (list && retlen <= list_size)
-		strcpy(list, POSIX_ACL_XATTR_ACCESS);
-	return retlen;
-}
-
-static size_t jffs2_acl_default_listxattr(struct inode *inode, char *list, size_t list_size,
-					  const char *name, size_t name_len)
-{
-	const int retlen = sizeof(POSIX_ACL_XATTR_DEFAULT);
-
-	if (list && retlen <= list_size)
-		strcpy(list, POSIX_ACL_XATTR_DEFAULT);
-	return retlen;
-}
-
-static int jffs2_acl_getxattr(struct inode *inode, int type, void *buffer, size_t size)
-{
-	struct posix_acl *acl;
-	int rc;
-
-	acl = jffs2_get_acl(inode, type);
-	if (IS_ERR(acl))
-		return PTR_ERR(acl);
-	if (!acl)
-		return -ENODATA;
-	rc = posix_acl_to_xattr(acl, buffer, size);
-	posix_acl_release(acl);
-
-	return rc;
-}
-
-static int jffs2_acl_access_getxattr(struct inode *inode, const char *name, void *buffer, size_t size)
-{
-	if (name[0] != '\0')
-		return -EINVAL;
-	return jffs2_acl_getxattr(inode, ACL_TYPE_ACCESS, buffer, size);
-}
-
-static int jffs2_acl_default_getxattr(struct inode *inode, const char *name, void *buffer, size_t size)
-{
-	if (name[0] != '\0')
-		return -EINVAL;
-	return jffs2_acl_getxattr(inode, ACL_TYPE_DEFAULT, buffer, size);
-}
-
-static int jffs2_acl_setxattr(struct inode *inode, int type, const void *value, size_t size)
-{
-	struct posix_acl *acl;
-	int rc;
-
-	if (!is_owner_or_cap(inode))
-		return -EPERM;
-
-	if (value) {
-		acl = posix_acl_from_xattr(value, size);
-		if (IS_ERR(acl))
-			return PTR_ERR(acl);
-		if (acl) {
-			rc = posix_acl_valid(acl);
-			if (rc)
-				goto out;
-		}
-	} else {
-		acl = NULL;
-	}
-	rc = jffs2_set_acl(inode, type, acl);
- out:
-	posix_acl_release(acl);
-	return rc;
-}
-
-static int jffs2_acl_access_setxattr(struct inode *inode, const char *name,
-				     const void *buffer, size_t size, int flags)
-{
-	if (name[0] != '\0')
-		return -EINVAL;
-	return jffs2_acl_setxattr(inode, ACL_TYPE_ACCESS, buffer, size);
-}
-
-static int jffs2_acl_default_setxattr(struct inode *inode, const char *name,
-				      const void *buffer, size_t size, int flags)
-{
-	if (name[0] != '\0')
-		return -EINVAL;
-	return jffs2_acl_setxattr(inode, ACL_TYPE_DEFAULT, buffer, size);
-}
-
-struct xattr_handler jffs2_acl_access_xattr_handler = {
-	.prefix	= POSIX_ACL_XATTR_ACCESS,
-	.list	= jffs2_acl_access_listxattr,
-	.get	= jffs2_acl_access_getxattr,
-	.set	= jffs2_acl_access_setxattr,
-};
-
-struct xattr_handler jffs2_acl_default_xattr_handler = {
-	.prefix	= POSIX_ACL_XATTR_DEFAULT,
-	.list	= jffs2_acl_default_listxattr,
-	.get	= jffs2_acl_default_getxattr,
-	.set	= jffs2_acl_default_setxattr,
-};

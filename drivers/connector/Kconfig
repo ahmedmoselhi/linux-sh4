@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 
 menuconfig CONNECTOR
 	tristate "Connector - unified userspace <-> kernelspace linker"
@@ -12,7 +13,7 @@ menuconfig CONNECTOR
 if CONNECTOR
 
 config PROC_EVENTS
-	boolean "Report process events to userspace"
+	bool "Report process events to userspace"
 	depends on CONNECTOR=y
 	default y
 	---help---

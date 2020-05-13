@@ -227,6 +227,8 @@
 				max-frame-size = <9000>;
 				rx-fifo-size = <4096>;
 				tx-fifo-size = <2048>;
+				rx-fifo-size-gige = <16384>;
+				tx-fifo-size-gige = <16384>;
 				phy-mode = "rgmii";
 				phy-map = <0x0000003f>;	/* Start at 6 */
 				rgmii-device = <&RGMII0>;
@@ -255,6 +257,8 @@
 				max-frame-size = <9000>;
 				rx-fifo-size = <4096>;
 				tx-fifo-size = <2048>;
+                                rx-fifo-size-gige = <16384>;
+                                tx-fifo-size-gige = <16384>;
 				phy-mode = "rgmii";
 				phy-map = <0x00000000>;
 				rgmii-device = <&RGMII0>;
@@ -264,7 +268,7 @@
 			};
 		};
 
-		PCIE0: pciex@0a0000000 {
+		PCIE0: pciex@a0000000 {
 			device_type = "pci";
 			#interrupt-cells = <1>;
 			#size-cells = <2>;
@@ -305,7 +309,7 @@
 				0x0 0x0 0x0 0x4 &UIC2 0x3 0x4 /* swizzled int D */>;
 		};
 
-		PCIE1: pciex@0c0000000 {
+		PCIE1: pciex@c0000000 {
 			device_type = "pci";
 			#interrupt-cells = <1>;
 			#size-cells = <2>;

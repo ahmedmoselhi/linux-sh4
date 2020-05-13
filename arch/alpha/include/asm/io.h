@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ALPHA_IO_H
 #define __ALPHA_IO_H
 
@@ -6,7 +7,6 @@
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <asm/compiler.h>
-#include <asm/system.h>
 #include <asm/pgtable.h>
 #include <asm/machvec.h>
 #include <asm/hwrpb.h>
@@ -37,8 +37,9 @@
  */
 extern inline void __set_hae(unsigned long new_hae)
 {
-	unsigned long flags;
-	local_irq_save(flags);
+	unsigned long flags = swpipl(IPL_MAX);
+
+	barrier();
 
 	alpha_mv.hae_cache = new_hae;
 	*alpha_mv.hae_register = new_hae;
@@ -46,7 +47,8 @@ extern inline void __set_hae(unsigned long new_hae)
 	/* Re-read to make sure it was written.  */
 	new_hae = *alpha_mv.hae_register;
 
-	local_irq_restore(flags);
+	setipl(flags);
+	barrier();
 }
 
 extern inline void set_hae(unsigned long new_hae)
@@ -90,11 +92,6 @@ static inline void * phys_to_virt(unsigned long address)
 #endif
 
 #define page_to_phys(page)	page_to_pa(page)
-
-static inline dma_addr_t __deprecated isa_page_to_bus(struct page *page)
-{
-	return page_to_phys(page);
-}
 
 /* Maximum PIO space address supported?  */
 #define IO_SPACE_LIMIT 0xffff
@@ -286,17 +283,8 @@ static inline void __iomem *ioremap(unsigned long port, unsigned long size)
 	return IO_CONCAT(__IO_PREFIX,ioremap) (port, size);
 }
 
-static inline void __iomem *__ioremap(unsigned long port, unsigned long size,
-				      unsigned long flags)
-{
-	return ioremap(port, size);
-}
-
-static inline void __iomem * ioremap_nocache(unsigned long offset,
-					     unsigned long size)
-{
-	return ioremap(offset, size);
-} 
+#define ioremap_wc ioremap
+#define ioremap_uc ioremap
 
 static inline void iounmap(volatile void __iomem *addr)
 {
@@ -336,14 +324,14 @@ extern inline unsigned int ioread16(void __iomem *addr)
 
 extern inline void iowrite8(u8 b, void __iomem *addr)
 {
-	IO_CONCAT(__IO_PREFIX,iowrite8)(b, addr);
 	mb();
+	IO_CONCAT(__IO_PREFIX, iowrite8)(b, addr);
 }
 
 extern inline void iowrite16(u16 b, void __iomem *addr)
 {
-	IO_CONCAT(__IO_PREFIX,iowrite16)(b, addr);
 	mb();
+	IO_CONCAT(__IO_PREFIX, iowrite16)(b, addr);
 }
 
 extern inline u8 inb(unsigned long port)
@@ -377,8 +365,8 @@ extern inline unsigned int ioread32(void __iomem *addr)
 
 extern inline void iowrite32(u32 b, void __iomem *addr)
 {
-	IO_CONCAT(__IO_PREFIX,iowrite32)(b, addr);
 	mb();
+	IO_CONCAT(__IO_PREFIX, iowrite32)(b, addr);
 }
 
 extern inline u32 inl(unsigned long port)
@@ -429,14 +417,14 @@ extern inline u16 readw(const volatile void __iomem *addr)
 
 extern inline void writeb(u8 b, volatile void __iomem *addr)
 {
-	__raw_writeb(b, addr);
 	mb();
+	__raw_writeb(b, addr);
 }
 
 extern inline void writew(u16 b, volatile void __iomem *addr)
 {
-	__raw_writew(b, addr);
 	mb();
+	__raw_writew(b, addr);
 }
 #endif
 
@@ -477,16 +465,21 @@ extern inline u64 readq(const volatile void __iomem *addr)
 
 extern inline void writel(u32 b, volatile void __iomem *addr)
 {
-	__raw_writel(b, addr);
 	mb();
+	__raw_writel(b, addr);
 }
 
 extern inline void writeq(u64 b, volatile void __iomem *addr)
 {
-	__raw_writeq(b, addr);
 	mb();
+	__raw_writeq(b, addr);
 }
 #endif
+
+#define ioread16be(p) be16_to_cpu(ioread16(p))
+#define ioread32be(p) be32_to_cpu(ioread32(p))
+#define iowrite16be(v,p) iowrite16(cpu_to_be16(v), (p))
+#define iowrite32be(v,p) iowrite32(cpu_to_be32(v), (p))
 
 #define inb_p		inb
 #define inw_p		inw
@@ -494,12 +487,14 @@ extern inline void writeq(u64 b, volatile void __iomem *addr)
 #define outb_p		outb
 #define outw_p		outw
 #define outl_p		outl
-#define readb_relaxed(addr) __raw_readb(addr)
-#define readw_relaxed(addr) __raw_readw(addr)
-#define readl_relaxed(addr) __raw_readl(addr)
-#define readq_relaxed(addr) __raw_readq(addr)
-
-#define mmiowb()
+#define readb_relaxed(addr)	__raw_readb(addr)
+#define readw_relaxed(addr)	__raw_readw(addr)
+#define readl_relaxed(addr)	__raw_readl(addr)
+#define readq_relaxed(addr)	__raw_readq(addr)
+#define writeb_relaxed(b, addr)	__raw_writeb(b, addr)
+#define writew_relaxed(b, addr)	__raw_writew(b, addr)
+#define writel_relaxed(b, addr)	__raw_writel(b, addr)
+#define writeq_relaxed(b, addr)	__raw_writeq(b, addr)
 
 /*
  * String version of IO memory access ops:

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /* -*- mode: c; c-basic-offset: 8; -*-
  * vim: noexpandtab sw=8 ts=8 sts=0:
  *
@@ -6,29 +7,12 @@
  * Initialize, read, write, etc. system files.
  *
  * Copyright (C) 2002, 2004 Oracle.  All rights reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public
- * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public
- * License along with this program; if not, write to the
- * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
- * Boston, MA 021110-1307, USA.
  */
 
 #include <linux/fs.h>
 #include <linux/types.h>
-#include <linux/slab.h>
 #include <linux/highmem.h>
 
-#define MLOG_MASK_PREFIX ML_INODE
 #include <cluster/masklog.h>
 
 #include "ocfs2.h"
@@ -45,11 +29,6 @@ static struct inode * _ocfs2_get_system_file_inode(struct ocfs2_super *osb,
 						   int type,
 						   u32 slot);
 
-static inline int is_global_system_inode(int type);
-static inline int is_in_system_inode_array(struct ocfs2_super *osb,
-					   int type,
-					   u32 slot);
-
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 static struct lock_class_key ocfs2_sysfile_cluster_lock_key[NUM_SYSTEM_INODES];
 #endif
@@ -60,11 +39,52 @@ static inline int is_global_system_inode(int type)
 		type <= OCFS2_LAST_GLOBAL_SYSTEM_INODE;
 }
 
-static inline int is_in_system_inode_array(struct ocfs2_super *osb,
-					   int type,
-					   u32 slot)
+static struct inode **get_local_system_inode(struct ocfs2_super *osb,
+					     int type,
+					     u32 slot)
 {
-	return slot == osb->slot_num || is_global_system_inode(type);
+	int index;
+	struct inode **local_system_inodes, **free = NULL;
+
+	BUG_ON(slot == OCFS2_INVALID_SLOT);
+	BUG_ON(type < OCFS2_FIRST_LOCAL_SYSTEM_INODE ||
+	       type > OCFS2_LAST_LOCAL_SYSTEM_INODE);
+
+	spin_lock(&osb->osb_lock);
+	local_system_inodes = osb->local_system_inodes;
+	spin_unlock(&osb->osb_lock);
+
+	if (unlikely(!local_system_inodes)) {
+		local_system_inodes =
+			kzalloc(array3_size(sizeof(struct inode *),
+					    NUM_LOCAL_SYSTEM_INODES,
+					    osb->max_slots),
+				GFP_NOFS);
+		if (!local_system_inodes) {
+			mlog_errno(-ENOMEM);
+			/*
+			 * return NULL here so that ocfs2_get_sytem_file_inodes
+			 * will try to create an inode and use it. We will try
+			 * to initialize local_system_inodes next time.
+			 */
+			return NULL;
+		}
+
+		spin_lock(&osb->osb_lock);
+		if (osb->local_system_inodes) {
+			/* Someone has initialized it for us. */
+			free = local_system_inodes;
+			local_system_inodes = osb->local_system_inodes;
+		} else
+			osb->local_system_inodes = local_system_inodes;
+		spin_unlock(&osb->osb_lock);
+		kfree(free);
+	}
+
+	index = (slot * NUM_LOCAL_SYSTEM_INODES) +
+		(type - OCFS2_FIRST_LOCAL_SYSTEM_INODE);
+
+	return &local_system_inodes[index];
 }
 
 struct inode *ocfs2_get_system_file_inode(struct ocfs2_super *osb,
@@ -75,12 +95,16 @@ struct inode *ocfs2_get_system_file_inode(struct ocfs2_super *osb,
 	struct inode **arr = NULL;
 
 	/* avoid the lookup if cached in local system file array */
-	if (is_in_system_inode_array(osb, type, slot))
-		arr = &(osb->system_inodes[type]);
+	if (is_global_system_inode(type)) {
+		arr = &(osb->global_system_inodes[type]);
+	} else
+		arr = get_local_system_inode(osb, type, slot);
 
+	mutex_lock(&osb->system_file_mutex);
 	if (arr && ((inode = *arr) != NULL)) {
 		/* get a ref in addition to the array ref */
 		inode = igrab(inode);
+		mutex_unlock(&osb->system_file_mutex);
 		BUG_ON(!inode);
 
 		return inode;
@@ -94,6 +118,7 @@ struct inode *ocfs2_get_system_file_inode(struct ocfs2_super *osb,
 		*arr = igrab(inode);
 		BUG_ON(!*arr);
 	}
+	mutex_unlock(&osb->system_file_mutex);
 	return inode;
 }
 

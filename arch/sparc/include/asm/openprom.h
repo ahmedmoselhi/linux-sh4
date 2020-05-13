@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __SPARC_OPENPROM_H
 #define __SPARC_OPENPROM_H
 
@@ -11,6 +12,8 @@
 #define LINUX_OPPROM_MAGIC      0x10010407
 
 #ifndef __ASSEMBLY__
+#include <linux/of.h>
+
 /* V0 prom device operations. */
 struct linux_dev_v0_funcs {
 	int (*v0_devopen)(char *device_str);
@@ -26,18 +29,18 @@ struct linux_dev_v0_funcs {
 
 /* V2 and later prom device operations. */
 struct linux_dev_v2_funcs {
-	int (*v2_inst2pkg)(int d);	/* Convert ihandle to phandle */
-	char * (*v2_dumb_mem_alloc)(char *va, unsigned sz);
-	void (*v2_dumb_mem_free)(char *va, unsigned sz);
+	phandle (*v2_inst2pkg)(int d);	/* Convert ihandle to phandle */
+	char * (*v2_dumb_mem_alloc)(char *va, unsigned int sz);
+	void (*v2_dumb_mem_free)(char *va, unsigned int sz);
 
 	/* To map devices into virtual I/O space. */
-	char * (*v2_dumb_mmap)(char *virta, int which_io, unsigned paddr, unsigned sz);
-	void (*v2_dumb_munmap)(char *virta, unsigned size);
+	char * (*v2_dumb_mmap)(char *virta, int which_io, unsigned int paddr, unsigned int sz);
+	void (*v2_dumb_munmap)(char *virta, unsigned int size);
 
 	int (*v2_dev_open)(char *devpath);
 	void (*v2_dev_close)(int d);
 	int (*v2_dev_read)(int d, char *buf, int nbytes);
-	int (*v2_dev_write)(int d, char *buf, int nbytes);
+	int (*v2_dev_write)(int d, const char *buf, int nbytes);
 	int (*v2_dev_seek)(int d, int hi, int lo);
 
 	/* Never issued (multistage load support) */
@@ -48,7 +51,7 @@ struct linux_dev_v2_funcs {
 struct linux_mlist_v0 {
 	struct linux_mlist_v0 *theres_more;
 	unsigned int start_adr;
-	unsigned num_bytes;
+	unsigned int num_bytes;
 };
 
 struct linux_mem_v0 {
@@ -168,12 +171,12 @@ struct linux_romvec {
 
 /* Routines for traversing the prom device tree. */
 struct linux_nodeops {
-	int (*no_nextnode)(int node);
-	int (*no_child)(int node);
-	int (*no_proplen)(int node, const char *name);
-	int (*no_getprop)(int node, const char *name, char *val);
-	int (*no_setprop)(int node, const char *name, char *val, int len);
-	char * (*no_nextprop)(int node, char *name);
+	phandle (*no_nextnode)(phandle node);
+	phandle (*no_child)(phandle node);
+	int (*no_proplen)(phandle node, const char *name);
+	int (*no_getprop)(phandle node, const char *name, char *val);
+	int (*no_setprop)(phandle node, const char *name, char *val, int len);
+	char * (*no_nextprop)(phandle node, char *name);
 };
 
 /* More fun PROM structures for device probing. */

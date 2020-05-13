@@ -17,7 +17,7 @@
 #include <asm/processor.h>
 #include <asm/cache.h>
 #include <asm/pgalloc.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/mmu_context.h>
 
 extern void __weak sh4__flush_region_init(void);
@@ -234,7 +234,7 @@ static void sh64_icache_inv_current_user_range(unsigned long start, unsigned lon
 #define DUMMY_ALLOCO_AREA_SIZE ((L1_CACHE_BYTES << 10) + (1024 * 4))
 static unsigned char dummy_alloco_area[DUMMY_ALLOCO_AREA_SIZE] __cacheline_aligned = { 0, };
 
-static void inline sh64_dcache_purge_sets(int sets_to_purge_base, int n_sets)
+static inline void sh64_dcache_purge_sets(int sets_to_purge_base, int n_sets)
 {
 	/* Purge all ways in a particular block of sets, specified by the base
 	   set number and number of sets.  Can handle wrap-around, if that's
@@ -563,12 +563,12 @@ static void sh5_flush_cache_page(void *args)
 
 static void sh5_flush_dcache_page(void *page)
 {
-	sh64_dcache_purge_phy_page(page_to_phys(page));
+	sh64_dcache_purge_phy_page(page_to_phys((struct page *)page));
 	wmb();
 }
 
 /*
- * Flush the range [start,end] of kernel virtual adddress space from
+ * Flush the range [start,end] of kernel virtual address space from
  * the I-cache.  The corresponding range must be purged from the
  * D-cache also because the SH-5 doesn't have cache snooping between
  * the caches.  The addresses will be visible through the superpage

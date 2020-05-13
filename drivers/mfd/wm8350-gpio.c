@@ -1,15 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * wm8350-core.c  --  Device access for Wolfson WM8350
  *
  * Copyright 2007, 2008 Wolfson Microelectronics PLC.
  *
  * Author: Liam Girdwood
- *
- *  This program is free software; you can redistribute  it and/or modify it
- *  under  the terms of  the GNU General  Public License as published by the
- *  Free Software Foundation;  either version 2 of the  License, or (at your
- *  option) any later version.
- *
  */
 
 #include <linux/kernel.h>
@@ -37,7 +32,7 @@ static int gpio_set_dir(struct wm8350 *wm8350, int gpio, int dir)
 	return ret;
 }
 
-static int gpio_set_debounce(struct wm8350 *wm8350, int gpio, int db)
+static int wm8350_gpio_set_debounce(struct wm8350 *wm8350, int gpio, int db)
 {
 	if (db == WM8350_GPIO_DEBOUNCE_ON)
 		return wm8350_set_bits(wm8350, WM8350_GPIO_DEBOUNCE,
@@ -210,7 +205,7 @@ int wm8350_gpio_config(struct wm8350 *wm8350, int gpio, int dir, int func,
 		goto err;
 	if (gpio_set_polarity(wm8350, gpio, pol))
 		goto err;
-	if (gpio_set_debounce(wm8350, gpio, debounce))
+	if (wm8350_gpio_set_debounce(wm8350, gpio, debounce))
 		goto err;
 	if (gpio_set_dir(wm8350, gpio, dir))
 		goto err;

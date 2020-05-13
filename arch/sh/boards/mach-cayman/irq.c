@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * arch/sh/mach-cayman/irq.c - SH-5 Cayman Interrupt Support
  *
  * This file handles the board specific parts of the Cayman interrupt system
  *
  * Copyright (C) 2002 Stuart Menefy
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 #include <linux/io.h>
 #include <linux/irq.h>
@@ -43,20 +40,9 @@ static irqreturn_t cayman_interrupt_pci2(int irq, void *dev_id)
 	return IRQ_NONE;
 }
 
-static struct irqaction cayman_action_smsc = {
-	.name		= "Cayman SMSC Mux",
-	.handler	= cayman_interrupt_smsc,
-	.flags		= IRQF_DISABLED,
-};
-
-static struct irqaction cayman_action_pci2 = {
-	.name		= "Cayman PCI2 Mux",
-	.handler	= cayman_interrupt_pci2,
-	.flags		= IRQF_DISABLED,
-};
-
-static void enable_cayman_irq(unsigned int irq)
+static void enable_cayman_irq(struct irq_data *data)
 {
+	unsigned int irq = data->irq;
 	unsigned long flags;
 	unsigned long mask;
 	unsigned int reg;
@@ -66,14 +52,15 @@ static void enable_cayman_irq(unsigned int irq)
 	reg = EPLD_MASK_BASE + ((irq / 8) << 2);
 	bit = 1<<(irq % 8);
 	local_irq_save(flags);
-	mask = ctrl_inl(reg);
+	mask = __raw_readl(reg);
 	mask |= bit;
-	ctrl_outl(mask, reg);
+	__raw_writel(mask, reg);
 	local_irq_restore(flags);
 }
 
-void disable_cayman_irq(unsigned int irq)
+static void disable_cayman_irq(struct irq_data *data)
 {
+	unsigned int irq = data->irq;
 	unsigned long flags;
 	unsigned long mask;
 	unsigned int reg;
@@ -83,22 +70,16 @@ void disable_cayman_irq(unsigned int irq)
 	reg = EPLD_MASK_BASE + ((irq / 8) << 2);
 	bit = 1<<(irq % 8);
 	local_irq_save(flags);
-	mask = ctrl_inl(reg);
+	mask = __raw_readl(reg);
 	mask &= ~bit;
-	ctrl_outl(mask, reg);
+	__raw_writel(mask, reg);
 	local_irq_restore(flags);
-}
-
-static void ack_cayman_irq(unsigned int irq)
-{
-	disable_cayman_irq(irq);
 }
 
 struct irq_chip cayman_irq_type = {
 	.name		= "Cayman-IRQ",
-	.unmask 	= enable_cayman_irq,
-	.mask		= disable_cayman_irq,
-	.mask_ack	= ack_cayman_irq,
+	.irq_unmask	= enable_cayman_irq,
+	.irq_mask	= disable_cayman_irq,
 };
 
 int cayman_irq_demux(int evt)
@@ -109,8 +90,8 @@ int cayman_irq_demux(int evt)
 		unsigned long status;
 		int i;
 
-		status = ctrl_inl(EPLD_STATUS_BASE) &
-			 ctrl_inl(EPLD_MASK_BASE) & 0xff;
+		status = __raw_readl(EPLD_STATUS_BASE) &
+			 __raw_readl(EPLD_MASK_BASE) & 0xff;
 		if (status == 0) {
 			irq = -1;
 		} else {
@@ -126,8 +107,8 @@ int cayman_irq_demux(int evt)
 		unsigned long status;
 		int i;
 
-		status = ctrl_inl(EPLD_STATUS_BASE + 3 * sizeof(u32)) &
-			 ctrl_inl(EPLD_MASK_BASE + 3 * sizeof(u32)) & 0xff;
+		status = __raw_readl(EPLD_STATUS_BASE + 3 * sizeof(u32)) &
+			 __raw_readl(EPLD_MASK_BASE + 3 * sizeof(u32)) & 0xff;
 		if (status == 0) {
 			irq = -1;
 		} else {
@@ -146,18 +127,22 @@ void init_cayman_irq(void)
 {
 	int i;
 
-	epld_virt = (unsigned long)ioremap_nocache(EPLD_BASE, 1024);
+	epld_virt = (unsigned long)ioremap(EPLD_BASE, 1024);
 	if (!epld_virt) {
 		printk(KERN_ERR "Cayman IRQ: Unable to remap EPLD\n");
 		return;
 	}
 
 	for (i = 0; i < NR_EXT_IRQS; i++) {
-		set_irq_chip_and_handler(START_EXT_IRQS + i, &cayman_irq_type,
-					 handle_level_irq);
+		irq_set_chip_and_handler(START_EXT_IRQS + i,
+					 &cayman_irq_type, handle_level_irq);
 	}
 
 	/* Setup the SMSC interrupt */
-	setup_irq(SMSC_IRQ, &cayman_action_smsc);
-	setup_irq(PCI2_IRQ, &cayman_action_pci2);
+	if (request_irq(SMSC_IRQ, cayman_interrupt_smsc, 0, "Cayman SMSC Mux",
+			NULL))
+		pr_err("Failed to register Cayman SMSC Mux interrupt\n");
+	if (request_irq(PCI2_IRQ, cayman_interrupt_pci2, 0, "Cayman PCI2 Mux",
+			NULL))
+		pr_err("Failed to register Cayman PCI2 Mux interrupt\n");
 }

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *	Things to sort out:
  *
@@ -14,9 +15,10 @@
  *	2000-10-29	Henner Eisen	lapb_data_indication() return status.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/module.h>
 
-#include <asm/system.h>
 #include <linux/uaccess.h>
 #include <linux/bitops.h>
 #include <linux/string.h>
@@ -29,13 +31,12 @@
 #include <linux/etherdevice.h>
 #include <linux/skbuff.h>
 #include <linux/if_arp.h>
-#include <linux/x25.h>
 #include <linux/lapb.h>
 #include <linux/init.h>
 #include <linux/rtnetlink.h>
-#include "x25_asy.h"
-
+#include <linux/slab.h>
 #include <net/x25device.h>
+#include "x25_asy.h"
 
 static struct net_device **x25_asy_devs;
 static int x25_asy_maxdev = SL_NRUNIT;
@@ -80,8 +81,8 @@ static struct x25_asy *x25_asy_alloc(void)
 		char name[IFNAMSIZ];
 		sprintf(name, "x25asy%d", i);
 
-		dev = alloc_netdev(sizeof(struct x25_asy),
-				   name, x25_asy_setup);
+		dev = alloc_netdev(sizeof(struct x25_asy), name,
+				   NET_NAME_UNKNOWN, x25_asy_setup);
 		if (!dev)
 			return NULL;
 
@@ -96,7 +97,7 @@ static struct x25_asy *x25_asy_alloc(void)
 			x25_asy_devs[i] = dev;
 			return sl;
 		} else {
-			printk(KERN_WARNING "x25_asy_alloc() - register_netdev() failure.\n");
+			pr_warn("%s(): register_netdev() failure\n", __func__);
 			free_netdev(dev);
 		}
 	}
@@ -114,22 +115,20 @@ static void x25_asy_free(struct x25_asy *sl)
 	sl->xbuff = NULL;
 
 	if (!test_and_clear_bit(SLF_INUSE, &sl->flags))
-		printk(KERN_ERR "%s: x25_asy_free for already free unit.\n",
-			sl->dev->name);
+		netdev_err(sl->dev, "x25_asy_free for already free unit\n");
 }
 
 static int x25_asy_change_mtu(struct net_device *dev, int newmtu)
 {
 	struct x25_asy *sl = netdev_priv(dev);
 	unsigned char *xbuff, *rbuff;
-	int len = 2 * newmtu;
+	int len;
 
+	len = 2 * newmtu;
 	xbuff = kmalloc(len + 4, GFP_ATOMIC);
 	rbuff = kmalloc(len + 4, GFP_ATOMIC);
 
 	if (xbuff == NULL || rbuff == NULL) {
-		printk(KERN_WARNING "%s: unable to grow X.25 buffers, MTU change cancelled.\n",
-		       dev->name);
 		kfree(xbuff);
 		kfree(rbuff);
 		return -ENOMEM;
@@ -198,13 +197,12 @@ static void x25_asy_bump(struct x25_asy *sl)
 
 	skb = dev_alloc_skb(count+1);
 	if (skb == NULL) {
-		printk(KERN_WARNING "%s: memory squeeze, dropping packet.\n",
-			sl->dev->name);
+		netdev_warn(sl->dev, "memory squeeze, dropping packet\n");
 		dev->stats.rx_dropped++;
 		return;
 	}
 	skb_push(skb, 1);	/* LAPB internal control */
-	memcpy(skb_put(skb, count), sl->rbuff, count);
+	skb_put_data(skb, sl->rbuff, count);
 	skb->protocol = x25_type_trans(skb, sl->dev);
 	err = lapb_data_received(skb->dev, skb);
 	if (err != LAPB_OK) {
@@ -233,7 +231,7 @@ static void x25_asy_encaps(struct x25_asy *sl, unsigned char *icp, int len)
 	}
 
 	p = icp;
-	count = x25_asy_esc(p, (unsigned char *) sl->xbuff, len);
+	count = x25_asy_esc(p, sl->xbuff, len);
 
 	/* Order of next two lines is *very* important.
 	 * When we are sending a little amount of data,
@@ -278,7 +276,7 @@ static void x25_asy_write_wakeup(struct tty_struct *tty)
 	sl->xhead += actual;
 }
 
-static void x25_asy_timeout(struct net_device *dev)
+static void x25_asy_timeout(struct net_device *dev, unsigned int txqueue)
 {
 	struct x25_asy *sl = netdev_priv(dev);
 
@@ -287,9 +285,9 @@ static void x25_asy_timeout(struct net_device *dev)
 		/* May be we must check transmitter timeout here ?
 		 *      14 Oct 1994 Dmitry Gorodchanin.
 		 */
-		printk(KERN_WARNING "%s: transmit timed out, %s?\n", dev->name,
-		       (tty_chars_in_buffer(sl->tty) || sl->xleft) ?
-		       "bad line quality" : "driver error");
+		netdev_warn(dev, "transmit timed out, %s?\n",
+			    (tty_chars_in_buffer(sl->tty) || sl->xleft) ?
+			    "bad line quality" : "driver error");
 		sl->xleft = 0;
 		clear_bit(TTY_DO_WRITE_WAKEUP, &sl->tty->flags);
 		x25_asy_unlock(sl);
@@ -306,25 +304,27 @@ static netdev_tx_t x25_asy_xmit(struct sk_buff *skb,
 	int err;
 
 	if (!netif_running(sl->dev)) {
-		printk(KERN_ERR "%s: xmit call when iface is down\n",
-			dev->name);
+		netdev_err(dev, "xmit call when iface is down\n");
 		kfree_skb(skb);
 		return NETDEV_TX_OK;
 	}
 
 	switch (skb->data[0]) {
-	case 0x00:
+	case X25_IFACE_DATA:
 		break;
-	case 0x01: /* Connection request .. do nothing */
+	case X25_IFACE_CONNECT: /* Connection request .. do nothing */
 		err = lapb_connect_request(dev);
 		if (err != LAPB_OK)
-			printk(KERN_ERR "x25_asy: lapb_connect_request error - %d\n", err);
+			netdev_err(dev, "lapb_connect_request error: %d\n",
+				   err);
 		kfree_skb(skb);
 		return NETDEV_TX_OK;
-	case 0x02: /* Disconnect request .. do nothing - hang up ?? */
+	case X25_IFACE_DISCONNECT: /* do nothing - hang up ?? */
 		err = lapb_disconnect_request(dev);
 		if (err != LAPB_OK)
-			printk(KERN_ERR "x25_asy: lapb_disconnect_request error - %d\n", err);
+			netdev_err(dev, "lapb_disconnect_request error: %d\n",
+				   err);
+		/* fall through */
 	default:
 		kfree_skb(skb);
 		return NETDEV_TX_OK;
@@ -343,7 +343,7 @@ static netdev_tx_t x25_asy_xmit(struct sk_buff *skb,
 
 	err = lapb_data_request(dev, skb);
 	if (err != LAPB_OK) {
-		printk(KERN_ERR "x25_asy: lapb_data_request error - %d\n", err);
+		netdev_err(dev, "lapb_data_request error: %d\n", err);
 		kfree_skb(skb);
 		return NETDEV_TX_OK;
 	}
@@ -378,7 +378,7 @@ static void x25_asy_data_transmit(struct net_device *dev, struct sk_buff *skb)
 	spin_lock(&sl->lock);
 	if (netif_queue_stopped(sl->dev) || sl->tty == NULL) {
 		spin_unlock(&sl->lock);
-		printk(KERN_ERR "x25_asy: tbusy drop\n");
+		netdev_err(dev, "tbusy drop\n");
 		kfree_skb(skb);
 		return;
 	}
@@ -404,12 +404,12 @@ static void x25_asy_connected(struct net_device *dev, int reason)
 
 	skb = dev_alloc_skb(1);
 	if (skb == NULL) {
-		printk(KERN_ERR "x25_asy: out of memory\n");
+		netdev_err(dev, "out of memory\n");
 		return;
 	}
 
 	ptr  = skb_put(skb, 1);
-	*ptr = 0x01;
+	*ptr = X25_IFACE_CONNECT;
 
 	skb->protocol = x25_type_trans(skb, sl->dev);
 	netif_rx(skb);
@@ -423,25 +423,24 @@ static void x25_asy_disconnected(struct net_device *dev, int reason)
 
 	skb = dev_alloc_skb(1);
 	if (skb == NULL) {
-		printk(KERN_ERR "x25_asy: out of memory\n");
+		netdev_err(dev, "out of memory\n");
 		return;
 	}
 
 	ptr  = skb_put(skb, 1);
-	*ptr = 0x02;
+	*ptr = X25_IFACE_DISCONNECT;
 
 	skb->protocol = x25_type_trans(skb, sl->dev);
 	netif_rx(skb);
 }
 
-static struct lapb_register_struct x25_asy_callbacks = {
+static const struct lapb_register_struct x25_asy_callbacks = {
 	.connect_confirmation = x25_asy_connected,
 	.connect_indication = x25_asy_connected,
 	.disconnect_confirmation = x25_asy_disconnected,
 	.disconnect_indication = x25_asy_disconnected,
 	.data_indication = x25_asy_data_indication,
 	.data_transmit = x25_asy_data_transmit,
-
 };
 
 
@@ -487,8 +486,10 @@ static int x25_asy_open(struct net_device *dev)
 
 	/* Cleanup */
 	kfree(sl->xbuff);
+	sl->xbuff = NULL;
 noxbuff:
 	kfree(sl->rbuff);
+	sl->rbuff = NULL;
 norbuff:
 	return -ENOMEM;
 }
@@ -498,7 +499,6 @@ norbuff:
 static int x25_asy_close(struct net_device *dev)
 {
 	struct x25_asy *sl = netdev_priv(dev);
-	int err;
 
 	spin_lock(&sl->lock);
 	if (sl->tty)
@@ -507,10 +507,6 @@ static int x25_asy_close(struct net_device *dev)
 	netif_stop_queue(dev);
 	sl->rcount = 0;
 	sl->xleft  = 0;
-	err = lapb_unregister(dev);
-	if (err != LAPB_OK)
-		printk(KERN_ERR "x25_asy_close: lapb_unregister error -%d\n",
-			err);
 	spin_unlock(&sl->lock);
 	return 0;
 }
@@ -575,10 +571,12 @@ static int x25_asy_open_tty(struct tty_struct *tty)
 
 	/* Perform the low-level X.25 async init */
 	err = x25_asy_open(sl->dev);
-	if (err)
+	if (err) {
+		x25_asy_free(sl);
 		return err;
+	}
 	/* Done.  We have linked the TTY line to a channel. */
-	return sl->dev->base_addr;
+	return 0;
 }
 
 
@@ -591,6 +589,7 @@ static int x25_asy_open_tty(struct tty_struct *tty)
 static void x25_asy_close_tty(struct tty_struct *tty)
 {
 	struct x25_asy *sl = tty->disc_data;
+	int err;
 
 	/* First make sure we're connected. */
 	if (!sl || sl->magic != X25_ASY_MAGIC)
@@ -600,6 +599,11 @@ static void x25_asy_close_tty(struct tty_struct *tty)
 	if (sl->dev->flags & IFF_UP)
 		dev_close(sl->dev);
 	rtnl_unlock();
+
+	err = lapb_unregister(sl->dev);
+	if (err != LAPB_OK)
+		pr_err("%s: lapb_unregister error: %d\n",
+		       __func__, err);
 
 	tty->disc_data = NULL;
 	sl->tty = NULL;
@@ -644,7 +648,7 @@ static int x25_asy_esc(unsigned char *s, unsigned char *d, int len)
 		}
 	}
 	*ptr++ = X25_END;
-	return (ptr - d);
+	return ptr - d;
 }
 
 static void x25_asy_unesc(struct x25_asy *sl, unsigned char s)
@@ -652,8 +656,8 @@ static void x25_asy_unesc(struct x25_asy *sl, unsigned char s)
 
 	switch (s) {
 	case X25_END:
-		if (!test_and_clear_bit(SLF_ERROR, &sl->flags)
-			&& sl->rcount > 2)
+		if (!test_and_clear_bit(SLF_ERROR, &sl->flags) &&
+		    sl->rcount > 2)
 			x25_asy_bump(sl);
 		clear_bit(SLF_ESCAPE, &sl->flags);
 		sl->rcount = 0;
@@ -732,6 +736,8 @@ static void x25_asy_setup(struct net_device *dev)
 	 */
 
 	dev->mtu		= SL_MTU;
+	dev->min_mtu		= 0;
+	dev->max_mtu		= 65534;
 	dev->netdev_ops		= &x25_asy_netdev_ops;
 	dev->watchdog_timeo	= HZ*20;
 	dev->hard_header_len	= 0;
@@ -759,16 +765,13 @@ static int __init init_x25_asy(void)
 	if (x25_asy_maxdev < 4)
 		x25_asy_maxdev = 4; /* Sanity */
 
-	printk(KERN_INFO "X.25 async: version 0.00 ALPHA "
-			"(dynamic channels, max=%d).\n", x25_asy_maxdev);
+	pr_info("X.25 async: version 0.00 ALPHA (dynamic channels, max=%d)\n",
+		x25_asy_maxdev);
 
 	x25_asy_devs = kcalloc(x25_asy_maxdev, sizeof(struct net_device *),
 				GFP_KERNEL);
-	if (!x25_asy_devs) {
-		printk(KERN_WARNING "X25 async: Can't allocate x25_asy_ctrls[] "
-				"array! Uaargh! (-> No X.25 available)\n");
+	if (!x25_asy_devs)
 		return -ENOMEM;
-	}
 
 	return tty_register_ldisc(N_X25, &x25_ldisc);
 }

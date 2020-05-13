@@ -1,29 +1,16 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2009 Wolfgang Grandegger <wg@grandegger.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the version 2 of the GNU General Public License
- * as published by the Free Software Foundation
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/isa.h>
+#include <linux/platform_device.h>
 #include <linux/interrupt.h>
 #include <linux/netdevice.h>
 #include <linux/delay.h>
 #include <linux/irq.h>
 #include <linux/io.h>
-#include <linux/can.h>
 #include <linux/can/dev.h>
 #include <linux/can/platform/sja1000.h>
 
@@ -43,38 +30,41 @@ MODULE_LICENSE("GPL v2");
 
 static unsigned long port[MAXDEV];
 static unsigned long mem[MAXDEV];
-static int __devinitdata irq[MAXDEV];
-static int __devinitdata clk[MAXDEV];
-static char __devinitdata cdr[MAXDEV] = {[0 ... (MAXDEV - 1)] = -1};
-static char __devinitdata ocr[MAXDEV] = {[0 ... (MAXDEV - 1)] = -1};
-static char __devinitdata indirect[MAXDEV] = {[0 ... (MAXDEV - 1)] = -1};
+static int irq[MAXDEV];
+static int clk[MAXDEV];
+static unsigned char cdr[MAXDEV] = {[0 ... (MAXDEV - 1)] = 0xff};
+static unsigned char ocr[MAXDEV] = {[0 ... (MAXDEV - 1)] = 0xff};
+static int indirect[MAXDEV] = {[0 ... (MAXDEV - 1)] = -1};
+static spinlock_t indirect_lock[MAXDEV];  /* lock for indirect access mode */
 
-module_param_array(port, ulong, NULL, S_IRUGO);
+module_param_hw_array(port, ulong, ioport, NULL, 0444);
 MODULE_PARM_DESC(port, "I/O port number");
 
-module_param_array(mem, ulong, NULL, S_IRUGO);
+module_param_hw_array(mem, ulong, iomem, NULL, 0444);
 MODULE_PARM_DESC(mem, "I/O memory address");
 
-module_param_array(indirect, byte, NULL, S_IRUGO);
+module_param_hw_array(indirect, int, ioport, NULL, 0444);
 MODULE_PARM_DESC(indirect, "Indirect access via address and data port");
 
-module_param_array(irq, int, NULL, S_IRUGO);
+module_param_hw_array(irq, int, irq, NULL, 0444);
 MODULE_PARM_DESC(irq, "IRQ number");
 
-module_param_array(clk, int, NULL, S_IRUGO);
+module_param_array(clk, int, NULL, 0444);
 MODULE_PARM_DESC(clk, "External oscillator clock frequency "
 		 "(default=16000000 [16 MHz])");
 
-module_param_array(cdr, byte, NULL, S_IRUGO);
+module_param_array(cdr, byte, NULL, 0444);
 MODULE_PARM_DESC(cdr, "Clock divider register "
 		 "(default=0x48 [CDR_CBP | CDR_CLK_OFF])");
 
-module_param_array(ocr, byte, NULL, S_IRUGO);
+module_param_array(ocr, byte, NULL, 0444);
 MODULE_PARM_DESC(ocr, "Output control register "
 		 "(default=0x18 [OCR_TX0_PUSHPULL])");
 
 #define SJA1000_IOSIZE          0x20
 #define SJA1000_IOSIZE_INDIRECT 0x02
+
+static struct platform_device *sja1000_isa_devs[MAXDEV];
 
 static u8 sja1000_isa_mem_read_reg(const struct sja1000_priv *priv, int reg)
 {
@@ -101,47 +91,46 @@ static void sja1000_isa_port_write_reg(const struct sja1000_priv *priv,
 static u8 sja1000_isa_port_read_reg_indirect(const struct sja1000_priv *priv,
 					     int reg)
 {
-	unsigned long base = (unsigned long)priv->reg_base;
+	unsigned long flags, base = (unsigned long)priv->reg_base;
+	u8 readval;
 
+	spin_lock_irqsave(&indirect_lock[priv->dev->dev_id], flags);
 	outb(reg, base);
-	return inb(base + 1);
+	readval = inb(base + 1);
+	spin_unlock_irqrestore(&indirect_lock[priv->dev->dev_id], flags);
+
+	return readval;
 }
 
 static void sja1000_isa_port_write_reg_indirect(const struct sja1000_priv *priv,
 						int reg, u8 val)
 {
-	unsigned long base = (unsigned long)priv->reg_base;
+	unsigned long flags, base = (unsigned long)priv->reg_base;
 
+	spin_lock_irqsave(&indirect_lock[priv->dev->dev_id], flags);
 	outb(reg, base);
 	outb(val, base + 1);
+	spin_unlock_irqrestore(&indirect_lock[priv->dev->dev_id], flags);
 }
 
-static int __devinit sja1000_isa_match(struct device *pdev, unsigned int idx)
-{
-	if (port[idx] || mem[idx]) {
-		if (irq[idx])
-			return 1;
-	} else if (idx)
-		return 0;
-
-	dev_err(pdev, "insufficient parameters supplied\n");
-	return 0;
-}
-
-static int __devinit sja1000_isa_probe(struct device *pdev, unsigned int idx)
+static int sja1000_isa_probe(struct platform_device *pdev)
 {
 	struct net_device *dev;
 	struct sja1000_priv *priv;
 	void __iomem *base = NULL;
 	int iosize = SJA1000_IOSIZE;
+	int idx = pdev->id;
 	int err;
+
+	dev_dbg(&pdev->dev, "probing idx=%d: port=%#lx, mem=%#lx, irq=%d\n",
+		idx, port[idx], mem[idx], irq[idx]);
 
 	if (mem[idx]) {
 		if (!request_mem_region(mem[idx], iosize, DRV_NAME)) {
 			err = -EBUSY;
 			goto exit;
 		}
-		base = ioremap_nocache(mem[idx], iosize);
+		base = ioremap(mem[idx], iosize);
 		if (!base) {
 			err = -ENOMEM;
 			goto exit_release;
@@ -177,6 +166,7 @@ static int __devinit sja1000_isa_probe(struct device *pdev, unsigned int idx)
 		if (iosize == SJA1000_IOSIZE_INDIRECT) {
 			priv->read_reg = sja1000_isa_port_read_reg_indirect;
 			priv->write_reg = sja1000_isa_port_write_reg_indirect;
+			spin_lock_init(&indirect_lock[idx]);
 		} else {
 			priv->read_reg = sja1000_isa_port_read_reg;
 			priv->write_reg = sja1000_isa_port_write_reg;
@@ -190,31 +180,32 @@ static int __devinit sja1000_isa_probe(struct device *pdev, unsigned int idx)
 	else
 		priv->can.clock.freq = CLK_DEFAULT / 2;
 
-	if (ocr[idx] != -1)
-		priv->ocr = ocr[idx] & 0xff;
-	else if (ocr[0] != -1)
-		priv->ocr = ocr[0] & 0xff;
+	if (ocr[idx] != 0xff)
+		priv->ocr = ocr[idx];
+	else if (ocr[0] != 0xff)
+		priv->ocr = ocr[0];
 	else
 		priv->ocr = OCR_DEFAULT;
 
-	if (cdr[idx] != -1)
-		priv->cdr = cdr[idx] & 0xff;
-	else if (cdr[0] != -1)
-		priv->cdr = cdr[0] & 0xff;
+	if (cdr[idx] != 0xff)
+		priv->cdr = cdr[idx];
+	else if (cdr[0] != 0xff)
+		priv->cdr = cdr[0];
 	else
 		priv->cdr = CDR_DEFAULT;
 
-	dev_set_drvdata(pdev, dev);
-	SET_NETDEV_DEV(dev, pdev);
+	platform_set_drvdata(pdev, dev);
+	SET_NETDEV_DEV(dev, &pdev->dev);
+	dev->dev_id = idx;
 
 	err = register_sja1000dev(dev);
 	if (err) {
-		dev_err(pdev, "registering %s failed (err=%d)\n",
+		dev_err(&pdev->dev, "registering %s failed (err=%d)\n",
 			DRV_NAME, err);
 		goto exit_unmap;
 	}
 
-	dev_info(pdev, "%s device registered (reg_base=0x%p, irq=%d)\n",
+	dev_info(&pdev->dev, "%s device registered (reg_base=0x%p, irq=%d)\n",
 		 DRV_NAME, priv->reg_base, dev->irq);
 	return 0;
 
@@ -230,13 +221,13 @@ static int __devinit sja1000_isa_probe(struct device *pdev, unsigned int idx)
 	return err;
 }
 
-static int __devexit sja1000_isa_remove(struct device *pdev, unsigned int idx)
+static int sja1000_isa_remove(struct platform_device *pdev)
 {
-	struct net_device *dev = dev_get_drvdata(pdev);
+	struct net_device *dev = platform_get_drvdata(pdev);
 	struct sja1000_priv *priv = netdev_priv(dev);
+	int idx = pdev->id;
 
 	unregister_sja1000dev(dev);
-	dev_set_drvdata(pdev, NULL);
 
 	if (mem[idx]) {
 		iounmap(priv->reg_base);
@@ -252,10 +243,9 @@ static int __devexit sja1000_isa_remove(struct device *pdev, unsigned int idx)
 	return 0;
 }
 
-static struct isa_driver sja1000_isa_driver = {
-	.match = sja1000_isa_match,
+static struct platform_driver sja1000_isa_driver = {
 	.probe = sja1000_isa_probe,
-	.remove = __devexit_p(sja1000_isa_remove),
+	.remove = sja1000_isa_remove,
 	.driver = {
 		.name = DRV_NAME,
 	},
@@ -263,18 +253,59 @@ static struct isa_driver sja1000_isa_driver = {
 
 static int __init sja1000_isa_init(void)
 {
-	int err = isa_register_driver(&sja1000_isa_driver, MAXDEV);
+	int idx, err;
 
-	if (!err)
-		printk(KERN_INFO
-		       "Legacy %s driver for max. %d devices registered\n",
-		       DRV_NAME, MAXDEV);
+	for (idx = 0; idx < MAXDEV; idx++) {
+		if ((port[idx] || mem[idx]) && irq[idx]) {
+			sja1000_isa_devs[idx] =
+				platform_device_alloc(DRV_NAME, idx);
+			if (!sja1000_isa_devs[idx]) {
+				err = -ENOMEM;
+				goto exit_free_devices;
+			}
+			err = platform_device_add(sja1000_isa_devs[idx]);
+			if (err) {
+				platform_device_put(sja1000_isa_devs[idx]);
+				goto exit_free_devices;
+			}
+			pr_debug("%s: platform device %d: port=%#lx, mem=%#lx, "
+				 "irq=%d\n",
+				 DRV_NAME, idx, port[idx], mem[idx], irq[idx]);
+		} else if (idx == 0 || port[idx] || mem[idx]) {
+				pr_err("%s: insufficient parameters supplied\n",
+				       DRV_NAME);
+				err = -EINVAL;
+				goto exit_free_devices;
+		}
+	}
+
+	err = platform_driver_register(&sja1000_isa_driver);
+	if (err)
+		goto exit_free_devices;
+
+	pr_info("Legacy %s driver for max. %d devices registered\n",
+		DRV_NAME, MAXDEV);
+
+	return 0;
+
+exit_free_devices:
+	while (--idx >= 0) {
+		if (sja1000_isa_devs[idx])
+			platform_device_unregister(sja1000_isa_devs[idx]);
+	}
+
 	return err;
 }
 
 static void __exit sja1000_isa_exit(void)
 {
-	isa_unregister_driver(&sja1000_isa_driver);
+	int idx;
+
+	platform_driver_unregister(&sja1000_isa_driver);
+	for (idx = 0; idx < MAXDEV; idx++) {
+		if (sja1000_isa_devs[idx])
+			platform_device_unregister(sja1000_isa_devs[idx]);
+	}
 }
 
 module_init(sja1000_isa_init);

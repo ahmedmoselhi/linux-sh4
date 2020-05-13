@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * linux/arch/arm/mach-pxa/mfp.c
  *
@@ -7,20 +8,16 @@
  *
  * 2007-08-21: eric miao <eric.miao@marvell.com>
  *             initial version
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2 as
- *  published by the Free Software Foundation.
  */
 
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/io.h>
-#include <linux/sysdev.h>
+#include <linux/syscore_ops.h>
 
 #include <mach/hardware.h>
-#include <mach/mfp-pxa3xx.h>
+#include "mfp-pxa3xx.h"
 #include <mach/pxa3xx-regs.h>
 
 #ifdef CONFIG_PM
@@ -31,13 +28,13 @@
  * a pull-down mode if they're an active low chip select, and we're
  * just entering standby.
  */
-static int pxa3xx_mfp_suspend(struct sys_device *d, pm_message_t state)
+static int pxa3xx_mfp_suspend(void)
 {
 	mfp_config_lpm();
 	return 0;
 }
 
-static int pxa3xx_mfp_resume(struct sys_device *d)
+static void pxa3xx_mfp_resume(void)
 {
 	mfp_config_run();
 
@@ -47,24 +44,13 @@ static int pxa3xx_mfp_resume(struct sys_device *d)
 	 * preserve them here in case they will be referenced later
 	 */
 	ASCR &= ~(ASCR_RDH | ASCR_D1S | ASCR_D2S | ASCR_D3S);
-	return 0;
 }
 #else
 #define pxa3xx_mfp_suspend	NULL
 #define pxa3xx_mfp_resume	NULL
 #endif
 
-struct sysdev_class pxa3xx_mfp_sysclass = {
-	.name		= "mfp",
+struct syscore_ops pxa3xx_mfp_syscore_ops = {
 	.suspend	= pxa3xx_mfp_suspend,
-	.resume 	= pxa3xx_mfp_resume,
+	.resume		= pxa3xx_mfp_resume,
 };
-
-static int __init mfp_init_devicefs(void)
-{
-	if (cpu_is_pxa3xx())
-		return sysdev_class_register(&pxa3xx_mfp_sysclass);
-
-	return 0;
-}
-postcore_initcall(mfp_init_devicefs);

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 config ASYNC_CORE
 	tristate
 
@@ -10,10 +11,6 @@ config ASYNC_XOR
 	select ASYNC_CORE
 	select XOR_BLOCKS
 
-config ASYNC_MEMSET
-	tristate
-	select ASYNC_CORE
-
 config ASYNC_PQ
 	tristate
 	select ASYNC_CORE
@@ -22,6 +19,7 @@ config ASYNC_RAID6_RECOV
 	tristate
 	select ASYNC_CORE
 	select ASYNC_PQ
+	select ASYNC_XOR
 
 config ASYNC_TX_DISABLE_PQ_VAL_DMA
 	bool

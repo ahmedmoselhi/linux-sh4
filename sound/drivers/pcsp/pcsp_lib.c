@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * PC-Speaker driver for Linux
  *
@@ -7,13 +8,14 @@
  */
 
 #include <linux/module.h>
+#include <linux/gfp.h>
 #include <linux/moduleparam.h>
 #include <linux/interrupt.h>
+#include <linux/io.h>
 #include <sound/pcm.h>
-#include <asm/io.h>
 #include "pcsp.h"
 
-static int nforce_wa;
+static bool nforce_wa;
 module_param(nforce_wa, bool, 0444);
 MODULE_PARM_DESC(nforce_wa, "Apply NForce chipset workaround "
 		"(expect bad sound)");
@@ -65,7 +67,7 @@ static u64 pcsp_timer_update(struct snd_pcsp *chip)
 	timer_cnt = val * CUR_DIV() / 256;
 
 	if (timer_cnt && chip->enable) {
-		spin_lock_irqsave(&i8253_lock, flags);
+		raw_spin_lock_irqsave(&i8253_lock, flags);
 		if (!nforce_wa) {
 			outb_p(chip->val61, 0x61);
 			outb_p(timer_cnt, 0x42);
@@ -74,7 +76,7 @@ static u64 pcsp_timer_update(struct snd_pcsp *chip)
 			outb(chip->val61 ^ 2, 0x61);
 			chip->thalf = 1;
 		}
-		spin_unlock_irqrestore(&i8253_lock, flags);
+		raw_spin_unlock_irqrestore(&i8253_lock, flags);
 	}
 
 	chip->ns_rem = PCSP_PERIOD_NS();
@@ -158,14 +160,14 @@ static int pcsp_start_playing(struct snd_pcsp *chip)
 		return -EIO;
 	}
 
-	spin_lock(&i8253_lock);
+	raw_spin_lock(&i8253_lock);
 	chip->val61 = inb(0x61) | 0x03;
 	outb_p(0x92, 0x43);	/* binary, mode 1, LSB only, ch 2 */
-	spin_unlock(&i8253_lock);
+	raw_spin_unlock(&i8253_lock);
 	atomic_set(&chip->timer_active, 1);
 	chip->thalf = 0;
 
-	hrtimer_start(&pcsp_chip.timer, ktime_set(0, 0), HRTIMER_MODE_REL);
+	hrtimer_start(&pcsp_chip.timer, 0, HRTIMER_MODE_REL);
 	return 0;
 }
 
@@ -178,11 +180,11 @@ static void pcsp_stop_playing(struct snd_pcsp *chip)
 		return;
 
 	atomic_set(&chip->timer_active, 0);
-	spin_lock(&i8253_lock);
+	raw_spin_lock(&i8253_lock);
 	/* restore the timer */
 	outb_p(0xb6, 0x43);	/* binary, mode 3, LSB/MSB, ch 2 */
 	outb(chip->val61 & 0xFC, 0x61);
-	spin_unlock(&i8253_lock);
+	raw_spin_unlock(&i8253_lock);
 }
 
 /*
@@ -212,12 +214,7 @@ static int snd_pcsp_playback_hw_params(struct snd_pcm_substream *substream,
 				       struct snd_pcm_hw_params *hw_params)
 {
 	struct snd_pcsp *chip = snd_pcm_substream_chip(substream);
-	int err;
 	pcsp_sync_stop(chip);
-	err = snd_pcm_lib_malloc_pages(substream,
-				      params_buffer_bytes(hw_params));
-	if (err < 0)
-		return err;
 	return 0;
 }
 
@@ -228,7 +225,7 @@ static int snd_pcsp_playback_hw_free(struct snd_pcm_substream *substream)
 	printk(KERN_INFO "PCSP: hw_free called\n");
 #endif
 	pcsp_sync_stop(chip);
-	return snd_pcm_lib_free_pages(substream);
+	return 0;
 }
 
 static int snd_pcsp_playback_prepare(struct snd_pcm_substream *substream)
@@ -284,7 +281,7 @@ static snd_pcm_uframes_t snd_pcsp_playback_pointer(struct snd_pcm_substream
 	return bytes_to_frames(substream->runtime, pos);
 }
 
-static struct snd_pcm_hardware snd_pcsp_playback = {
+static const struct snd_pcm_hardware snd_pcsp_playback = {
 	.info = (SNDRV_PCM_INFO_INTERLEAVED |
 		 SNDRV_PCM_INFO_HALF_DUPLEX |
 		 SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_MMAP_VALID),
@@ -322,10 +319,9 @@ static int snd_pcsp_playback_open(struct snd_pcm_substream *substream)
 	return 0;
 }
 
-static struct snd_pcm_ops snd_pcsp_playback_ops = {
+static const struct snd_pcm_ops snd_pcsp_playback_ops = {
 	.open = snd_pcsp_playback_open,
 	.close = snd_pcsp_playback_close,
-	.ioctl = snd_pcm_lib_ioctl,
 	.hw_params = snd_pcsp_playback_hw_params,
 	.hw_free = snd_pcsp_playback_hw_free,
 	.prepare = snd_pcsp_playback_prepare,
@@ -333,7 +329,7 @@ static struct snd_pcm_ops snd_pcsp_playback_ops = {
 	.pointer = snd_pcsp_playback_pointer,
 };
 
-int __devinit snd_pcsp_new_pcm(struct snd_pcsp *chip)
+int snd_pcsp_new_pcm(struct snd_pcsp *chip)
 {
 	int err;
 
@@ -348,11 +344,11 @@ int __devinit snd_pcsp_new_pcm(struct snd_pcsp *chip)
 	chip->pcm->info_flags = SNDRV_PCM_INFO_HALF_DUPLEX;
 	strcpy(chip->pcm->name, "pcsp");
 
-	snd_pcm_lib_preallocate_pages_for_all(chip->pcm,
-					      SNDRV_DMA_TYPE_CONTINUOUS,
-					      snd_dma_continuous_data
-					      (GFP_KERNEL), PCSP_BUFFER_SIZE,
-					      PCSP_BUFFER_SIZE);
+	snd_pcm_set_managed_buffer_all(chip->pcm,
+				       SNDRV_DMA_TYPE_CONTINUOUS,
+				       NULL,
+				       PCSP_BUFFER_SIZE,
+				       PCSP_BUFFER_SIZE);
 
 	return 0;
 }

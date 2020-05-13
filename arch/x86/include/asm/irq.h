@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_X86_IRQ_H
 #define _ASM_X86_IRQ_H
 /*
@@ -15,37 +16,38 @@ static inline int irq_canonicalize(int irq)
 	return ((irq == 2) ? 9 : irq);
 }
 
-#ifdef CONFIG_X86_LOCAL_APIC
-# define ARCH_HAS_NMI_WATCHDOG
-#endif
+extern int irq_init_percpu_irqstack(unsigned int cpu);
 
-#ifdef CONFIG_4KSTACKS
-  extern void irq_ctx_init(int cpu);
-  extern void irq_ctx_exit(int cpu);
-# define __ARCH_HAS_DO_SOFTIRQ
-#else
-# define irq_ctx_init(cpu) do { } while (0)
-# define irq_ctx_exit(cpu) do { } while (0)
-# ifdef CONFIG_X86_64
-#  define __ARCH_HAS_DO_SOFTIRQ
-# endif
-#endif
+#define __ARCH_HAS_DO_SOFTIRQ
 
-#ifdef CONFIG_HOTPLUG_CPU
-#include <linux/cpumask.h>
+struct irq_desc;
+
 extern void fixup_irqs(void);
+
+#ifdef CONFIG_HAVE_KVM
+extern void kvm_set_posted_intr_wakeup_handler(void (*handler)(void));
+extern __visible void smp_kvm_posted_intr_ipi(struct pt_regs *regs);
+extern __visible void smp_kvm_posted_intr_wakeup_ipi(struct pt_regs *regs);
+extern __visible void smp_kvm_posted_intr_nested_ipi(struct pt_regs *regs);
 #endif
 
-extern void (*generic_interrupt_extension)(void);
+extern void (*x86_platform_ipi_callback)(void);
 extern void native_init_IRQ(void);
-extern bool handle_irq(unsigned irq, struct pt_regs *regs);
 
-extern unsigned int do_IRQ(struct pt_regs *regs);
+extern void handle_irq(struct irq_desc *desc, struct pt_regs *regs);
 
-/* Interrupt vector management */
-extern DECLARE_BITMAP(used_vectors, NR_VECTORS);
-extern int vector_used_by_percpu_irq(unsigned int vector);
+extern __visible void do_IRQ(struct pt_regs *regs);
 
 extern void init_ISA_irqs(void);
+
+extern void __init init_IRQ(void);
+
+#ifdef CONFIG_X86_LOCAL_APIC
+void arch_trigger_cpumask_backtrace(const struct cpumask *mask,
+				    bool exclude_self);
+
+extern __visible void smp_x86_platform_ipi(struct pt_regs *regs);
+#define arch_trigger_cpumask_backtrace arch_trigger_cpumask_backtrace
+#endif
 
 #endif /* _ASM_X86_IRQ_H */

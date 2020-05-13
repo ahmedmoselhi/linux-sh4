@@ -1,25 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Marvell 88SE64xx/88SE94xx const head file
  *
  * Copyright 2007 Red Hat, Inc.
  * Copyright 2008 Marvell. <kewei@marvell.com>
- *
- * This file is licensed under GPLv2.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation; version 2 of the
- * License.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
- * USA
+ * Copyright 2009-2011 Marvell. <yuxiangl@marvell.com>
 */
 
 #ifndef _MV_DEFS_H_
@@ -34,13 +19,14 @@ enum chip_flavors {
 	chip_6485,
 	chip_9480,
 	chip_9180,
+	chip_9445,
+	chip_9485,
 	chip_1300,
 	chip_1320
 };
 
 /* driver compile-time configuration */
 enum driver_configuration {
-	MVS_SLOTS		= 512,	/* command slots */
 	MVS_TX_RING_SZ		= 1024,	/* TX ring size (12-bit) */
 	MVS_RX_RING_SZ		= 1024, /* RX ring size (12-bit) */
 					/* software requires power-of-2
@@ -53,8 +39,7 @@ enum driver_configuration {
 	MVS_SSP_CMD_SZ		= 64,	/* SSP command table buffer size */
 	MVS_ATA_CMD_SZ		= 96,	/* SATA command table buffer size */
 	MVS_OAF_SZ		= 64,	/* Open address frame buffer size */
-	MVS_QUEUE_SIZE	= 32,	/* Support Queue depth */
-	MVS_CAN_QUEUE		= MVS_SLOTS - 2,	/* SCSI Queue depth */
+	MVS_QUEUE_SIZE		= 64,	/* Support Queue depth */
 	MVS_SOC_CAN_QUEUE	= MVS_SOC_SLOTS - 2,
 };
 
@@ -141,6 +126,7 @@ enum hw_register_bits {
 	CINT_DMA_PCIE		= (1U << 27),	/* DMA to PCIE timeout */
 	CINT_MEM		= (1U << 26),	/* int mem parity err */
 	CINT_I2C_SLAVE		= (1U << 25),	/* slave I2C event */
+	CINT_NON_SPEC_NCQ_ERROR	= (1U << 25),	/* Non specific NCQ error */
 	CINT_SRS		= (1U << 3),	/* SRS event */
 	CINT_CI_STOP		= (1U << 1),	/* cmd issue stopped */
 	CINT_DONE		= (1U << 0),	/* cmd completion */
@@ -158,7 +144,7 @@ enum hw_register_bits {
 	TXQ_CMD_SSP		= 1,		/* SSP protocol */
 	TXQ_CMD_SMP		= 2,		/* SMP protocol */
 	TXQ_CMD_STP		= 3,		/* STP/SATA protocol */
-	TXQ_CMD_SSP_FREE_LIST	= 4,		/* add to SSP targ free list */
+	TXQ_CMD_SSP_FREE_LIST	= 4,		/* add to SSP target free list */
 	TXQ_CMD_SLOT_RESET	= 7,		/* reset command slot */
 	TXQ_MODE_I		= (1U << 28),	/* mode: 0=target,1=initiator */
 	TXQ_MODE_TARGET 	= 0,
@@ -385,18 +371,20 @@ enum sas_cmd_port_registers {
 	CMD_SL_MODE0		= 0x1BC, /* SL Mode 0 */
 	CMD_SL_MODE1		= 0x1C0, /* SL Mode 1 */
 	CMD_PND_FIFO_CTL1	= 0x1C4, /* Pending FIFO Control 1 */
+	CMD_PORT_LAYER_TIMER1	= 0x1E0, /* Port Layer Timer 1 */
+	CMD_LINK_TIMER		= 0x1E4, /* Link Timer */
 };
 
 enum mvs_info_flags {
-	MVF_MSI		= (1U << 0),	/* MSI is enabled */
 	MVF_PHY_PWR_FIX	= (1U << 1),	/* bug workaround */
 	MVF_FLAG_SOC		= (1U << 2),	/* SoC integrated controllers */
 };
 
 enum mvs_event_flags {
-	PHY_PLUG_EVENT	= (3U),
+	PHY_PLUG_EVENT		= (3U),
 	PHY_PLUG_IN		= (1U << 0),	/* phy plug in */
 	PHY_PLUG_OUT		= (1U << 1),	/* phy plug out */
+	EXP_BRCT_CHG		= (1U << 2),	/* broadcast change */
 };
 
 enum mvs_port_type {

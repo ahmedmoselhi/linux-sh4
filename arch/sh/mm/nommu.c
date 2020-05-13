@@ -1,11 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * arch/sh/mm/nommu.c
  *
  * Various helper routines and stubs for MMUless SH.
  *
  * Copyright (C) 2002 - 2009 Paul Mundt
- *
- * Released under the terms of the GNU GPL v2.0.
  */
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -14,7 +13,7 @@
 #include <asm/pgtable.h>
 #include <asm/tlbflush.h>
 #include <asm/page.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 /*
  * Nothing too terribly exciting here ..
@@ -65,6 +64,10 @@ void local_flush_tlb_one(unsigned long asid, unsigned long page)
 void local_flush_tlb_kernel_range(unsigned long start, unsigned long end)
 {
 	BUG();
+}
+
+void __flush_tlb_global(void)
+{
 }
 
 void __update_tlb(struct vm_area_struct *vma, unsigned long address, pte_t pte)

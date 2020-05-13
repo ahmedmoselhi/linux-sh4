@@ -1,231 +1,178 @@
-/**********************************************************************
- * Author: Cavium Networks
- *
- * Contact: support@caviumnetworks.com
- * This file is part of the OCTEON SDK
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * This file is based on code from OCTEON SDK by Cavium Networks.
  *
  * Copyright (c) 2003-2007 Cavium Networks
- *
- * This file is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License, Version 2, as
- * published by the Free Software Foundation.
- *
- * This file is distributed in the hope that it will be useful, but
- * AS-IS and WITHOUT ANY WARRANTY; without even the implied warranty
- * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE, TITLE, or
- * NONINFRINGEMENT.  See the GNU General Public License for more
- * details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this file; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
- * or visit http://www.gnu.org/licenses/.
- *
- * This file may also be available under a different license from Cavium.
- * Contact Cavium Networks for more information
-**********************************************************************/
+ */
+
 #include <linux/kernel.h>
 #include <linux/ethtool.h>
-#include <linux/mii.h>
+#include <linux/phy.h>
+#include <linux/ratelimit.h>
+#include <linux/of_mdio.h>
+#include <generated/utsrelease.h>
 #include <net/dst.h>
 
-#include <asm/octeon/octeon.h>
-
-#include "ethernet-defines.h"
 #include "octeon-ethernet.h"
+#include "ethernet-defines.h"
 #include "ethernet-mdio.h"
-
-#include "cvmx-helper-board.h"
-
-#include "cvmx-smix-defs.h"
-
-DECLARE_MUTEX(mdio_sem);
-
-/**
- * Perform an MII read. Called by the generic MII routines
- *
- * @dev:      Device to perform read for
- * @phy_id:   The MII phy id
- * @location: Register location to read
- * Returns Result from the read or zero on failure
- */
-static int cvm_oct_mdio_read(struct net_device *dev, int phy_id, int location)
-{
-	union cvmx_smix_cmd smi_cmd;
-	union cvmx_smix_rd_dat smi_rd;
-
-	smi_cmd.u64 = 0;
-	smi_cmd.s.phy_op = 1;
-	smi_cmd.s.phy_adr = phy_id;
-	smi_cmd.s.reg_adr = location;
-	cvmx_write_csr(CVMX_SMIX_CMD(0), smi_cmd.u64);
-
-	do {
-		if (!in_interrupt())
-			yield();
-		smi_rd.u64 = cvmx_read_csr(CVMX_SMIX_RD_DAT(0));
-	} while (smi_rd.s.pending);
-
-	if (smi_rd.s.val)
-		return smi_rd.s.dat;
-	else
-		return 0;
-}
-
-static int cvm_oct_mdio_dummy_read(struct net_device *dev, int phy_id,
-				   int location)
-{
-	return 0xffff;
-}
-
-/**
- * Perform an MII write. Called by the generic MII routines
- *
- * @dev:      Device to perform write for
- * @phy_id:   The MII phy id
- * @location: Register location to write
- * @val:      Value to write
- */
-static void cvm_oct_mdio_write(struct net_device *dev, int phy_id, int location,
-			       int val)
-{
-	union cvmx_smix_cmd smi_cmd;
-	union cvmx_smix_wr_dat smi_wr;
-
-	smi_wr.u64 = 0;
-	smi_wr.s.dat = val;
-	cvmx_write_csr(CVMX_SMIX_WR_DAT(0), smi_wr.u64);
-
-	smi_cmd.u64 = 0;
-	smi_cmd.s.phy_op = 0;
-	smi_cmd.s.phy_adr = phy_id;
-	smi_cmd.s.reg_adr = location;
-	cvmx_write_csr(CVMX_SMIX_CMD(0), smi_cmd.u64);
-
-	do {
-		if (!in_interrupt())
-			yield();
-		smi_wr.u64 = cvmx_read_csr(CVMX_SMIX_WR_DAT(0));
-	} while (smi_wr.s.pending);
-}
-
-static void cvm_oct_mdio_dummy_write(struct net_device *dev, int phy_id,
-				     int location, int val)
-{
-}
+#include "ethernet-util.h"
 
 static void cvm_oct_get_drvinfo(struct net_device *dev,
 				struct ethtool_drvinfo *info)
 {
-	strcpy(info->driver, "cavium-ethernet");
-	strcpy(info->version, OCTEON_ETHERNET_VERSION);
-	strcpy(info->bus_info, "Builtin");
-}
-
-static int cvm_oct_get_settings(struct net_device *dev, struct ethtool_cmd *cmd)
-{
-	struct octeon_ethernet *priv = netdev_priv(dev);
-	int ret;
-
-	down(&mdio_sem);
-	ret = mii_ethtool_gset(&priv->mii_info, cmd);
-	up(&mdio_sem);
-
-	return ret;
-}
-
-static int cvm_oct_set_settings(struct net_device *dev, struct ethtool_cmd *cmd)
-{
-	struct octeon_ethernet *priv = netdev_priv(dev);
-	int ret;
-
-	down(&mdio_sem);
-	ret = mii_ethtool_sset(&priv->mii_info, cmd);
-	up(&mdio_sem);
-
-	return ret;
+	strlcpy(info->driver, KBUILD_MODNAME, sizeof(info->driver));
+	strlcpy(info->version, UTS_RELEASE, sizeof(info->version));
+	strlcpy(info->bus_info, "Builtin", sizeof(info->bus_info));
 }
 
 static int cvm_oct_nway_reset(struct net_device *dev)
 {
-	struct octeon_ethernet *priv = netdev_priv(dev);
-	int ret;
+	if (!capable(CAP_NET_ADMIN))
+		return -EPERM;
 
-	down(&mdio_sem);
-	ret = mii_nway_restart(&priv->mii_info);
-	up(&mdio_sem);
+	if (dev->phydev)
+		return phy_start_aneg(dev->phydev);
 
-	return ret;
-}
-
-static u32 cvm_oct_get_link(struct net_device *dev)
-{
-	struct octeon_ethernet *priv = netdev_priv(dev);
-	u32 ret;
-
-	down(&mdio_sem);
-	ret = mii_link_ok(&priv->mii_info);
-	up(&mdio_sem);
-
-	return ret;
+	return -EINVAL;
 }
 
 const struct ethtool_ops cvm_oct_ethtool_ops = {
 	.get_drvinfo = cvm_oct_get_drvinfo,
-	.get_settings = cvm_oct_get_settings,
-	.set_settings = cvm_oct_set_settings,
 	.nway_reset = cvm_oct_nway_reset,
-	.get_link = cvm_oct_get_link,
-	.get_sg = ethtool_op_get_sg,
-	.get_tx_csum = ethtool_op_get_tx_csum,
+	.get_link = ethtool_op_get_link,
+	.get_link_ksettings = phy_ethtool_get_link_ksettings,
+	.set_link_ksettings = phy_ethtool_set_link_ksettings,
 };
 
 /**
- * IOCTL support for PHY control
- *
+ * cvm_oct_ioctl - IOCTL support for PHY control
  * @dev:    Device to change
  * @rq:     the request
  * @cmd:    the command
+ *
  * Returns Zero on success
  */
 int cvm_oct_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 {
+	if (!netif_running(dev))
+		return -EINVAL;
+
+	if (!dev->phydev)
+		return -EINVAL;
+
+	return phy_mii_ioctl(dev->phydev, rq, cmd);
+}
+
+void cvm_oct_note_carrier(struct octeon_ethernet *priv,
+			  union cvmx_helper_link_info li)
+{
+	if (li.s.link_up) {
+		pr_notice_ratelimited("%s: %u Mbps %s duplex, port %d, queue %d\n",
+				      netdev_name(priv->netdev), li.s.speed,
+				      (li.s.full_duplex) ? "Full" : "Half",
+				      priv->port, priv->queue);
+	} else {
+		pr_notice_ratelimited("%s: Link down\n",
+				      netdev_name(priv->netdev));
+	}
+}
+
+void cvm_oct_adjust_link(struct net_device *dev)
+{
 	struct octeon_ethernet *priv = netdev_priv(dev);
-	struct mii_ioctl_data *data = if_mii(rq);
-	unsigned int duplex_chg;
-	int ret;
+	union cvmx_helper_link_info link_info;
 
-	down(&mdio_sem);
-	ret = generic_mii_ioctl(&priv->mii_info, data, cmd, &duplex_chg);
-	up(&mdio_sem);
+	link_info.u64		= 0;
+	link_info.s.link_up	= dev->phydev->link ? 1 : 0;
+	link_info.s.full_duplex = dev->phydev->duplex ? 1 : 0;
+	link_info.s.speed	= dev->phydev->speed;
+	priv->link_info		= link_info.u64;
 
-	return ret;
+	/*
+	 * The polling task need to know about link status changes.
+	 */
+	if (priv->poll)
+		priv->poll(dev);
+
+	if (priv->last_link != dev->phydev->link) {
+		priv->last_link = dev->phydev->link;
+		cvmx_helper_link_set(priv->port, link_info);
+		cvm_oct_note_carrier(priv, link_info);
+	}
+}
+
+int cvm_oct_common_stop(struct net_device *dev)
+{
+	struct octeon_ethernet *priv = netdev_priv(dev);
+	int interface = INTERFACE(priv->port);
+	union cvmx_helper_link_info link_info;
+	union cvmx_gmxx_prtx_cfg gmx_cfg;
+	int index = INDEX(priv->port);
+
+	gmx_cfg.u64 = cvmx_read_csr(CVMX_GMXX_PRTX_CFG(index, interface));
+	gmx_cfg.s.en = 0;
+	cvmx_write_csr(CVMX_GMXX_PRTX_CFG(index, interface), gmx_cfg.u64);
+
+	priv->poll = NULL;
+
+	if (dev->phydev)
+		phy_disconnect(dev->phydev);
+
+	if (priv->last_link) {
+		link_info.u64 = 0;
+		priv->last_link = 0;
+
+		cvmx_helper_link_set(priv->port, link_info);
+		cvm_oct_note_carrier(priv, link_info);
+	}
+	return 0;
 }
 
 /**
- * Setup the MDIO device structures
+ * cvm_oct_phy_setup_device - setup the PHY
  *
  * @dev:    Device to setup
  *
  * Returns Zero on success, negative on failure
  */
-int cvm_oct_mdio_setup_device(struct net_device *dev)
+int cvm_oct_phy_setup_device(struct net_device *dev)
 {
 	struct octeon_ethernet *priv = netdev_priv(dev);
-	int phy_id = cvmx_helper_board_get_mii_address(priv->port);
-	if (phy_id != -1) {
-		priv->mii_info.dev = dev;
-		priv->mii_info.phy_id = phy_id;
-		priv->mii_info.phy_id_mask = 0xff;
-		priv->mii_info.supports_gmii = 1;
-		priv->mii_info.reg_num_mask = 0x1f;
-		priv->mii_info.mdio_read = cvm_oct_mdio_read;
-		priv->mii_info.mdio_write = cvm_oct_mdio_write;
-	} else {
-		/* Supply dummy MDIO routines so the kernel won't crash
-		   if the user tries to read them */
-		priv->mii_info.mdio_read = cvm_oct_mdio_dummy_read;
-		priv->mii_info.mdio_write = cvm_oct_mdio_dummy_write;
+	struct device_node *phy_node;
+	struct phy_device *phydev = NULL;
+
+	if (!priv->of_node)
+		goto no_phy;
+
+	phy_node = of_parse_phandle(priv->of_node, "phy-handle", 0);
+	if (!phy_node && of_phy_is_fixed_link(priv->of_node)) {
+		int rc;
+
+		rc = of_phy_register_fixed_link(priv->of_node);
+		if (rc)
+			return rc;
+
+		phy_node = of_node_get(priv->of_node);
 	}
+	if (!phy_node)
+		goto no_phy;
+
+	phydev = of_phy_connect(dev, phy_node, cvm_oct_adjust_link, 0,
+				priv->phy_mode);
+	of_node_put(phy_node);
+
+	if (!phydev)
+		return -ENODEV;
+
+	priv->last_link = 0;
+	phy_start(phydev);
+
+	return 0;
+no_phy:
+	/* If there is no phy, assume a direct MAC connection and that
+	 * the link is up.
+	 */
+	netif_carrier_on(dev);
 	return 0;
 }

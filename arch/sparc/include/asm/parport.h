@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* parport.h: sparc64 specific parport initialization and dma.
  *
  * Copyright (C) 1999  Eddie C. Dost  (ecd@skynet.be)
@@ -20,6 +21,7 @@
  */
 #define HAS_DMA
 
+#ifdef CONFIG_PARPORT_PC_FIFO
 static DEFINE_SPINLOCK(dma_spin_lock);
 
 #define claim_dma_lock() \
@@ -30,6 +32,7 @@ static DEFINE_SPINLOCK(dma_spin_lock);
 
 #define release_dma_lock(__flags) \
 	spin_unlock_irqrestore(&dma_spin_lock, __flags);
+#endif
 
 static struct sparc_ebus_info {
 	struct ebus_dma_info info;
@@ -103,7 +106,7 @@ static inline unsigned int get_dma_residue(unsigned int dmanr)
 	return ebus_dma_residue(&sparc_ebus_dmas[dmanr].info);
 }
 
-static int __devinit ecpp_probe(struct of_device *op, const struct of_device_id *match)
+static int ecpp_probe(struct platform_device *op)
 {
 	unsigned long base = op->resource[0].start;
 	unsigned long config = op->resource[1].start;
@@ -113,10 +116,10 @@ static int __devinit ecpp_probe(struct of_device *op, const struct of_device_id 
 	struct parport *p;
 	int slot, err;
 
-	parent = op->node->parent;
-	if (!strcmp(parent->name, "dma")) {
+	parent = op->dev.of_node->parent;
+	if (of_node_name_eq(parent, "dma")) {
 		p = parport_pc_probe_port(base, base + 0x400,
-					  op->irqs[0], PARPORT_DMA_NOFIFO,
+					  op->archdata.irqs[0], PARPORT_DMA_NOFIFO,
 					  op->dev.parent->parent, 0);
 		if (!p)
 			return -ENOMEM;
@@ -166,7 +169,7 @@ static int __devinit ecpp_probe(struct of_device *op, const struct of_device_id 
 		       0, PTR_LPT_REG_DIR);
 
 	p = parport_pc_probe_port(base, base + 0x400,
-				  op->irqs[0],
+				  op->archdata.irqs[0],
 				  slot,
 				  op->dev.parent,
 				  0);
@@ -192,7 +195,7 @@ out_err:
 	return err;
 }
 
-static int __devexit ecpp_remove(struct of_device *op)
+static int ecpp_remove(struct platform_device *op)
 {
 	struct parport *p = dev_get_drvdata(&op->dev);
 	int slot = p->dma;
@@ -235,18 +238,18 @@ static const struct of_device_id ecpp_match[] = {
 	{},
 };
 
-static struct of_platform_driver ecpp_driver = {
-	.name			= "ecpp",
-	.match_table		= ecpp_match,
+static struct platform_driver ecpp_driver = {
+	.driver = {
+		.name = "ecpp",
+		.of_match_table = ecpp_match,
+	},
 	.probe			= ecpp_probe,
-	.remove			= __devexit_p(ecpp_remove),
+	.remove			= ecpp_remove,
 };
 
 static int parport_pc_find_nonpci_ports(int autoirq, int autodma)
 {
-	of_register_driver(&ecpp_driver, &of_bus_type);
-
-	return 0;
+	return platform_driver_register(&ecpp_driver);
 }
 
 #endif /* !(_ASM_SPARC64_PARPORT_H */

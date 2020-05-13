@@ -1,33 +1,29 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
-    max6875.c - driver for MAX6874/MAX6875
-
-    Copyright (C) 2005 Ben Gardner <bgardner@wabtec.com>
-
-    Based on eeprom.c
-
-    The MAX6875 has a bank of registers and two banks of EEPROM.
-    Address ranges are defined as follows:
-     * 0x0000 - 0x0046 = configuration registers
-     * 0x8000 - 0x8046 = configuration EEPROM
-     * 0x8100 - 0x82FF = user EEPROM
-
-    This driver makes the user EEPROM available for read.
-
-    The registers & config EEPROM should be accessed via i2c-dev.
-
-    The MAX6875 ignores the lowest address bit, so each chip responds to
-    two addresses - 0x50/0x51 and 0x52/0x53.
-
-    Note that the MAX6875 uses i2c_smbus_write_byte_data() to set the read
-    address, so this driver is destructive if loaded for the wrong EEPROM chip.
-
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; version 2 of the License.
-*/
+ * max6875.c - driver for MAX6874/MAX6875
+ *
+ * Copyright (C) 2005 Ben Gardner <bgardner@wabtec.com>
+ *
+ * Based on eeprom.c
+ *
+ * The MAX6875 has a bank of registers and two banks of EEPROM.
+ * Address ranges are defined as follows:
+ *  * 0x0000 - 0x0046 = configuration registers
+ *  * 0x8000 - 0x8046 = configuration EEPROM
+ *  * 0x8100 - 0x82FF = user EEPROM
+ *
+ * This driver makes the user EEPROM available for read.
+ *
+ * The registers & config EEPROM should be accessed via i2c-dev.
+ *
+ * The MAX6875 ignores the lowest address bit, so each chip responds to
+ * two addresses - 0x50/0x51 and 0x52/0x53.
+ *
+ * Note that the MAX6875 uses i2c_smbus_write_byte_data() to set the read
+ * address, so this driver is destructive if loaded for the wrong EEPROM chip.
+ */
 
 #include <linux/kernel.h>
-#include <linux/init.h>
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/i2c.h>
@@ -107,19 +103,13 @@ exit_up:
 	mutex_unlock(&data->update_lock);
 }
 
-static ssize_t max6875_read(struct kobject *kobj,
+static ssize_t max6875_read(struct file *filp, struct kobject *kobj,
 			    struct bin_attribute *bin_attr,
 			    char *buf, loff_t off, size_t count)
 {
 	struct i2c_client *client = kobj_to_i2c_client(kobj);
 	struct max6875_data *data = i2c_get_clientdata(client);
 	int slice, max_slice;
-
-	if (off > USER_EEPROM_SIZE)
-		return 0;
-
-	if (off + count > USER_EEPROM_SIZE)
-		count = USER_EEPROM_SIZE - off;
 
 	/* refresh slices which contain requested bytes */
 	max_slice = (off + count - 1) >> SLICE_BITS;
@@ -131,7 +121,7 @@ static ssize_t max6875_read(struct kobject *kobj,
 	return count;
 }
 
-static struct bin_attribute user_eeprom_attr = {
+static const struct bin_attribute user_eeprom_attr = {
 	.attr = {
 		.name = "eeprom",
 		.mode = S_IRUGO,
@@ -155,13 +145,14 @@ static int max6875_probe(struct i2c_client *client,
 	if (client->addr & 1)
 		return -ENODEV;
 
-	if (!(data = kzalloc(sizeof(struct max6875_data), GFP_KERNEL)))
+	data = kzalloc(sizeof(struct max6875_data), GFP_KERNEL);
+	if (!data)
 		return -ENOMEM;
 
 	/* A fake client is created on the odd address */
-	data->fake_client = i2c_new_dummy(client->adapter, client->addr + 1);
-	if (!data->fake_client) {
-		err = -ENOMEM;
+	data->fake_client = i2c_new_dummy_device(client->adapter, client->addr + 1);
+	if (IS_ERR(data->fake_client)) {
+		err = PTR_ERR(data->fake_client);
 		goto exit_kfree;
 	}
 
@@ -198,6 +189,7 @@ static const struct i2c_device_id max6875_id[] = {
 	{ "max6875", 0 },
 	{ }
 };
+MODULE_DEVICE_TABLE(i2c, max6875_id);
 
 static struct i2c_driver max6875_driver = {
 	.driver = {
@@ -208,20 +200,8 @@ static struct i2c_driver max6875_driver = {
 	.id_table	= max6875_id,
 };
 
-static int __init max6875_init(void)
-{
-	return i2c_add_driver(&max6875_driver);
-}
-
-static void __exit max6875_exit(void)
-{
-	i2c_del_driver(&max6875_driver);
-}
-
+module_i2c_driver(max6875_driver);
 
 MODULE_AUTHOR("Ben Gardner <bgardner@wabtec.com>");
 MODULE_DESCRIPTION("MAX6875 driver");
 MODULE_LICENSE("GPL");
-
-module_init(max6875_init);
-module_exit(max6875_exit);

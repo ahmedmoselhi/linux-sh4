@@ -1,45 +1,11 @@
+// SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0
 /******************************************************************************
  *
  * Module Name: exfldio - Aml Field I/O
  *
+ * Copyright (C) 2000 - 2020, Intel Corp.
+ *
  *****************************************************************************/
-
-/*
- * Copyright (C) 2000 - 2008, Intel Corp.
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions, and the following disclaimer,
- *    without modification.
- * 2. Redistributions in binary form must reproduce at minimum a disclaimer
- *    substantially similar to the "NO WARRANTY" disclaimer below
- *    ("Disclaimer") and any redistribution must be conditioned upon
- *    including a substantially similar Disclaimer requirement for further
- *    binary redistribution.
- * 3. Neither the names of the above-listed copyright holders nor the names
- *    of any contributors may be used to endorse or promote products derived
- *    from this software without specific prior written permission.
- *
- * Alternatively, this software may be distributed under the terms of the
- * GNU General Public License ("GPL") version 2 as published by the Free
- * Software Foundation.
- *
- * NO WARRANTY
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
- * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
- * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGES.
- */
 
 #include <acpi/acpi.h>
 #include "accommon.h"
@@ -54,12 +20,10 @@ ACPI_MODULE_NAME("exfldio")
 /* Local prototypes */
 static acpi_status
 acpi_ex_field_datum_io(union acpi_operand_object *obj_desc,
-		       u32 field_datum_byte_offset,
-		       acpi_integer * value, u32 read_write);
+		       u32 field_datum_byte_offset, u64 *value, u32 read_write);
 
 static u8
-acpi_ex_register_overflow(union acpi_operand_object *obj_desc,
-			  acpi_integer value);
+acpi_ex_register_overflow(union acpi_operand_object *obj_desc, u64 value);
 
 static acpi_status
 acpi_ex_setup_region(union acpi_operand_object *obj_desc,
@@ -87,6 +51,7 @@ acpi_ex_setup_region(union acpi_operand_object *obj_desc,
 {
 	acpi_status status = AE_OK;
 	union acpi_operand_object *rgn_desc;
+	u8 space_id;
 
 	ACPI_FUNCTION_TRACE_U32(ex_setup_region, field_datum_byte_offset);
 
@@ -95,11 +60,22 @@ acpi_ex_setup_region(union acpi_operand_object *obj_desc,
 	/* We must have a valid region */
 
 	if (rgn_desc->common.type != ACPI_TYPE_REGION) {
-		ACPI_ERROR((AE_INFO, "Needed Region, found type %X (%s)",
+		ACPI_ERROR((AE_INFO, "Needed Region, found type 0x%X (%s)",
 			    rgn_desc->common.type,
 			    acpi_ut_get_object_type_name(rgn_desc)));
 
 		return_ACPI_STATUS(AE_AML_OPERAND_TYPE);
+	}
+
+	space_id = rgn_desc->region.space_id;
+
+	/* Validate the Space ID */
+
+	if (!acpi_is_valid_space_id(space_id)) {
+		ACPI_ERROR((AE_INFO,
+			    "Invalid/unknown Address Space ID: 0x%2.2X",
+			    space_id));
+		return_ACPI_STATUS(AE_AML_INVALID_SPACE_ID);
 	}
 
 	/*
@@ -113,18 +89,13 @@ acpi_ex_setup_region(union acpi_operand_object *obj_desc,
 		}
 	}
 
-	/* Exit if Address/Length have been disallowed by the host OS */
-
-	if (rgn_desc->common.flags & AOPOBJ_INVALID) {
-		return_ACPI_STATUS(AE_AML_ILLEGAL_ADDRESS);
-	}
-
 	/*
-	 * Exit now for SMBus or IPMI address space, it has a non-linear address space
-	 * and the request cannot be directly validated
+	 * Exit now for SMBus, GSBus or IPMI address space, it has a non-linear
+	 * address space and the request cannot be directly validated
 	 */
-	if (rgn_desc->region.space_id == ACPI_ADR_SPACE_SMBUS ||
-	    rgn_desc->region.space_id == ACPI_ADR_SPACE_IPMI) {
+	if (space_id == ACPI_ADR_SPACE_SMBUS ||
+	    space_id == ACPI_ADR_SPACE_GSBUS ||
+	    space_id == ACPI_ADR_SPACE_IPMI) {
 
 		/* SMBus or IPMI has a non-linear address space */
 
@@ -143,13 +114,12 @@ acpi_ex_setup_region(union acpi_operand_object *obj_desc,
 #endif
 
 	/*
-	 * Validate the request.  The entire request from the byte offset for a
+	 * Validate the request. The entire request from the byte offset for a
 	 * length of one field datum (access width) must fit within the region.
 	 * (Region length is specified in bytes)
 	 */
 	if (rgn_desc->region.length <
-	    (obj_desc->common_field.base_byte_offset +
-	     field_datum_byte_offset +
+	    (obj_desc->common_field.base_byte_offset + field_datum_byte_offset +
 	     obj_desc->common_field.access_byte_width)) {
 		if (acpi_gbl_enable_interpreter_slack) {
 			/*
@@ -160,7 +130,7 @@ acpi_ex_setup_region(union acpi_operand_object *obj_desc,
 			if (ACPI_ROUND_UP(rgn_desc->region.length,
 					  obj_desc->common_field.
 					  access_byte_width) >=
-			    ((acpi_size) obj_desc->common_field.
+			    ((acpi_size)obj_desc->common_field.
 			     base_byte_offset +
 			     obj_desc->common_field.access_byte_width +
 			     field_datum_byte_offset)) {
@@ -172,11 +142,12 @@ acpi_ex_setup_region(union acpi_operand_object *obj_desc,
 		    obj_desc->common_field.access_byte_width) {
 			/*
 			 * This is the case where the access_type (acc_word, etc.) is wider
-			 * than the region itself.  For example, a region of length one
+			 * than the region itself. For example, a region of length one
 			 * byte, and a field with Dword access specified.
 			 */
 			ACPI_ERROR((AE_INFO,
-				    "Field [%4.4s] access width (%d bytes) too large for region [%4.4s] (length %X)",
+				    "Field [%4.4s] access width (%u bytes) "
+				    "too large for region [%4.4s] (length %u)",
 				    acpi_ut_get_node_name(obj_desc->
 							  common_field.node),
 				    obj_desc->common_field.access_byte_width,
@@ -190,7 +161,8 @@ acpi_ex_setup_region(union acpi_operand_object *obj_desc,
 		 * exceeds region length, indicate an error
 		 */
 		ACPI_ERROR((AE_INFO,
-			    "Field [%4.4s] Base+Offset+Width %X+%X+%X is beyond end of region [%4.4s] (length %X)",
+			    "Field [%4.4s] Base+Offset+Width %u+%u+%u "
+			    "is beyond end of region [%4.4s] (length %u)",
 			    acpi_ut_get_node_name(obj_desc->common_field.node),
 			    obj_desc->common_field.base_byte_offset,
 			    field_datum_byte_offset,
@@ -211,9 +183,9 @@ acpi_ex_setup_region(union acpi_operand_object *obj_desc,
  * PARAMETERS:  obj_desc                - Field to be read
  *              field_datum_byte_offset - Byte offset of this datum within the
  *                                        parent field
- *              Value                   - Where to store value (must at least
- *                                        the size of acpi_integer)
- *              Function                - Read or Write flag plus other region-
+ *              value                   - Where to store value (must at least
+ *                                        64 bits)
+ *              function                - Read or Write flag plus other region-
  *                                        dependent flags
  *
  * RETURN:      Status
@@ -224,8 +196,7 @@ acpi_ex_setup_region(union acpi_operand_object *obj_desc,
 
 acpi_status
 acpi_ex_access_region(union acpi_operand_object *obj_desc,
-		      u32 field_datum_byte_offset,
-		      acpi_integer * value, u32 function)
+		      u32 field_datum_byte_offset, u64 *value, u32 function)
 {
 	acpi_status status;
 	union acpi_operand_object *rgn_desc;
@@ -260,36 +231,35 @@ acpi_ex_access_region(union acpi_operand_object *obj_desc,
 	}
 
 	ACPI_DEBUG_PRINT_RAW((ACPI_DB_BFIELD,
-			      " Region [%s:%X], Width %X, ByteBase %X, Offset %X at %p\n",
+			      " Region [%s:%X], Width %X, ByteBase %X, Offset %X at %8.8X%8.8X\n",
 			      acpi_ut_get_region_name(rgn_desc->region.
 						      space_id),
 			      rgn_desc->region.space_id,
 			      obj_desc->common_field.access_byte_width,
 			      obj_desc->common_field.base_byte_offset,
-			      field_datum_byte_offset, ACPI_CAST_PTR(void,
-								     (rgn_desc->
-								      region.
-								      address +
-								      region_offset))));
+			      field_datum_byte_offset,
+			      ACPI_FORMAT_UINT64(rgn_desc->region.address +
+						 region_offset)));
 
 	/* Invoke the appropriate address_space/op_region handler */
 
-	status =
-	    acpi_ev_address_space_dispatch(rgn_desc, function, region_offset,
-					   ACPI_MUL_8(obj_desc->common_field.
-						      access_byte_width),
-					   value);
+	status = acpi_ev_address_space_dispatch(rgn_desc, obj_desc,
+						function, region_offset,
+						ACPI_MUL_8(obj_desc->
+							   common_field.
+							   access_byte_width),
+						value);
 
 	if (ACPI_FAILURE(status)) {
 		if (status == AE_NOT_IMPLEMENTED) {
 			ACPI_ERROR((AE_INFO,
-				    "Region %s(%X) not implemented",
+				    "Region %s (ID=%u) not implemented",
 				    acpi_ut_get_region_name(rgn_desc->region.
 							    space_id),
 				    rgn_desc->region.space_id));
 		} else if (status == AE_NOT_EXIST) {
 			ACPI_ERROR((AE_INFO,
-				    "Region %s(%X) has no handler",
+				    "Region %s (ID=%u) has no handler",
 				    acpi_ut_get_region_name(rgn_desc->region.
 							    space_id),
 				    rgn_desc->region.space_id));
@@ -304,21 +274,20 @@ acpi_ex_access_region(union acpi_operand_object *obj_desc,
  * FUNCTION:    acpi_ex_register_overflow
  *
  * PARAMETERS:  obj_desc                - Register(Field) to be written
- *              Value                   - Value to be stored
+ *              value                   - Value to be stored
  *
  * RETURN:      TRUE if value overflows the field, FALSE otherwise
  *
  * DESCRIPTION: Check if a value is out of range of the field being written.
  *              Used to check if the values written to Index and Bank registers
- *              are out of range.  Normally, the value is simply truncated
+ *              are out of range. Normally, the value is simply truncated
  *              to fit the field, but this case is most likely a serious
  *              coding error in the ASL.
  *
  ******************************************************************************/
 
 static u8
-acpi_ex_register_overflow(union acpi_operand_object *obj_desc,
-			  acpi_integer value)
+acpi_ex_register_overflow(union acpi_operand_object *obj_desc, u64 value)
 {
 
 	if (obj_desc->common_field.bit_length >= ACPI_INTEGER_BIT_SIZE) {
@@ -329,11 +298,16 @@ acpi_ex_register_overflow(union acpi_operand_object *obj_desc,
 		return (FALSE);
 	}
 
-	if (value >= ((acpi_integer) 1 << obj_desc->common_field.bit_length)) {
+	if (value >= ((u64) 1 << obj_desc->common_field.bit_length)) {
 		/*
 		 * The Value is larger than the maximum value that can fit into
 		 * the register.
 		 */
+		ACPI_ERROR((AE_INFO,
+			    "Index value 0x%8.8X%8.8X overflows field width 0x%X",
+			    ACPI_FORMAT_UINT64(value),
+			    obj_desc->common_field.bit_length));
+
 		return (TRUE);
 	}
 
@@ -349,12 +323,12 @@ acpi_ex_register_overflow(union acpi_operand_object *obj_desc,
  * PARAMETERS:  obj_desc                - Field to be read
  *              field_datum_byte_offset - Byte offset of this datum within the
  *                                        parent field
- *              Value                   - Where to store value (must be 64 bits)
+ *              value                   - Where to store value (must be 64 bits)
  *              read_write              - Read or Write flag
  *
  * RETURN:      Status
  *
- * DESCRIPTION: Read or Write a single datum of a field.  The field_type is
+ * DESCRIPTION: Read or Write a single datum of a field. The field_type is
  *              demultiplexed here to handle the different types of fields
  *              (buffer_field, region_field, index_field, bank_field)
  *
@@ -362,11 +336,10 @@ acpi_ex_register_overflow(union acpi_operand_object *obj_desc,
 
 static acpi_status
 acpi_ex_field_datum_io(union acpi_operand_object *obj_desc,
-		       u32 field_datum_byte_offset,
-		       acpi_integer * value, u32 read_write)
+		       u32 field_datum_byte_offset, u64 *value, u32 read_write)
 {
 	acpi_status status;
-	acpi_integer local_value;
+	u64 local_value;
 
 	ACPI_FUNCTION_TRACE_U32(ex_field_datum_io, field_datum_byte_offset);
 
@@ -411,36 +384,35 @@ acpi_ex_field_datum_io(union acpi_operand_object *obj_desc,
 			 * Copy the data from the source buffer.
 			 * Length is the field width in bytes.
 			 */
-			ACPI_MEMCPY(value,
-				    (obj_desc->buffer_field.buffer_obj)->buffer.
-				    pointer +
-				    obj_desc->buffer_field.base_byte_offset +
-				    field_datum_byte_offset,
-				    obj_desc->common_field.access_byte_width);
+			memcpy(value,
+			       (obj_desc->buffer_field.buffer_obj)->buffer.
+			       pointer +
+			       obj_desc->buffer_field.base_byte_offset +
+			       field_datum_byte_offset,
+			       obj_desc->common_field.access_byte_width);
 		} else {
 			/*
 			 * Copy the data to the target buffer.
 			 * Length is the field width in bytes.
 			 */
-			ACPI_MEMCPY((obj_desc->buffer_field.buffer_obj)->buffer.
-				    pointer +
-				    obj_desc->buffer_field.base_byte_offset +
-				    field_datum_byte_offset, value,
-				    obj_desc->common_field.access_byte_width);
+			memcpy((obj_desc->buffer_field.buffer_obj)->buffer.
+			       pointer +
+			       obj_desc->buffer_field.base_byte_offset +
+			       field_datum_byte_offset, value,
+			       obj_desc->common_field.access_byte_width);
 		}
 
 		status = AE_OK;
 		break;
 
 	case ACPI_TYPE_LOCAL_BANK_FIELD:
-
 		/*
 		 * Ensure that the bank_value is not beyond the capacity of
 		 * the register
 		 */
 		if (acpi_ex_register_overflow(obj_desc->bank_field.bank_obj,
-					      (acpi_integer) obj_desc->
-					      bank_field.value)) {
+					      (u64) obj_desc->bank_field.
+					      value)) {
 			return_ACPI_STATUS(AE_AML_REGISTER_LIMIT);
 		}
 
@@ -475,14 +447,13 @@ acpi_ex_field_datum_io(union acpi_operand_object *obj_desc,
 		break;
 
 	case ACPI_TYPE_LOCAL_INDEX_FIELD:
-
 		/*
 		 * Ensure that the index_value is not beyond the capacity of
 		 * the register
 		 */
 		if (acpi_ex_register_overflow(obj_desc->index_field.index_obj,
-					      (acpi_integer) obj_desc->
-					      index_field.value)) {
+					      (u64) obj_desc->index_field.
+					      value)) {
 			return_ACPI_STATUS(AE_AML_REGISTER_LIMIT);
 		}
 
@@ -512,7 +483,7 @@ acpi_ex_field_datum_io(union acpi_operand_object *obj_desc,
 			status =
 			    acpi_ex_extract_from_field(obj_desc->index_field.
 						       data_obj, value,
-						       sizeof(acpi_integer));
+						       sizeof(u64));
 		} else {
 			/* Write the datum to the data_register */
 
@@ -523,13 +494,13 @@ acpi_ex_field_datum_io(union acpi_operand_object *obj_desc,
 			status =
 			    acpi_ex_insert_into_field(obj_desc->index_field.
 						      data_obj, value,
-						      sizeof(acpi_integer));
+						      sizeof(u64));
 		}
 		break;
 
 	default:
 
-		ACPI_ERROR((AE_INFO, "Wrong object type in field I/O %X",
+		ACPI_ERROR((AE_INFO, "Wrong object type in field I/O %u",
 			    obj_desc->common.type));
 		status = AE_AML_INTERNAL;
 		break;
@@ -538,13 +509,13 @@ acpi_ex_field_datum_io(union acpi_operand_object *obj_desc,
 	if (ACPI_SUCCESS(status)) {
 		if (read_write == ACPI_READ) {
 			ACPI_DEBUG_PRINT((ACPI_DB_BFIELD,
-					  "Value Read %8.8X%8.8X, Width %d\n",
+					  "Value Read %8.8X%8.8X, Width %u\n",
 					  ACPI_FORMAT_UINT64(*value),
 					  obj_desc->common_field.
 					  access_byte_width));
 		} else {
 			ACPI_DEBUG_PRINT((ACPI_DB_BFIELD,
-					  "Value Written %8.8X%8.8X, Width %d\n",
+					  "Value Written %8.8X%8.8X, Width %u\n",
 					  ACPI_FORMAT_UINT64(*value),
 					  obj_desc->common_field.
 					  access_byte_width));
@@ -559,7 +530,7 @@ acpi_ex_field_datum_io(union acpi_operand_object *obj_desc,
  * FUNCTION:    acpi_ex_write_with_update_rule
  *
  * PARAMETERS:  obj_desc                - Field to be written
- *              Mask                    - bitmask within field datum
+ *              mask                    - bitmask within field datum
  *              field_value             - Value to write
  *              field_datum_byte_offset - Offset of datum within field
  *
@@ -571,13 +542,12 @@ acpi_ex_field_datum_io(union acpi_operand_object *obj_desc,
 
 acpi_status
 acpi_ex_write_with_update_rule(union acpi_operand_object *obj_desc,
-			       acpi_integer mask,
-			       acpi_integer field_value,
-			       u32 field_datum_byte_offset)
+			       u64 mask,
+			       u64 field_value, u32 field_datum_byte_offset)
 {
 	acpi_status status = AE_OK;
-	acpi_integer merged_value;
-	acpi_integer current_value;
+	u64 merged_value;
+	u64 current_value;
 
 	ACPI_FUNCTION_TRACE_U32(ex_write_with_update_rule, mask);
 
@@ -587,7 +557,7 @@ acpi_ex_write_with_update_rule(union acpi_operand_object *obj_desc,
 
 	/* If the mask is all ones, we don't need to worry about the update rule */
 
-	if (mask != ACPI_INTEGER_MAX) {
+	if (mask != ACPI_UINT64_MAX) {
 
 		/* Decode the update rule */
 
@@ -635,16 +605,16 @@ acpi_ex_write_with_update_rule(union acpi_operand_object *obj_desc,
 		default:
 
 			ACPI_ERROR((AE_INFO,
-				    "Unknown UpdateRule value: %X",
-				    (obj_desc->common_field.
-				     field_flags &
+				    "Unknown UpdateRule value: 0x%X",
+				    (obj_desc->common_field.field_flags &
 				     AML_FIELD_UPDATE_RULE_MASK)));
 			return_ACPI_STATUS(AE_AML_OPERAND_VALUE);
 		}
 	}
 
 	ACPI_DEBUG_PRINT((ACPI_DB_BFIELD,
-			  "Mask %8.8X%8.8X, DatumOffset %X, Width %X, Value %8.8X%8.8X, MergedValue %8.8X%8.8X\n",
+			  "Mask %8.8X%8.8X, DatumOffset %X, Width %X, "
+			  "Value %8.8X%8.8X, MergedValue %8.8X%8.8X\n",
 			  ACPI_FORMAT_UINT64(mask),
 			  field_datum_byte_offset,
 			  obj_desc->common_field.access_byte_width,
@@ -653,8 +623,9 @@ acpi_ex_write_with_update_rule(union acpi_operand_object *obj_desc,
 
 	/* Write the merged value */
 
-	status = acpi_ex_field_datum_io(obj_desc, field_datum_byte_offset,
-					&merged_value, ACPI_WRITE);
+	status =
+	    acpi_ex_field_datum_io(obj_desc, field_datum_byte_offset,
+				   &merged_value, ACPI_WRITE);
 
 	return_ACPI_STATUS(status);
 }
@@ -664,7 +635,7 @@ acpi_ex_write_with_update_rule(union acpi_operand_object *obj_desc,
  * FUNCTION:    acpi_ex_extract_from_field
  *
  * PARAMETERS:  obj_desc            - Field to be read
- *              Buffer              - Where to store the field data
+ *              buffer              - Where to store the field data
  *              buffer_length       - Length of Buffer
  *
  * RETURN:      Status
@@ -678,13 +649,14 @@ acpi_ex_extract_from_field(union acpi_operand_object *obj_desc,
 			   void *buffer, u32 buffer_length)
 {
 	acpi_status status;
-	acpi_integer raw_datum;
-	acpi_integer merged_datum;
+	u64 raw_datum;
+	u64 merged_datum;
 	u32 field_offset = 0;
 	u32 buffer_offset = 0;
 	u32 buffer_tail_bits;
 	u32 datum_count;
 	u32 field_datum_count;
+	u32 access_bit_width;
 	u32 i;
 
 	ACPI_FUNCTION_TRACE(ex_extract_from_field);
@@ -694,21 +666,53 @@ acpi_ex_extract_from_field(union acpi_operand_object *obj_desc,
 	if (buffer_length <
 	    ACPI_ROUND_BITS_UP_TO_BYTES(obj_desc->common_field.bit_length)) {
 		ACPI_ERROR((AE_INFO,
-			    "Field size %X (bits) is too large for buffer (%X)",
+			    "Field size %u (bits) is too large for buffer (%u)",
 			    obj_desc->common_field.bit_length, buffer_length));
 
 		return_ACPI_STATUS(AE_BUFFER_OVERFLOW);
 	}
-	ACPI_MEMSET(buffer, 0, buffer_length);
+
+	memset(buffer, 0, buffer_length);
+	access_bit_width = ACPI_MUL_8(obj_desc->common_field.access_byte_width);
+
+	/* Handle the simple case here */
+
+	if ((obj_desc->common_field.start_field_bit_offset == 0) &&
+	    (obj_desc->common_field.bit_length == access_bit_width)) {
+		if (buffer_length >= sizeof(u64)) {
+			status =
+			    acpi_ex_field_datum_io(obj_desc, 0, buffer,
+						   ACPI_READ);
+		} else {
+			/* Use raw_datum (u64) to handle buffers < 64 bits */
+
+			status =
+			    acpi_ex_field_datum_io(obj_desc, 0, &raw_datum,
+						   ACPI_READ);
+			memcpy(buffer, &raw_datum, buffer_length);
+		}
+
+		return_ACPI_STATUS(status);
+	}
+
+/* TBD: Move to common setup code */
+
+	/* Field algorithm is limited to sizeof(u64), truncate if needed */
+
+	if (obj_desc->common_field.access_byte_width > sizeof(u64)) {
+		obj_desc->common_field.access_byte_width = sizeof(u64);
+		access_bit_width = sizeof(u64) * 8;
+	}
 
 	/* Compute the number of datums (access width data items) */
 
-	datum_count = ACPI_ROUND_UP_TO(obj_desc->common_field.bit_length,
-				       obj_desc->common_field.access_bit_width);
+	datum_count =
+	    ACPI_ROUND_UP_TO(obj_desc->common_field.bit_length,
+			     access_bit_width);
+
 	field_datum_count = ACPI_ROUND_UP_TO(obj_desc->common_field.bit_length +
 					     obj_desc->common_field.
 					     start_field_bit_offset,
-					     obj_desc->common_field.
 					     access_bit_width);
 
 	/* Priming read from the field */
@@ -729,8 +733,9 @@ acpi_ex_extract_from_field(union acpi_operand_object *obj_desc,
 		/* Get next input datum from the field */
 
 		field_offset += obj_desc->common_field.access_byte_width;
-		status = acpi_ex_field_datum_io(obj_desc, field_offset,
-						&raw_datum, ACPI_READ);
+		status =
+		    acpi_ex_field_datum_io(obj_desc, field_offset, &raw_datum,
+					   ACPI_READ);
 		if (ACPI_FAILURE(status)) {
 			return_ACPI_STATUS(status);
 		}
@@ -743,12 +748,11 @@ acpi_ex_extract_from_field(union acpi_operand_object *obj_desc,
 		 * This avoids the differences in behavior between different compilers
 		 * concerning shift values larger than the target data width.
 		 */
-		if ((obj_desc->common_field.access_bit_width -
-		     obj_desc->common_field.start_field_bit_offset) <
+		if (access_bit_width -
+		    obj_desc->common_field.start_field_bit_offset <
 		    ACPI_INTEGER_BIT_SIZE) {
 			merged_datum |=
-			    raw_datum << (obj_desc->common_field.
-					  access_bit_width -
+			    raw_datum << (access_bit_width -
 					  obj_desc->common_field.
 					  start_field_bit_offset);
 		}
@@ -759,9 +763,9 @@ acpi_ex_extract_from_field(union acpi_operand_object *obj_desc,
 
 		/* Write merged datum to target buffer */
 
-		ACPI_MEMCPY(((char *)buffer) + buffer_offset, &merged_datum,
-			    ACPI_MIN(obj_desc->common_field.access_byte_width,
-				     buffer_length - buffer_offset));
+		memcpy(((char *)buffer) + buffer_offset, &merged_datum,
+		       ACPI_MIN(obj_desc->common_field.access_byte_width,
+				buffer_length - buffer_offset));
 
 		buffer_offset += obj_desc->common_field.access_byte_width;
 		merged_datum =
@@ -770,17 +774,16 @@ acpi_ex_extract_from_field(union acpi_operand_object *obj_desc,
 
 	/* Mask off any extra bits in the last datum */
 
-	buffer_tail_bits = obj_desc->common_field.bit_length %
-	    obj_desc->common_field.access_bit_width;
+	buffer_tail_bits = obj_desc->common_field.bit_length % access_bit_width;
 	if (buffer_tail_bits) {
 		merged_datum &= ACPI_MASK_BITS_ABOVE(buffer_tail_bits);
 	}
 
 	/* Write the last datum to the buffer */
 
-	ACPI_MEMCPY(((char *)buffer) + buffer_offset, &merged_datum,
-		    ACPI_MIN(obj_desc->common_field.access_byte_width,
-			     buffer_length - buffer_offset));
+	memcpy(((char *)buffer) + buffer_offset, &merged_datum,
+	       ACPI_MIN(obj_desc->common_field.access_byte_width,
+			buffer_length - buffer_offset));
 
 	return_ACPI_STATUS(AE_OK);
 }
@@ -790,7 +793,7 @@ acpi_ex_extract_from_field(union acpi_operand_object *obj_desc,
  * FUNCTION:    acpi_ex_insert_into_field
  *
  * PARAMETERS:  obj_desc            - Field to be written
- *              Buffer              - Data to be written
+ *              buffer              - Data to be written
  *              buffer_length       - Length of Buffer
  *
  * RETURN:      Status
@@ -803,19 +806,20 @@ acpi_status
 acpi_ex_insert_into_field(union acpi_operand_object *obj_desc,
 			  void *buffer, u32 buffer_length)
 {
+	void *new_buffer;
 	acpi_status status;
-	acpi_integer mask;
-	acpi_integer width_mask;
-	acpi_integer merged_datum;
-	acpi_integer raw_datum = 0;
+	u64 mask;
+	u64 width_mask;
+	u64 merged_datum;
+	u64 raw_datum = 0;
 	u32 field_offset = 0;
 	u32 buffer_offset = 0;
 	u32 buffer_tail_bits;
 	u32 datum_count;
 	u32 field_datum_count;
-	u32 i;
+	u32 access_bit_width;
 	u32 required_length;
-	void *new_buffer;
+	u32 i;
 
 	ACPI_FUNCTION_TRACE(ex_insert_into_field);
 
@@ -824,9 +828,10 @@ acpi_ex_insert_into_field(union acpi_operand_object *obj_desc,
 	new_buffer = NULL;
 	required_length =
 	    ACPI_ROUND_BITS_UP_TO_BYTES(obj_desc->common_field.bit_length);
+
 	/*
 	 * We must have a buffer that is at least as long as the field
-	 * we are writing to.  This is because individual fields are
+	 * we are writing to. This is because individual fields are
 	 * indivisible and partial writes are not supported -- as per
 	 * the ACPI specification.
 	 */
@@ -841,46 +846,44 @@ acpi_ex_insert_into_field(union acpi_operand_object *obj_desc,
 
 		/*
 		 * Copy the original data to the new buffer, starting
-		 * at Byte zero.  All unused (upper) bytes of the
+		 * at Byte zero. All unused (upper) bytes of the
 		 * buffer will be 0.
 		 */
-		ACPI_MEMCPY((char *)new_buffer, (char *)buffer, buffer_length);
+		memcpy((char *)new_buffer, (char *)buffer, buffer_length);
 		buffer = new_buffer;
 		buffer_length = required_length;
 	}
 
-	/*
-	 * Create the bitmasks used for bit insertion.
-	 * Note: This if/else is used to bypass compiler differences with the
-	 * shift operator
-	 */
-	if (obj_desc->common_field.access_bit_width == ACPI_INTEGER_BIT_SIZE) {
-		width_mask = ACPI_INTEGER_MAX;
-	} else {
-		width_mask =
-		    ACPI_MASK_BITS_ABOVE(obj_desc->common_field.
-					 access_bit_width);
+/* TBD: Move to common setup code */
+
+	/* Algo is limited to sizeof(u64), so cut the access_byte_width */
+	if (obj_desc->common_field.access_byte_width > sizeof(u64)) {
+		obj_desc->common_field.access_byte_width = sizeof(u64);
 	}
 
+	access_bit_width = ACPI_MUL_8(obj_desc->common_field.access_byte_width);
+
+	/* Create the bitmasks used for bit insertion */
+
+	width_mask = ACPI_MASK_BITS_ABOVE_64(access_bit_width);
 	mask = width_mask &
 	    ACPI_MASK_BITS_BELOW(obj_desc->common_field.start_field_bit_offset);
 
 	/* Compute the number of datums (access width data items) */
 
 	datum_count = ACPI_ROUND_UP_TO(obj_desc->common_field.bit_length,
-				       obj_desc->common_field.access_bit_width);
+				       access_bit_width);
 
 	field_datum_count = ACPI_ROUND_UP_TO(obj_desc->common_field.bit_length +
 					     obj_desc->common_field.
 					     start_field_bit_offset,
-					     obj_desc->common_field.
 					     access_bit_width);
 
 	/* Get initial Datum from the input buffer */
 
-	ACPI_MEMCPY(&raw_datum, buffer,
-		    ACPI_MIN(obj_desc->common_field.access_byte_width,
-			     buffer_length - buffer_offset));
+	memcpy(&raw_datum, buffer,
+	       ACPI_MIN(obj_desc->common_field.access_byte_width,
+			buffer_length - buffer_offset));
 
 	merged_datum =
 	    raw_datum << obj_desc->common_field.start_field_bit_offset;
@@ -892,9 +895,9 @@ acpi_ex_insert_into_field(union acpi_operand_object *obj_desc,
 		/* Write merged datum to the target field */
 
 		merged_datum &= mask;
-		status = acpi_ex_write_with_update_rule(obj_desc, mask,
-							merged_datum,
-							field_offset);
+		status =
+		    acpi_ex_write_with_update_rule(obj_desc, mask, merged_datum,
+						   field_offset);
 		if (ACPI_FAILURE(status)) {
 			goto exit;
 		}
@@ -910,12 +913,11 @@ acpi_ex_insert_into_field(union acpi_operand_object *obj_desc,
 		 * This avoids the differences in behavior between different compilers
 		 * concerning shift values larger than the target data width.
 		 */
-		if ((obj_desc->common_field.access_bit_width -
+		if ((access_bit_width -
 		     obj_desc->common_field.start_field_bit_offset) <
 		    ACPI_INTEGER_BIT_SIZE) {
 			merged_datum =
-			    raw_datum >> (obj_desc->common_field.
-					  access_bit_width -
+			    raw_datum >> (access_bit_width -
 					  obj_desc->common_field.
 					  start_field_bit_offset);
 		} else {
@@ -931,9 +933,10 @@ acpi_ex_insert_into_field(union acpi_operand_object *obj_desc,
 		/* Get the next input datum from the buffer */
 
 		buffer_offset += obj_desc->common_field.access_byte_width;
-		ACPI_MEMCPY(&raw_datum, ((char *)buffer) + buffer_offset,
-			    ACPI_MIN(obj_desc->common_field.access_byte_width,
-				     buffer_length - buffer_offset));
+		memcpy(&raw_datum, ((char *)buffer) + buffer_offset,
+		       ACPI_MIN(obj_desc->common_field.access_byte_width,
+				buffer_length - buffer_offset));
+
 		merged_datum |=
 		    raw_datum << obj_desc->common_field.start_field_bit_offset;
 	}
@@ -942,7 +945,7 @@ acpi_ex_insert_into_field(union acpi_operand_object *obj_desc,
 
 	buffer_tail_bits = (obj_desc->common_field.bit_length +
 			    obj_desc->common_field.start_field_bit_offset) %
-	    obj_desc->common_field.access_bit_width;
+	    access_bit_width;
 	if (buffer_tail_bits) {
 		mask &= ACPI_MASK_BITS_ABOVE(buffer_tail_bits);
 	}
@@ -950,11 +953,11 @@ acpi_ex_insert_into_field(union acpi_operand_object *obj_desc,
 	/* Write the last datum to the field */
 
 	merged_datum &= mask;
-	status = acpi_ex_write_with_update_rule(obj_desc,
-						mask, merged_datum,
-						field_offset);
+	status =
+	    acpi_ex_write_with_update_rule(obj_desc, mask, merged_datum,
+					   field_offset);
 
-      exit:
+exit:
 	/* Free temporary buffer if we used one */
 
 	if (new_buffer) {

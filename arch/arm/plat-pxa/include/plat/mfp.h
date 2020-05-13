@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * arch/arm/plat-pxa/include/plat/mfp.h
  *
@@ -7,10 +8,6 @@
  *
  * 2007-8-21: eric miao <eric.miao@marvell.com>
  *            initial version
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2 as
- *  published by the Free Software Foundation.
  */
 
 #ifndef __ASM_PLAT_MFP_H
@@ -316,6 +313,13 @@ enum {
 	MFP_PIN_PMIC_INT,
 	MFP_PIN_RDY,
 
+	/* additional pins on MMP2 */
+	MFP_PIN_TWSI1_SCL,
+	MFP_PIN_TWSI1_SDA,
+	MFP_PIN_TWSI4_SCL,
+	MFP_PIN_TWSI4_SDA,
+	MFP_PIN_CLK_REQ,
+
 	MFP_PIN_MAX,
 };
 
@@ -427,7 +431,7 @@ typedef unsigned long mfp_cfg_t;
  *
  * mfp_init_addr() - accepts a table of "mfp_addr_map" structure, which
  * represents a range of MFP pins from "start" to "end", with the offset
- * begining at "offset", to define a single pin, let "end" = -1.
+ * beginning at "offset", to define a single pin, let "end" = -1.
  *
  * use
  *
@@ -449,7 +453,7 @@ struct mfp_addr_map {
 
 #define MFP_ADDR_END	{ MFP_PIN_INVALID, 0 }
 
-void __init mfp_init_base(unsigned long mfpr_base);
+void __init mfp_init_base(void __iomem *mfpr_base);
 void __init mfp_init_addr(struct mfp_addr_map *map);
 
 /*

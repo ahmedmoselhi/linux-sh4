@@ -13,13 +13,15 @@
  */
 
 #include <linux/init.h>
+#include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/highmem.h>
+#include <linux/io.h>
 #include <asm/cacheflush.h>
-#include <asm/kmap_types.h>
-#include <asm/fixmap.h>
-#include <asm/pgtable.h>
-#include <asm/tlbflush.h>
-#include <plat/cache-feroceon-l2.h>
-#include "mm.h"
+#include <asm/cp15.h>
+#include <asm/hardware/cache-feroceon-l2.h>
+
+#define L2_WRITETHROUGH_KIRKWOOD	BIT(4)
 
 /*
  * Low-level cache maintenance operations.
@@ -39,24 +41,27 @@
  * between which we don't want to be preempted.
  */
 
-static inline unsigned long l2_start_va(unsigned long paddr)
+static inline unsigned long l2_get_va(unsigned long paddr)
 {
 #ifdef CONFIG_HIGHMEM
 	/*
-	 * Let's do our own fixmap stuff in a minimal way here.
 	 * Because range ops can't be done on physical addresses,
 	 * we simply install a virtual mapping for it only for the
 	 * TLB lookup to occur, hence no need to flush the untouched
-	 * memory mapping.  This is protected with the disabling of
-	 * interrupts by the caller.
+	 * memory mapping afterwards (note: a cache flush may happen
+	 * in some circumstances depending on the path taken in kunmap_atomic).
 	 */
-	unsigned long idx = KM_L2_CACHE + KM_TYPE_NR * smp_processor_id();
-	unsigned long vaddr = __fix_to_virt(FIX_KMAP_BEGIN + idx);
-	set_pte_ext(TOP_PTE(vaddr), pfn_pte(paddr >> PAGE_SHIFT, PAGE_KERNEL), 0);
-	local_flush_tlb_kernel_page(vaddr);
-	return vaddr + (paddr & ~PAGE_MASK);
+	void *vaddr = kmap_atomic_pfn(paddr >> PAGE_SHIFT);
+	return (unsigned long)vaddr + (paddr & ~PAGE_MASK);
 #else
 	return __phys_to_virt(paddr);
+#endif
+}
+
+static inline void l2_put_va(unsigned long vaddr)
+{
+#ifdef CONFIG_HIGHMEM
+	kunmap_atomic((void *)vaddr);
 #endif
 }
 
@@ -76,13 +81,14 @@ static inline void l2_clean_pa_range(unsigned long start, unsigned long end)
 	 */
 	BUG_ON((start ^ end) >> PAGE_SHIFT);
 
-	raw_local_irq_save(flags);
-	va_start = l2_start_va(start);
+	va_start = l2_get_va(start);
 	va_end = va_start + (end - start);
+	raw_local_irq_save(flags);
 	__asm__("mcr p15, 1, %0, c15, c9, 4\n\t"
 		"mcr p15, 1, %1, c15, c9, 5"
 		: : "r" (va_start), "r" (va_end));
 	raw_local_irq_restore(flags);
+	l2_put_va(va_start);
 }
 
 static inline void l2_clean_inv_pa(unsigned long addr)
@@ -106,13 +112,14 @@ static inline void l2_inv_pa_range(unsigned long start, unsigned long end)
 	 */
 	BUG_ON((start ^ end) >> PAGE_SHIFT);
 
-	raw_local_irq_save(flags);
-	va_start = l2_start_va(start);
+	va_start = l2_get_va(start);
 	va_end = va_start + (end - start);
+	raw_local_irq_save(flags);
 	__asm__("mcr p15, 1, %0, c15, c11, 4\n\t"
 		"mcr p15, 1, %1, c15, c11, 5"
 		: : "r" (va_start), "r" (va_end));
 	raw_local_irq_restore(flags);
+	l2_put_va(va_start);
 }
 
 static inline void l2_inv_all(void)
@@ -306,7 +313,7 @@ static void __init disable_l2_prefetch(void)
 	 */
 	u = read_extra_features();
 	if (!(u & 0x01000000)) {
-		printk(KERN_INFO "Feroceon L2: Disabling L2 prefetch.\n");
+		pr_info("Feroceon L2: Disabling L2 prefetch.\n");
 		write_extra_features(u | 0x01000000);
 	}
 }
@@ -319,7 +326,7 @@ static void __init enable_l2(void)
 	if (!(u & 0x00400000)) {
 		int i, d;
 
-		printk(KERN_INFO "Feroceon L2: Enabling L2\n");
+		pr_info("Feroceon L2: Enabling L2\n");
 
 		d = flush_and_disable_dcache();
 		i = invalidate_and_disable_icache();
@@ -329,7 +336,9 @@ static void __init enable_l2(void)
 			enable_icache();
 		if (d)
 			enable_dcache();
-	}
+	} else
+		pr_err(FW_BUG
+		       "Feroceon L2: bootloader left the L2 cache on!\n");
 }
 
 void __init feroceon_l2_init(int __l2_wt_override)
@@ -344,6 +353,40 @@ void __init feroceon_l2_init(int __l2_wt_override)
 
 	enable_l2();
 
-	printk(KERN_INFO "Feroceon L2: Cache support initialised%s.\n",
+	pr_info("Feroceon L2: Cache support initialised%s.\n",
 			 l2_wt_override ? ", in WT override mode" : "");
 }
+#ifdef CONFIG_OF
+static const struct of_device_id feroceon_ids[] __initconst = {
+	{ .compatible = "marvell,kirkwood-cache"},
+	{ .compatible = "marvell,feroceon-cache"},
+	{}
+};
+
+int __init feroceon_of_init(void)
+{
+	struct device_node *node;
+	void __iomem *base;
+	bool l2_wt_override = false;
+
+#if defined(CONFIG_CACHE_FEROCEON_L2_WRITETHROUGH)
+	l2_wt_override = true;
+#endif
+
+	node = of_find_matching_node(NULL, feroceon_ids);
+	if (node && of_device_is_compatible(node, "marvell,kirkwood-cache")) {
+		base = of_iomap(node, 0);
+		if (!base)
+			return -ENOMEM;
+
+		if (l2_wt_override)
+			writel(readl(base) | L2_WRITETHROUGH_KIRKWOOD, base);
+		else
+			writel(readl(base) & ~L2_WRITETHROUGH_KIRKWOOD, base);
+	}
+
+	feroceon_l2_init(l2_wt_override);
+
+	return 0;
+}
+#endif

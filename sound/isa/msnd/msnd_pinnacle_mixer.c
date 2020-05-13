@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /***************************************************************************
 			  msnd_pinnacle_mixer.c  -  description
 			     -------------------
@@ -8,14 +9,11 @@
 
 /***************************************************************************
  *							      		   *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.				   *
  *									   *
  ***************************************************************************/
 
 #include <linux/io.h>
+#include <linux/export.h>
 
 #include <sound/core.h>
 #include <sound/control.h>
@@ -54,20 +52,13 @@
 static int snd_msndmix_info_mux(struct snd_kcontrol *kcontrol,
 				struct snd_ctl_elem_info *uinfo)
 {
-	static char *texts[3] = {
+	static const char * const texts[3] = {
 		"Analog", "MASS", "SPDIF",
 	};
 	struct snd_msnd *chip = snd_kcontrol_chip(kcontrol);
 	unsigned items = test_bit(F_HAVEDIGITAL, &chip->flags) ? 3 : 2;
 
-	uinfo->type = SNDRV_CTL_ELEM_TYPE_ENUMERATED;
-	uinfo->count = 1;
-	uinfo->value.enumerated.items = items;
-	if (uinfo->value.enumerated.item >= items)
-		uinfo->value.enumerated.item = items - 1;
-	strcpy(uinfo->value.enumerated.name,
-		texts[uinfo->value.enumerated.item]);
-	return 0;
+	return snd_ctl_enum_info(uinfo, 1, items, texts);
 }
 
 static int snd_msndmix_get_mux(struct snd_kcontrol *kcontrol,
@@ -284,7 +275,7 @@ static int snd_msndmix_volume_put(struct snd_kcontrol *kcontrol,
   .private_value = addr }
 
 
-static struct snd_kcontrol_new snd_msnd_controls[] = {
+static const struct snd_kcontrol_new snd_msnd_controls[] = {
 DUMMY_VOLUME("Master Volume", 0, MSND_MIXER_VOLUME),
 DUMMY_VOLUME("PCM Volume", 0, MSND_MIXER_PCM),
 DUMMY_VOLUME("Aux Volume", 0, MSND_MIXER_AUX),
@@ -301,7 +292,7 @@ DUMMY_VOLUME("Monitor",	0, MSND_MIXER_IMIX),
 };
 
 
-int __devinit snd_msndmix_new(struct snd_card *card)
+int snd_msndmix_new(struct snd_card *card)
 {
 	struct snd_msnd *chip = card->private_data;
 	unsigned int idx;
@@ -312,11 +303,12 @@ int __devinit snd_msndmix_new(struct snd_card *card)
 	spin_lock_init(&chip->mixer_lock);
 	strcpy(card->mixername, "MSND Pinnacle Mixer");
 
-	for (idx = 0; idx < ARRAY_SIZE(snd_msnd_controls); idx++)
+	for (idx = 0; idx < ARRAY_SIZE(snd_msnd_controls); idx++) {
 		err = snd_ctl_add(card,
 				  snd_ctl_new1(snd_msnd_controls + idx, chip));
 		if (err < 0)
 			return err;
+	}
 
 	return 0;
 }

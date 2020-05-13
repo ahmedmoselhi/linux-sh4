@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2009  Matt Fleming
  *
@@ -13,7 +14,7 @@
 #include <linux/spinlock.h>
 #include <linux/module.h>
 #include <asm/unwinder.h>
-#include <asm/atomic.h>
+#include <linux/atomic.h>
 
 /*
  * This is the most basic stack unwinder an architecture can
@@ -129,9 +130,8 @@ int unwinder_faulted = 0;
  * stack dumper because the current one faulted unexpectedly.
  */
 void unwind_stack(struct task_struct *task, struct pt_regs *regs,
-		  unsigned long *sp, unsigned long *fp,
-		  unsigned long faddr,
-		  const struct stacktrace_ops *ops, void *data)
+		  unsigned long *sp, const struct stacktrace_ops *ops,
+		  void *data)
 {
 	unsigned long flags;
 
@@ -160,6 +160,6 @@ void unwind_stack(struct task_struct *task, struct pt_regs *regs,
 		spin_unlock_irqrestore(&unwinder_lock, flags);
 	}
 
-	curr_unwinder->dump(task, regs, sp, fp, faddr, ops, data);
+	curr_unwinder->dump(task, regs, sp, ops, data);
 }
 EXPORT_SYMBOL_GPL(unwind_stack);

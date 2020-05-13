@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  ebt_redirect
  *
@@ -16,39 +17,40 @@
 #include <linux/netfilter_bridge/ebt_redirect.h>
 
 static unsigned int
-ebt_redirect_tg(struct sk_buff *skb, const struct xt_target_param *par)
+ebt_redirect_tg(struct sk_buff *skb, const struct xt_action_param *par)
 {
 	const struct ebt_redirect_info *info = par->targinfo;
 
-	if (!skb_make_writable(skb, 0))
+	if (skb_ensure_writable(skb, ETH_ALEN))
 		return EBT_DROP;
 
-	if (par->hooknum != NF_BR_BROUTING)
-		memcpy(eth_hdr(skb)->h_dest,
-		       par->in->br_port->br->dev->dev_addr, ETH_ALEN);
+	if (xt_hooknum(par) != NF_BR_BROUTING)
+		/* rcu_read_lock()ed by nf_hook_thresh */
+		ether_addr_copy(eth_hdr(skb)->h_dest,
+				br_port_get_rcu(xt_in(par))->br->dev->dev_addr);
 	else
-		memcpy(eth_hdr(skb)->h_dest, par->in->dev_addr, ETH_ALEN);
+		ether_addr_copy(eth_hdr(skb)->h_dest, xt_in(par)->dev_addr);
 	skb->pkt_type = PACKET_HOST;
 	return info->target;
 }
 
-static bool ebt_redirect_tg_check(const struct xt_tgchk_param *par)
+static int ebt_redirect_tg_check(const struct xt_tgchk_param *par)
 {
 	const struct ebt_redirect_info *info = par->targinfo;
 	unsigned int hook_mask;
 
 	if (BASE_CHAIN && info->target == EBT_RETURN)
-		return false;
+		return -EINVAL;
 
 	hook_mask = par->hook_mask & ~(1 << NF_BR_NUMHOOKS);
 	if ((strcmp(par->table, "nat") != 0 ||
 	    hook_mask & ~(1 << NF_BR_PRE_ROUTING)) &&
 	    (strcmp(par->table, "broute") != 0 ||
 	    hook_mask & ~(1 << NF_BR_BROUTING)))
-		return false;
-	if (INVALID_TARGET)
-		return false;
-	return true;
+		return -EINVAL;
+	if (ebt_invalid_target(info->target))
+		return -EINVAL;
+	return 0;
 }
 
 static struct xt_target ebt_redirect_tg_reg __read_mostly = {
@@ -59,7 +61,7 @@ static struct xt_target ebt_redirect_tg_reg __read_mostly = {
 			  (1 << NF_BR_BROUTING),
 	.target		= ebt_redirect_tg,
 	.checkentry	= ebt_redirect_tg_check,
-	.targetsize	= XT_ALIGN(sizeof(struct ebt_redirect_info)),
+	.targetsize	= sizeof(struct ebt_redirect_info),
 	.me		= THIS_MODULE,
 };
 

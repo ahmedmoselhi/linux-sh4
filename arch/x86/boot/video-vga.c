@@ -1,11 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* -*- linux-c -*- ------------------------------------------------------- *
  *
  *   Copyright (C) 1991, 1992 Linus Torvalds
  *   Copyright 2007 rPath, Inc. - All Rights Reserved
  *   Copyright 2009 Intel Corporation; author H. Peter Anvin
- *
- *   This file is part of the Linux kernel, and is made available under
- *   the terms of the GNU General Public License version 2.
  *
  * ----------------------------------------------------------------------- */
 
@@ -41,22 +39,14 @@ static __videocard video_vga;
 static u8 vga_set_basic_mode(void)
 {
 	struct biosregs ireg, oreg;
-	u16 ax;
-	u8 rows;
 	u8 mode;
 
 	initregs(&ireg);
 
-	ax = 0x0f00;
+	/* Query current mode */
+	ireg.ax = 0x0f00;
 	intcall(0x10, &ireg, &oreg);
 	mode = oreg.al;
-
-	set_fs(0);
-	rows = rdfs8(0x484);	/* rows minus one */
-
-	if ((oreg.ax == 0x5003 || oreg.ax == 0x5007) &&
-	    (rows == 0 || rows == 24))
-		return mode;
 
 	if (mode != 3 && mode != 7)
 		mode = 3;
@@ -249,9 +239,9 @@ static int vga_probe(void)
 		vga_modes,
 	};
 	static int mode_count[] = {
-		sizeof(cga_modes)/sizeof(struct mode_info),
-		sizeof(ega_modes)/sizeof(struct mode_info),
-		sizeof(vga_modes)/sizeof(struct mode_info),
+		ARRAY_SIZE(cga_modes),
+		ARRAY_SIZE(ega_modes),
+		ARRAY_SIZE(vga_modes),
 	};
 
 	struct biosregs ireg, oreg;

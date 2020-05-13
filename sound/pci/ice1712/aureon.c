@@ -1,24 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *   ALSA driver for ICEnsemble VT1724 (Envy24HT)
  *
  *   Lowlevel functions for Terratec Aureon cards
  *
  *	Copyright (c) 2003 Takashi Iwai <tiwai@suse.de>
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
- *
  *
  * NOTES:
  *
@@ -46,7 +32,6 @@
  *                    on mixer switch and other coll stuff.
  */
 
-#include <linux/io.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/init.h>
@@ -148,7 +133,7 @@ static void aureon_pca9554_write(struct snd_ice1712 *ice, unsigned char reg,
 	udelay(100);
 	/*
 	 * send device address, command and value,
-	 * skipping ack cycles inbetween
+	 * skipping ack cycles in between
 	 */
 	for (j = 0; j < 3; j++) {
 		switch (j) {
@@ -203,15 +188,10 @@ static void aureon_pca9554_write(struct snd_ice1712 *ice, unsigned char reg,
 static int aureon_universe_inmux_info(struct snd_kcontrol *kcontrol,
 				      struct snd_ctl_elem_info *uinfo)
 {
-	char *texts[3] = {"Internal Aux", "Wavetable", "Rear Line-In"};
+	static const char * const texts[3] =
+		{"Internal Aux", "Wavetable", "Rear Line-In"};
 
-	uinfo->type = SNDRV_CTL_ELEM_TYPE_ENUMERATED;
-	uinfo->count = 1;
-	uinfo->value.enumerated.items = 3;
-	if (uinfo->value.enumerated.item >= uinfo->value.enumerated.items)
-		uinfo->value.enumerated.item = uinfo->value.enumerated.items - 1;
-	strcpy(uinfo->value.enumerated.name, texts[uinfo->value.enumerated.item]);
-	return 0;
+	return snd_ctl_enum_info(uinfo, 1, 3, texts);
 }
 
 static int aureon_universe_inmux_get(struct snd_kcontrol *kcontrol,
@@ -689,42 +669,27 @@ static int aureon_ac97_mmute_put(struct snd_kcontrol *kcontrol, struct snd_ctl_e
 	return change;
 }
 
-static const DECLARE_TLV_DB_SCALE(db_scale_wm_dac, -12700, 100, 1);
+static const DECLARE_TLV_DB_SCALE(db_scale_wm_dac, -10000, 100, 1);
 static const DECLARE_TLV_DB_SCALE(db_scale_wm_pcm, -6400, 50, 1);
 static const DECLARE_TLV_DB_SCALE(db_scale_wm_adc, -1200, 100, 0);
 static const DECLARE_TLV_DB_SCALE(db_scale_ac97_master, -4650, 150, 0);
 static const DECLARE_TLV_DB_SCALE(db_scale_ac97_gain, -3450, 150, 0);
 
-/*
- * Logarithmic volume values for WM8770
- * Computed as 20 * Log10(255 / x)
- */
-static const unsigned char wm_vol[256] = {
-	127, 48, 42, 39, 36, 34, 33, 31, 30, 29, 28, 27, 27, 26, 25, 25, 24, 24, 23,
-	23, 22, 22, 21, 21, 21, 20, 20, 20, 19, 19, 19, 18, 18, 18, 18, 17, 17, 17,
-	17, 16, 16, 16, 16, 15, 15, 15, 15, 15, 15, 14, 14, 14, 14, 14, 13, 13, 13,
-	13, 13, 13, 13, 12, 12, 12, 12, 12, 12, 12, 11, 11, 11, 11, 11, 11, 11, 11,
-	11, 10, 10, 10, 10, 10, 10, 10, 10, 10, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 8, 8,
-	8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 6, 6, 6,
-	6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
-	5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3,
-	3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-	2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-	0, 0
-};
-
-#define WM_VOL_MAX	(sizeof(wm_vol) - 1)
+#define WM_VOL_MAX	100
+#define WM_VOL_CNT	101	/* 0dB .. -100dB */
 #define WM_VOL_MUTE	0x8000
 
 static void wm_set_vol(struct snd_ice1712 *ice, unsigned int index, unsigned short vol, unsigned short master)
 {
 	unsigned char nvol;
 
-	if ((master & WM_VOL_MUTE) || (vol & WM_VOL_MUTE))
+	if ((master & WM_VOL_MUTE) || (vol & WM_VOL_MUTE)) {
 		nvol = 0;
-	else
-		nvol = 127 - wm_vol[(((vol & ~WM_VOL_MUTE) * (master & ~WM_VOL_MUTE)) / 127) & WM_VOL_MAX];
+	} else {
+		nvol = ((vol % WM_VOL_CNT) * (master % WM_VOL_CNT)) /
+								WM_VOL_MAX;
+		nvol += 0x1b;
+	}
 
 	wm_put(ice, index, nvol);
 	wm_put_nocache(ice, index, 0x180 | nvol);
@@ -795,7 +760,7 @@ static int wm_master_vol_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_
 	for (ch = 0; ch < 2; ch++) {
 		unsigned int vol = ucontrol->value.integer.value[ch];
 		if (vol > WM_VOL_MAX)
-			continue;
+			vol = WM_VOL_MAX;
 		vol |= spec->master[ch] & WM_VOL_MUTE;
 		if (vol != spec->master[ch]) {
 			int dac;
@@ -820,7 +785,7 @@ static int wm_vol_info(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_info *
 	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
 	uinfo->count = voices;
 	uinfo->value.integer.min = 0;		/* mute (-101dB) */
-	uinfo->value.integer.max = 0x7F;	/* 0dB */
+	uinfo->value.integer.max = WM_VOL_MAX;	/* 0dB */
 	return 0;
 }
 
@@ -850,9 +815,9 @@ static int wm_vol_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *
 	snd_ice1712_save_gpio_status(ice);
 	for (i = 0; i < voices; i++) {
 		unsigned int vol = ucontrol->value.integer.value[i];
-		if (vol > 0x7f)
-			continue;
-		vol |= spec->vol[ofs+i];
+		if (vol > WM_VOL_MAX)
+			vol = WM_VOL_MAX;
+		vol |= spec->vol[ofs+i] & WM_VOL_MUTE;
 		if (vol != spec->vol[ofs+i]) {
 			spec->vol[ofs+i] = vol;
 			idx  = WM_DAC_ATTEN + ofs + i;
@@ -1121,20 +1086,10 @@ static int wm_adc_mux_info(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_in
 	};
 	struct snd_ice1712 *ice = snd_kcontrol_chip(kcontrol);
 
-	uinfo->type = SNDRV_CTL_ELEM_TYPE_ENUMERATED;
-	uinfo->count = 2;
-	if (ice->eeprom.subvendor == VT1724_SUBDEVICE_AUREON71_UNIVERSE) {
-		uinfo->value.enumerated.items = 8;
-		if (uinfo->value.enumerated.item >= uinfo->value.enumerated.items)
-			uinfo->value.enumerated.item = uinfo->value.enumerated.items - 1;
-		strcpy(uinfo->value.enumerated.name, universe_texts[uinfo->value.enumerated.item]);
-	} else {
-		uinfo->value.enumerated.items = 5;
-		if (uinfo->value.enumerated.item >= uinfo->value.enumerated.items)
-			uinfo->value.enumerated.item = uinfo->value.enumerated.items - 1;
-		strcpy(uinfo->value.enumerated.name, texts[uinfo->value.enumerated.item]);
-	}
-	return 0;
+	if (ice->eeprom.subvendor == VT1724_SUBDEVICE_AUREON71_UNIVERSE)
+		return snd_ctl_enum_info(uinfo, 2, 8, universe_texts);
+	else
+		return snd_ctl_enum_info(uinfo, 2, 5, texts);
 }
 
 static int wm_adc_mux_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)
@@ -1182,16 +1137,10 @@ static int aureon_cs8415_mux_info(struct snd_kcontrol *kcontrol, struct snd_ctl_
 		"CD",
 		"Coax"
 	};
-	uinfo->type = SNDRV_CTL_ELEM_TYPE_ENUMERATED;
-	uinfo->count = 1;
-	uinfo->value.enumerated.items = 2;
-	if (uinfo->value.enumerated.item >= uinfo->value.enumerated.items)
-		uinfo->value.enumerated.item = uinfo->value.enumerated.items - 1;
 	if (ice->eeprom.subvendor == VT1724_SUBDEVICE_PRODIGY71)
-		strcpy(uinfo->value.enumerated.name, prodigy_texts[uinfo->value.enumerated.item]);
+		return snd_ctl_enum_info(uinfo, 1, 2, prodigy_texts);
 	else
-		strcpy(uinfo->value.enumerated.name, aureon_texts[uinfo->value.enumerated.item]);
-	return 0;
+		return snd_ctl_enum_info(uinfo, 1, 2, aureon_texts);
 }
 
 static int aureon_cs8415_mux_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)
@@ -1407,15 +1356,7 @@ static int aureon_oversampling_info(struct snd_kcontrol *k, struct snd_ctl_elem_
 {
 	static const char * const texts[2] = { "128x", "64x"	};
 
-	uinfo->type = SNDRV_CTL_ELEM_TYPE_ENUMERATED;
-	uinfo->count = 1;
-	uinfo->value.enumerated.items = 2;
-
-	if (uinfo->value.enumerated.item >= uinfo->value.enumerated.items)
-		uinfo->value.enumerated.item = uinfo->value.enumerated.items - 1;
-	strcpy(uinfo->value.enumerated.name, texts[uinfo->value.enumerated.item]);
-
-	return 0;
+	return snd_ctl_enum_info(uinfo, 1, 2, texts);
 }
 
 static int aureon_oversampling_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)
@@ -1448,7 +1389,7 @@ static int aureon_oversampling_put(struct snd_kcontrol *kcontrol, struct snd_ctl
  * mixers
  */
 
-static struct snd_kcontrol_new aureon_dac_controls[] __devinitdata = {
+static const struct snd_kcontrol_new aureon_dac_controls[] = {
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 		.name = "Master Playback Switch",
@@ -1563,7 +1504,7 @@ static struct snd_kcontrol_new aureon_dac_controls[] __devinitdata = {
 	}
 };
 
-static struct snd_kcontrol_new wm_controls[] __devinitdata = {
+static const struct snd_kcontrol_new wm_controls[] = {
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 		.name = "PCM Playback Switch",
@@ -1629,7 +1570,7 @@ static struct snd_kcontrol_new wm_controls[] __devinitdata = {
 	}
 };
 
-static struct snd_kcontrol_new ac97_controls[] __devinitdata = {
+static const struct snd_kcontrol_new ac97_controls[] = {
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 		.name = "AC97 Playback Switch",
@@ -1734,7 +1675,7 @@ static struct snd_kcontrol_new ac97_controls[] __devinitdata = {
 	}
 };
 
-static struct snd_kcontrol_new universe_ac97_controls[] __devinitdata = {
+static const struct snd_kcontrol_new universe_ac97_controls[] = {
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 		.name = "AC97 Playback Switch",
@@ -1866,7 +1807,7 @@ static struct snd_kcontrol_new universe_ac97_controls[] __devinitdata = {
 
 };
 
-static struct snd_kcontrol_new cs8415_controls[] __devinitdata = {
+static const struct snd_kcontrol_new cs8415_controls[] = {
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 		.name = SNDRV_CTL_NAME_IEC958("", CAPTURE, SWITCH),
@@ -1911,7 +1852,7 @@ static struct snd_kcontrol_new cs8415_controls[] __devinitdata = {
 	}
 };
 
-static int __devinit aureon_add_controls(struct snd_ice1712 *ice)
+static int aureon_add_controls(struct snd_ice1712 *ice)
 {
 	unsigned int i, counts;
 	int err;
@@ -1952,9 +1893,12 @@ static int __devinit aureon_add_controls(struct snd_ice1712 *ice)
 		snd_ice1712_save_gpio_status(ice);
 		id = aureon_cs8415_get(ice, CS8415_ID);
 		if (id != 0x41)
-			snd_printk(KERN_INFO "No CS8415 chip. Skipping CS8415 controls.\n");
+			dev_info(ice->card->dev,
+				 "No CS8415 chip. Skipping CS8415 controls.\n");
 		else if ((id & 0x0F) != 0x01)
-			snd_printk(KERN_INFO "Detected unsupported CS8415 rev. (%c)\n", (char)((id & 0x0F) + 'A' - 1));
+			dev_info(ice->card->dev,
+				 "Detected unsupported CS8415 rev. (%c)\n",
+				 (char)((id & 0x0F) + 'A' - 1));
 		else {
 			for (i = 0; i < ARRAY_SIZE(cs8415_controls); i++) {
 				struct snd_kcontrol *kctl;
@@ -1971,11 +1915,10 @@ static int __devinit aureon_add_controls(struct snd_ice1712 *ice)
 	return 0;
 }
 
-
 /*
- * initialize the chip
+ * reset the chip
  */
-static int __devinit aureon_init(struct snd_ice1712 *ice)
+static int aureon_reset(struct snd_ice1712 *ice)
 {
 	static const unsigned short wm_inits_aureon[] = {
 		/* These come first to reduce init pop noise */
@@ -2062,30 +2005,10 @@ static int __devinit aureon_init(struct snd_ice1712 *ice)
 		0x0605, /* slave, 24bit, MSB on second OSCLK, SDOUT for right channel when OLRCK is high */
 		(unsigned short)-1
 	};
-	struct aureon_spec *spec;
 	unsigned int tmp;
 	const unsigned short *p;
-	int err, i;
-
-	spec = kzalloc(sizeof(*spec), GFP_KERNEL);
-	if (!spec)
-		return -ENOMEM;
-	ice->spec = spec;
-
-	if (ice->eeprom.subvendor == VT1724_SUBDEVICE_AUREON51_SKY) {
-		ice->num_total_dacs = 6;
-		ice->num_total_adcs = 2;
-	} else {
-		/* aureon 7.1 and prodigy 7.1 */
-		ice->num_total_dacs = 8;
-		ice->num_total_adcs = 2;
-	}
-
-	/* to remeber the register values of CS8415 */
-	ice->akm = kzalloc(sizeof(struct snd_akm4xxx), GFP_KERNEL);
-	if (!ice->akm)
-		return -ENOMEM;
-	ice->akm_codecs = 1;
+	int err;
+	struct aureon_spec *spec = ice->spec;
 
 	err = aureon_ac97_init(ice);
 	if (err != 0)
@@ -2133,6 +2056,61 @@ static int __devinit aureon_init(struct snd_ice1712 *ice)
 	/* initialize PCA9554 pin directions & set default input */
 	aureon_pca9554_write(ice, PCA9554_DIR, 0x00);
 	aureon_pca9554_write(ice, PCA9554_OUT, 0x00);   /* internal AUX */
+	return 0;
+}
+
+/*
+ * suspend/resume
+ */
+#ifdef CONFIG_PM_SLEEP
+static int aureon_resume(struct snd_ice1712 *ice)
+{
+	struct aureon_spec *spec = ice->spec;
+	int err, i;
+
+	err = aureon_reset(ice);
+	if (err != 0)
+		return err;
+
+	/* workaround for poking volume with alsamixer after resume:
+	 * just set stored volume again */
+	for (i = 0; i < ice->num_total_dacs; i++)
+		wm_set_vol(ice, i, spec->vol[i], spec->master[i % 2]);
+	return 0;
+}
+#endif
+
+/*
+ * initialize the chip
+ */
+static int aureon_init(struct snd_ice1712 *ice)
+{
+	struct aureon_spec *spec;
+	int i, err;
+
+	spec = kzalloc(sizeof(*spec), GFP_KERNEL);
+	if (!spec)
+		return -ENOMEM;
+	ice->spec = spec;
+
+	if (ice->eeprom.subvendor == VT1724_SUBDEVICE_AUREON51_SKY) {
+		ice->num_total_dacs = 6;
+		ice->num_total_adcs = 2;
+	} else {
+		/* aureon 7.1 and prodigy 7.1 */
+		ice->num_total_dacs = 8;
+		ice->num_total_adcs = 2;
+	}
+
+	/* to remember the register values of CS8415 */
+	ice->akm = kzalloc(sizeof(struct snd_akm4xxx), GFP_KERNEL);
+	if (!ice->akm)
+		return -ENOMEM;
+	ice->akm_codecs = 1;
+
+	err = aureon_reset(ice);
+	if (err != 0)
+		return err;
 
 	spec->master[0] = WM_VOL_MUTE;
 	spec->master[1] = WM_VOL_MUTE;
@@ -2140,6 +2118,11 @@ static int __devinit aureon_init(struct snd_ice1712 *ice)
 		spec->vol[i] = WM_VOL_MUTE;
 		wm_set_vol(ice, i, spec->vol[i], spec->master[i % 2]);
 	}
+
+#ifdef CONFIG_PM_SLEEP
+	ice->pm_resume = aureon_resume;
+	ice->pm_suspend_enabled = 1;
+#endif
 
 	return 0;
 }
@@ -2150,7 +2133,7 @@ static int __devinit aureon_init(struct snd_ice1712 *ice)
  * hence the driver needs to sets up it properly.
  */
 
-static unsigned char aureon51_eeprom[] __devinitdata = {
+static const unsigned char aureon51_eeprom[] = {
 	[ICE_EEP2_SYSCONF]     = 0x0a,	/* clock 512, spdif-in/ADC, 3DACs */
 	[ICE_EEP2_ACLINK]      = 0x80,	/* I2S */
 	[ICE_EEP2_I2S]         = 0xfc,	/* vol, 96k, 24bit, 192k */
@@ -2166,7 +2149,7 @@ static unsigned char aureon51_eeprom[] __devinitdata = {
 	[ICE_EEP2_GPIO_STATE2] = 0x00,
 };
 
-static unsigned char aureon71_eeprom[] __devinitdata = {
+static const unsigned char aureon71_eeprom[] = {
 	[ICE_EEP2_SYSCONF]     = 0x0b,	/* clock 512, spdif-in/ADC, 4DACs */
 	[ICE_EEP2_ACLINK]      = 0x80,	/* I2S */
 	[ICE_EEP2_I2S]         = 0xfc,	/* vol, 96k, 24bit, 192k */
@@ -2183,7 +2166,7 @@ static unsigned char aureon71_eeprom[] __devinitdata = {
 };
 #define prodigy71_eeprom aureon71_eeprom
 
-static unsigned char aureon71_universe_eeprom[] __devinitdata = {
+static const unsigned char aureon71_universe_eeprom[] = {
 	[ICE_EEP2_SYSCONF]     = 0x2b,	/* clock 512, mpu401, spdif-in/ADC,
 					 * 4DACs
 					 */
@@ -2201,7 +2184,7 @@ static unsigned char aureon71_universe_eeprom[] __devinitdata = {
 	[ICE_EEP2_GPIO_STATE2] = 0x00,
 };
 
-static unsigned char prodigy71lt_eeprom[] __devinitdata = {
+static const unsigned char prodigy71lt_eeprom[] = {
 	[ICE_EEP2_SYSCONF]     = 0x4b,	/* clock 384, spdif-in/ADC, 4DACs */
 	[ICE_EEP2_ACLINK]      = 0x80,	/* I2S */
 	[ICE_EEP2_I2S]         = 0xfc,	/* vol, 96k, 24bit, 192k */
@@ -2219,7 +2202,7 @@ static unsigned char prodigy71lt_eeprom[] __devinitdata = {
 #define prodigy71xt_eeprom prodigy71lt_eeprom
 
 /* entry point */
-struct snd_ice1712_card_info snd_vt1724_aureon_cards[] __devinitdata = {
+struct snd_ice1712_card_info snd_vt1724_aureon_cards[] = {
 	{
 		.subvendor = VT1724_SUBDEVICE_AUREON51_SKY,
 		.name = "Terratec Aureon 5.1-Sky",

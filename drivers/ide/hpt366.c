@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 1999-2003		Andre Hedrick <andre@linux-ide.org>
  * Portions Copyright (C) 2001	        Sun Microsystems, Inc.
@@ -12,7 +13,7 @@
  *
  *
  * HighPoint has its own drivers (open source except for the RAID part)
- * available from http://www.highpoint-tech.com/BIOS%20+%20Driver/.
+ * available from http://www.highpoint-tech.com/USA_new/service_support.htm 
  * This may be useful to anyone wanting to work on this driver, however  do not
  * trust  them too much since the code tends to become less and less meaningful
  * as the time passes... :-/
@@ -128,8 +129,9 @@
 #include <linux/pci.h>
 #include <linux/init.h>
 #include <linux/ide.h>
+#include <linux/slab.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/io.h>
 
 #define DRV_NAME "hpt366"
@@ -297,68 +299,6 @@ static u32 twenty_five_base_hpt36x[] = {
 	/* XFER_PIO_0 */	0xc0d08585
 };
 
-#if 0
-/* These are the timing tables from the HighPoint open source drivers... */
-static u32 thirty_three_base_hpt37x[] = {
-	/* XFER_UDMA_6 */	0x12446231,	/* 0x12646231 ?? */
-	/* XFER_UDMA_5 */	0x12446231,
-	/* XFER_UDMA_4 */	0x12446231,
-	/* XFER_UDMA_3 */	0x126c6231,
-	/* XFER_UDMA_2 */	0x12486231,
-	/* XFER_UDMA_1 */	0x124c6233,
-	/* XFER_UDMA_0 */	0x12506297,
-
-	/* XFER_MW_DMA_2 */	0x22406c31,
-	/* XFER_MW_DMA_1 */	0x22406c33,
-	/* XFER_MW_DMA_0 */	0x22406c97,
-
-	/* XFER_PIO_4 */	0x06414e31,
-	/* XFER_PIO_3 */	0x06414e42,
-	/* XFER_PIO_2 */	0x06414e53,
-	/* XFER_PIO_1 */	0x06814e93,
-	/* XFER_PIO_0 */	0x06814ea7
-};
-
-static u32 fifty_base_hpt37x[] = {
-	/* XFER_UDMA_6 */	0x12848242,
-	/* XFER_UDMA_5 */	0x12848242,
-	/* XFER_UDMA_4 */	0x12ac8242,
-	/* XFER_UDMA_3 */	0x128c8242,
-	/* XFER_UDMA_2 */	0x120c8242,
-	/* XFER_UDMA_1 */	0x12148254,
-	/* XFER_UDMA_0 */	0x121882ea,
-
-	/* XFER_MW_DMA_2 */	0x22808242,
-	/* XFER_MW_DMA_1 */	0x22808254,
-	/* XFER_MW_DMA_0 */	0x228082ea,
-
-	/* XFER_PIO_4 */	0x0a81f442,
-	/* XFER_PIO_3 */	0x0a81f443,
-	/* XFER_PIO_2 */	0x0a81f454,
-	/* XFER_PIO_1 */	0x0ac1f465,
-	/* XFER_PIO_0 */	0x0ac1f48a
-};
-
-static u32 sixty_six_base_hpt37x[] = {
-	/* XFER_UDMA_6 */	0x1c869c62,
-	/* XFER_UDMA_5 */	0x1cae9c62,	/* 0x1c8a9c62 */
-	/* XFER_UDMA_4 */	0x1c8a9c62,
-	/* XFER_UDMA_3 */	0x1c8e9c62,
-	/* XFER_UDMA_2 */	0x1c929c62,
-	/* XFER_UDMA_1 */	0x1c9a9c62,
-	/* XFER_UDMA_0 */	0x1c829c62,
-
-	/* XFER_MW_DMA_2 */	0x2c829c62,
-	/* XFER_MW_DMA_1 */	0x2c829c66,
-	/* XFER_MW_DMA_0 */	0x2c829d2e,
-
-	/* XFER_PIO_4 */	0x0c829c62,
-	/* XFER_PIO_3 */	0x0c829c84,
-	/* XFER_PIO_2 */	0x0c829ca6,
-	/* XFER_PIO_1 */	0x0d029d26,
-	/* XFER_PIO_0 */	0x0d029d5e
-};
-#else
 /*
  * The following are the new timing tables with PIO mode data/taskfile transfer
  * overclocking fixed...
@@ -424,16 +364,13 @@ static u32 sixty_six_base_hpt37x[] = {
 	/* XFER_PIO_1 */	0x0d02ff26,
 	/* XFER_PIO_0 */	0x0d42ff7f
 };
-#endif
 
-#define HPT366_DEBUG_DRIVE_INFO		0
 #define HPT371_ALLOW_ATA133_6		1
 #define HPT302_ALLOW_ATA133_6		1
 #define HPT372_ALLOW_ATA133_6		1
 #define HPT370_ALLOW_ATA100_5		0
 #define HPT366_ALLOW_ATA66_4		1
 #define HPT366_ALLOW_ATA66_3		1
-#define HPT366_MAX_DEVS			8
 
 /* Supported ATA clock frequencies */
 enum ata_clock {
@@ -507,7 +444,7 @@ static struct hpt_timings hpt37x_timings = {
 	}
 };
 
-static const struct hpt_info hpt36x __devinitdata = {
+static const struct hpt_info hpt36x = {
 	.chip_name	= "HPT36x",
 	.chip_type	= HPT36x,
 	.udma_mask	= HPT366_ALLOW_ATA66_3 ? (HPT366_ALLOW_ATA66_4 ? ATA_UDMA4 : ATA_UDMA3) : ATA_UDMA2,
@@ -515,7 +452,7 @@ static const struct hpt_info hpt36x __devinitdata = {
 	.timings	= &hpt36x_timings
 };
 
-static const struct hpt_info hpt370 __devinitdata = {
+static const struct hpt_info hpt370 = {
 	.chip_name	= "HPT370",
 	.chip_type	= HPT370,
 	.udma_mask	= HPT370_ALLOW_ATA100_5 ? ATA_UDMA5 : ATA_UDMA4,
@@ -523,7 +460,7 @@ static const struct hpt_info hpt370 __devinitdata = {
 	.timings	= &hpt37x_timings
 };
 
-static const struct hpt_info hpt370a __devinitdata = {
+static const struct hpt_info hpt370a = {
 	.chip_name	= "HPT370A",
 	.chip_type	= HPT370A,
 	.udma_mask	= HPT370_ALLOW_ATA100_5 ? ATA_UDMA5 : ATA_UDMA4,
@@ -531,7 +468,7 @@ static const struct hpt_info hpt370a __devinitdata = {
 	.timings	= &hpt37x_timings
 };
 
-static const struct hpt_info hpt374 __devinitdata = {
+static const struct hpt_info hpt374 = {
 	.chip_name	= "HPT374",
 	.chip_type	= HPT374,
 	.udma_mask	= ATA_UDMA5,
@@ -539,7 +476,7 @@ static const struct hpt_info hpt374 __devinitdata = {
 	.timings	= &hpt37x_timings
 };
 
-static const struct hpt_info hpt372 __devinitdata = {
+static const struct hpt_info hpt372 = {
 	.chip_name	= "HPT372",
 	.chip_type	= HPT372,
 	.udma_mask	= HPT372_ALLOW_ATA133_6 ? ATA_UDMA6 : ATA_UDMA5,
@@ -547,7 +484,7 @@ static const struct hpt_info hpt372 __devinitdata = {
 	.timings	= &hpt37x_timings
 };
 
-static const struct hpt_info hpt372a __devinitdata = {
+static const struct hpt_info hpt372a = {
 	.chip_name	= "HPT372A",
 	.chip_type	= HPT372A,
 	.udma_mask	= HPT372_ALLOW_ATA133_6 ? ATA_UDMA6 : ATA_UDMA5,
@@ -555,7 +492,7 @@ static const struct hpt_info hpt372a __devinitdata = {
 	.timings	= &hpt37x_timings
 };
 
-static const struct hpt_info hpt302 __devinitdata = {
+static const struct hpt_info hpt302 = {
 	.chip_name	= "HPT302",
 	.chip_type	= HPT302,
 	.udma_mask	= HPT302_ALLOW_ATA133_6 ? ATA_UDMA6 : ATA_UDMA5,
@@ -563,7 +500,7 @@ static const struct hpt_info hpt302 __devinitdata = {
 	.timings	= &hpt37x_timings
 };
 
-static const struct hpt_info hpt371 __devinitdata = {
+static const struct hpt_info hpt371 = {
 	.chip_name	= "HPT371",
 	.chip_type	= HPT371,
 	.udma_mask	= HPT371_ALLOW_ATA133_6 ? ATA_UDMA6 : ATA_UDMA5,
@@ -571,7 +508,7 @@ static const struct hpt_info hpt371 __devinitdata = {
 	.timings	= &hpt37x_timings
 };
 
-static const struct hpt_info hpt372n __devinitdata = {
+static const struct hpt_info hpt372n = {
 	.chip_name	= "HPT372N",
 	.chip_type	= HPT372N,
 	.udma_mask	= HPT372_ALLOW_ATA133_6 ? ATA_UDMA6 : ATA_UDMA5,
@@ -579,7 +516,7 @@ static const struct hpt_info hpt372n __devinitdata = {
 	.timings	= &hpt37x_timings
 };
 
-static const struct hpt_info hpt302n __devinitdata = {
+static const struct hpt_info hpt302n = {
 	.chip_name	= "HPT302N",
 	.chip_type	= HPT302N,
 	.udma_mask	= HPT302_ALLOW_ATA133_6 ? ATA_UDMA6 : ATA_UDMA5,
@@ -587,7 +524,7 @@ static const struct hpt_info hpt302n __devinitdata = {
 	.timings	= &hpt37x_timings
 };
 
-static const struct hpt_info hpt371n __devinitdata = {
+static const struct hpt_info hpt371n = {
 	.chip_name	= "HPT371N",
 	.chip_type	= HPT371N,
 	.udma_mask	= HPT371_ALLOW_ATA133_6 ? ATA_UDMA6 : ATA_UDMA5,
@@ -595,14 +532,9 @@ static const struct hpt_info hpt371n __devinitdata = {
 	.timings	= &hpt37x_timings
 };
 
-static int check_in_drive_list(ide_drive_t *drive, const char **list)
+static bool check_in_drive_list(ide_drive_t *drive, const char **list)
 {
-	char *m = (char *)&drive->id[ATA_ID_PROD];
-
-	while (*list)
-		if (!strcmp(*list++, m))
-			return 1;
-	return 0;
+	return match_string(list, -1, (char *)&drive->id[ATA_ID_PROD]) >= 0;
 }
 
 static struct hpt_info *hpt3xx_get_info(struct device *dev)
@@ -643,13 +575,14 @@ static u8 hpt3xx_udma_filter(ide_drive_t *drive)
 		if (!HPT370_ALLOW_ATA100_5 ||
 		    check_in_drive_list(drive, bad_ata100_5))
 			return ATA_UDMA4;
+		/* fall through */
 	case HPT372 :
 	case HPT372A:
 	case HPT372N:
 	case HPT374 :
 		if (ata_id_is_sata(drive->id))
 			mask &= ~0x0e;
-		/* Fall thru */
+		/* fall through */
 	default:
 		return mask;
 	}
@@ -669,7 +602,7 @@ static u8 hpt3xx_mdma_filter(ide_drive_t *drive)
 	case HPT374 :
 		if (ata_id_is_sata(drive->id))
 			return 0x00;
-		/* Fall thru */
+		/* fall through */
 	default:
 		return 0x07;
 	}
@@ -692,14 +625,14 @@ static u32 get_speed_setting(u8 speed, struct hpt_info *info)
 	return info->timings->clock_table[info->clock][i];
 }
 
-static void hpt3xx_set_mode(ide_drive_t *drive, const u8 speed)
+static void hpt3xx_set_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
-	ide_hwif_t *hwif	= drive->hwif;
 	struct pci_dev *dev	= to_pci_dev(hwif->dev);
 	struct hpt_info *info	= hpt3xx_get_info(hwif->dev);
 	struct hpt_timings *t	= info->timings;
 	u8  itr_addr		= 0x40 + (drive->dn * 4);
 	u32 old_itr		= 0;
+	const u8 speed		= drive->dma_mode;
 	u32 new_itr		= get_speed_setting(speed, info);
 	u32 itr_mask		= speed < XFER_MW_DMA_0 ? t->pio_mask :
 				 (speed < XFER_UDMA_0   ? t->dma_mask :
@@ -716,9 +649,10 @@ static void hpt3xx_set_mode(ide_drive_t *drive, const u8 speed)
 	pci_write_config_dword(dev, itr_addr, new_itr);
 }
 
-static void hpt3xx_set_pio_mode(ide_drive_t *drive, const u8 pio)
+static void hpt3xx_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
-	hpt3xx_set_mode(drive, XFER_PIO_0 + pio);
+	drive->dma_mode = drive->pio_mode;
+	hpt3xx_set_mode(hwif, drive);
 }
 
 static void hpt3xx_maskproc(ide_drive_t *drive, int mask)
@@ -901,7 +835,7 @@ static void hpt3xxn_set_clock(ide_hwif_t *hwif, u8 mode)
 
 static void hpt3xxn_rw_disk(ide_drive_t *drive, struct request *rq)
 {
-	hpt3xxn_set_clock(drive->hwif, rq_data_dir(rq) ? 0x23 : 0x21);
+	hpt3xxn_set_clock(drive->hwif, rq_data_dir(rq) ? 0x21 : 0x23);
 }
 
 /**
@@ -1080,7 +1014,7 @@ static int init_chipset_hpt366(struct pci_dev *dev)
 		pci_read_config_dword(dev, 0x40, &itr1);
 
 		/* Detect PCI clock by looking at cmd_high_time. */
-		switch((itr1 >> 8) & 0x07) {
+		switch ((itr1 >> 8) & 0x0f) {
 			case 0x09:
 				pci_clk = 40;
 				break;
@@ -1236,8 +1170,9 @@ static u8 hpt3xx_cable_detect(ide_hwif_t *hwif)
 		u16 mcr;
 
 		pci_read_config_word(dev, mcr_addr, &mcr);
-		pci_write_config_word(dev, mcr_addr, (mcr | 0x8000));
-		/* now read cable id register */
+		pci_write_config_word(dev, mcr_addr, mcr | 0x8000);
+		/* Debounce, then read cable ID register */
+		udelay(10);
 		pci_read_config_byte(dev, 0x5a, &scr1);
 		pci_write_config_word(dev, mcr_addr, mcr);
 	} else if (chip_type >= HPT370) {
@@ -1248,17 +1183,18 @@ static u8 hpt3xx_cable_detect(ide_hwif_t *hwif)
 		u8 scr2 = 0;
 
 		pci_read_config_byte(dev, 0x5b, &scr2);
-		pci_write_config_byte(dev, 0x5b, (scr2 & ~1));
-		/* now read cable id register */
+		pci_write_config_byte(dev, 0x5b, scr2 & ~1);
+		/* Debounce, then read cable ID register */
+		udelay(10);
 		pci_read_config_byte(dev, 0x5a, &scr1);
-		pci_write_config_byte(dev, 0x5b,  scr2);
+		pci_write_config_byte(dev, 0x5b, scr2);
 	} else
 		pci_read_config_byte(dev, 0x5a, &scr1);
 
 	return (scr1 & ata66) ? ATA_CBL_PATA40 : ATA_CBL_PATA80;
 }
 
-static void __devinit init_hwif_hpt366(ide_hwif_t *hwif)
+static void init_hwif_hpt366(ide_hwif_t *hwif)
 {
 	struct hpt_info *info	= hpt3xx_get_info(hwif->dev);
 	u8  chip_type		= info->chip_type;
@@ -1282,7 +1218,7 @@ static void __devinit init_hwif_hpt366(ide_hwif_t *hwif)
 	}
 }
 
-static int __devinit init_dma_hpt366(ide_hwif_t *hwif,
+static int init_dma_hpt366(ide_hwif_t *hwif,
 				     const struct ide_port_info *d)
 {
 	struct pci_dev *dev = to_pci_dev(hwif->dev);
@@ -1326,7 +1262,7 @@ static int __devinit init_dma_hpt366(ide_hwif_t *hwif,
 	return 0;
 }
 
-static void __devinit hpt374_init(struct pci_dev *dev, struct pci_dev *dev2)
+static void hpt374_init(struct pci_dev *dev, struct pci_dev *dev2)
 {
 	if (dev2->irq != dev->irq) {
 		/* FIXME: we need a core pci_set_interrupt() */
@@ -1336,7 +1272,7 @@ static void __devinit hpt374_init(struct pci_dev *dev, struct pci_dev *dev2)
 	}
 }
 
-static void __devinit hpt371_init(struct pci_dev *dev)
+static void hpt371_init(struct pci_dev *dev)
 {
 	u8 mcr1 = 0;
 
@@ -1351,7 +1287,7 @@ static void __devinit hpt371_init(struct pci_dev *dev)
 		pci_write_config_byte(dev, 0x50, mcr1 & ~0x04);
 }
 
-static int __devinit hpt36x_init(struct pci_dev *dev, struct pci_dev *dev2)
+static int hpt36x_init(struct pci_dev *dev, struct pci_dev *dev2)
 {
 	u8 mcr1 = 0, pin1 = 0, pin2 = 0;
 
@@ -1422,7 +1358,7 @@ static const struct ide_dma_ops hpt36x_dma_ops = {
 	.dma_sff_read_status	= ide_dma_sff_read_status,
 };
 
-static const struct ide_port_info hpt366_chipsets[] __devinitdata = {
+static const struct ide_port_info hpt366_chipsets[] = {
 	{	/* 0: HPT36x */
 		.name		= DRV_NAME,
 		.init_chipset	= init_chipset_hpt366,
@@ -1463,7 +1399,7 @@ static const struct ide_port_info hpt366_chipsets[] __devinitdata = {
  *	Called when the PCI registration layer (or the IDE initialization)
  *	finds a device matching our IDE device tables.
  */
-static int __devinit hpt366_init_one(struct pci_dev *dev, const struct pci_device_id *id)
+static int hpt366_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 {
 	const struct hpt_info *info = NULL;
 	struct hpt_info *dyn_info;
@@ -1521,7 +1457,7 @@ static int __devinit hpt366_init_one(struct pci_dev *dev, const struct pci_devic
 	if (info == &hpt36x || info == &hpt374)
 		dev2 = pci_get_slot(dev->bus, dev->devfn + 1);
 
-	dyn_info = kzalloc(sizeof(*dyn_info) * (dev2 ? 2 : 1), GFP_KERNEL);
+	dyn_info = kcalloc(dev2 ? 2 : 1, sizeof(*dyn_info), GFP_KERNEL);
 	if (dyn_info == NULL) {
 		printk(KERN_ERR "%s %s: out of memory!\n",
 			d.name, pci_name(dev));
@@ -1560,7 +1496,7 @@ static int __devinit hpt366_init_one(struct pci_dev *dev, const struct pci_devic
 	return ret;
 }
 
-static void __devexit hpt366_remove(struct pci_dev *dev)
+static void hpt366_remove(struct pci_dev *dev)
 {
 	struct ide_host *host = pci_get_drvdata(dev);
 	struct ide_info *info = host->host_priv;
@@ -1571,7 +1507,7 @@ static void __devexit hpt366_remove(struct pci_dev *dev)
 	kfree(info);
 }
 
-static const struct pci_device_id hpt366_pci_tbl[] __devinitconst = {
+static const struct pci_device_id hpt366_pci_tbl[] = {
 	{ PCI_VDEVICE(TTI, PCI_DEVICE_ID_TTI_HPT366),  0 },
 	{ PCI_VDEVICE(TTI, PCI_DEVICE_ID_TTI_HPT372),  1 },
 	{ PCI_VDEVICE(TTI, PCI_DEVICE_ID_TTI_HPT302),  2 },
@@ -1586,7 +1522,7 @@ static struct pci_driver hpt366_pci_driver = {
 	.name		= "HPT366_IDE",
 	.id_table	= hpt366_pci_tbl,
 	.probe		= hpt366_init_one,
-	.remove		= __devexit_p(hpt366_remove),
+	.remove		= hpt366_remove,
 	.suspend	= ide_pci_suspend,
 	.resume		= ide_pci_resume,
 };

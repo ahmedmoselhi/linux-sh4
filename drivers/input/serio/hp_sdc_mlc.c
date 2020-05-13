@@ -125,7 +125,7 @@ static void hp_sdc_mlc_isr (int irq, void *dev_id,
 		break;
 
 	default:
-		printk(KERN_WARNING PREFIX "Unkown HIL Error status (%x)!\n", data);
+		printk(KERN_WARNING PREFIX "Unknown HIL Error status (%x)!\n", data);
 		break;
 	}
 
@@ -149,7 +149,6 @@ static int hp_sdc_mlc_in(hil_mlc *mlc, suseconds_t timeout)
 
 	/* Try to down the semaphore */
 	if (down_trylock(&mlc->isem)) {
-		struct timeval tv;
 		if (priv->emtestmode) {
 			mlc->ipacket[0] =
 				HIL_ERR_INT | (mlc->opacket &
@@ -160,9 +159,7 @@ static int hp_sdc_mlc_in(hil_mlc *mlc, suseconds_t timeout)
 			/* printk(KERN_DEBUG PREFIX ">[%x]\n", mlc->ipacket[0]); */
 			goto wasup;
 		}
-		do_gettimeofday(&tv);
-		tv.tv_usec += USEC_PER_SEC * (tv.tv_sec - mlc->instart.tv_sec);
-		if (tv.tv_usec - mlc->instart.tv_usec > mlc->intimeout) {
+		if (time_after(jiffies, mlc->instart + mlc->intimeout)) {
 			/*	printk("!%i %i",
 				tv.tv_usec - mlc->instart.tv_usec,
 				mlc->intimeout);
@@ -305,6 +302,7 @@ static void hp_sdc_mlc_out(hil_mlc *mlc)
 static int __init hp_sdc_mlc_init(void)
 {
 	hil_mlc *mlc = &hp_sdc_mlc;
+	int err;
 
 #ifdef __mc68000__
 	if (!MACH_IS_HP300)
@@ -323,22 +321,21 @@ static int __init hp_sdc_mlc_init(void)
 	mlc->out = &hp_sdc_mlc_out;
 	mlc->priv = &hp_sdc_mlc_priv;
 
-	if (hil_mlc_register(mlc)) {
+	err = hil_mlc_register(mlc);
+	if (err) {
 		printk(KERN_WARNING PREFIX "Failed to register MLC structure with hil_mlc\n");
-		goto err0;
+		return err;
 	}
 
 	if (hp_sdc_request_hil_irq(&hp_sdc_mlc_isr)) {
 		printk(KERN_WARNING PREFIX "Request for raw HIL ISR hook denied\n");
-		goto err1;
+		if (hil_mlc_unregister(mlc))
+			printk(KERN_ERR PREFIX "Failed to unregister MLC structure with hil_mlc.\n"
+				"This is bad.  Could cause an oops.\n");
+		return -EBUSY;
 	}
+
 	return 0;
- err1:
-	if (hil_mlc_unregister(mlc))
-		printk(KERN_ERR PREFIX "Failed to unregister MLC structure with hil_mlc.\n"
-			"This is bad.  Could cause an oops.\n");
- err0:
-	return -EBUSY;
 }
 
 static void __exit hp_sdc_mlc_exit(void)

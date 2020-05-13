@@ -1,15 +1,18 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- *  drivers/s390/char/tape_std.c
  *    standard tape device functions for ibm tapes.
  *
  *  S390 and zSeries version
- *    Copyright (C) 2001,2002 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *    Copyright IBM Corp. 2001, 2002
  *    Author(s): Carsten Otte <cotte@de.ibm.com>
  *		 Michael Holzheu <holzheu@de.ibm.com>
  *		 Tuan Ngo-Anh <ngoanh@de.ibm.com>
  *		 Martin Schwidefsky <schwidefsky@de.ibm.com>
  *		 Stefan Bader <shbader@de.ibm.com>
  */
+
+#define KMSG_COMPONENT "tape"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
 #include <linux/stddef.h>
 #include <linux/kernel.h>
@@ -30,22 +33,20 @@
  * tape_std_assign
  */
 static void
-tape_std_assign_timeout(unsigned long data)
+tape_std_assign_timeout(struct timer_list *t)
 {
-	struct tape_request *	request;
-	struct tape_device *	device;
+	struct tape_request *	request = from_timer(request, t, timer);
+	struct tape_device *	device = request->device;
 	int rc;
 
-	request = (struct tape_request *) data;
-	device = request->device;
 	BUG_ON(!device);
 
 	DBF_EVENT(3, "%08x: Assignment timeout. Device busy.\n",
 			device->cdev_id);
 	rc = tape_cancel_io(device, request);
 	if(rc)
-		DBF_EVENT(3, "(%s): Assign timeout: Cancel failed with rc = %i\n",
-			dev_name(&device->cdev->dev), rc);
+		DBF_EVENT(3, "(%08x): Assign timeout: Cancel failed with rc = "
+			  "%i\n", device->cdev_id, rc);
 }
 
 int
@@ -68,15 +69,12 @@ tape_std_assign(struct tape_device *device)
 	 * to another host (actually this shouldn't happen but it does).
 	 * So we set up a timeout for this call.
 	 */
-	init_timer_on_stack(&timeout);
-	timeout.function = tape_std_assign_timeout;
-	timeout.data     = (unsigned long) request;
-	timeout.expires  = jiffies + 2 * HZ;
-	add_timer(&timeout);
+	timer_setup(&request->timer, tape_std_assign_timeout, 0);
+	mod_timer(&timeout, jiffies + 2 * HZ);
 
 	rc = tape_do_io_interruptible(device, request);
 
-	del_timer(&timeout);
+	del_timer_sync(&request->timer);
 
 	if (rc != 0) {
 		DBF_EVENT(3, "%08x: assign failed - device might be busy\n",
@@ -561,7 +559,6 @@ int
 tape_std_mtreten(struct tape_device *device, int mt_count)
 {
 	struct tape_request *request;
-	int rc;
 
 	request = tape_alloc_request(4, 0);
 	if (IS_ERR(request))
@@ -573,7 +570,7 @@ tape_std_mtreten(struct tape_device *device, int mt_count)
 	tape_ccw_cc(request->cpaddr + 2, NOP, 0, NULL);
 	tape_ccw_end(request->cpaddr + 3, CCW_CMD_TIC, 0, request->cpaddr);
 	/* execute it, MTRETEN rc gets ignored */
-	rc = tape_do_io_interruptible(device, request);
+	tape_do_io_interruptible(device, request);
 	tape_free_request(request);
 	return tape_mtop(device, MTREW, 1);
 }

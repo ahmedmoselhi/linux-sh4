@@ -1,19 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Carsten Langgaard, carstenl@mips.com
  * Copyright (C) 1999,2000 MIPS Technologies, Inc.  All rights reserved.
- *
- *  This program is free software; you can distribute it and/or modify it
- *  under the terms of the GNU General Public License (Version 2) as
- *  published by the Free Software Foundation.
- *
- *  This program is distributed in the hope it will be useful, but WITHOUT
- *  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- *  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
- *  for more details.
- *
- *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, write to the Free Software Foundation, Inc.,
- *  59 Temple Place - Suite 330, Boston MA 02111-1307, USA.
  *
  * Putting things on the screen/serial line using YAMONs facilities.
  */
@@ -21,10 +9,11 @@
 #include <linux/kernel.h>
 #include <linux/serial_reg.h>
 #include <linux/spinlock.h>
-#include <linux/module.h>
+#include <linux/export.h>
 #include <linux/string.h>
 #include <linux/io.h>
 #include <asm/bootinfo.h>
+#include <asm/setup.h>
 
 #include <asm/mach-ar7/ar7.h>
 #include <asm/mach-ar7/prom.h>
@@ -32,8 +21,8 @@
 #define MAX_ENTRY 80
 
 struct env_var {
-	char *name;
-	char *value;
+	char	*name;
+	char	*value;
 };
 
 static struct env_var adam2_env[MAX_ENTRY];
@@ -41,6 +30,7 @@ static struct env_var adam2_env[MAX_ENTRY];
 char *prom_getenv(const char *name)
 {
 	int i;
+
 	for (i = 0; (i < MAX_ENTRY) && adam2_env[i].name; i++)
 		if (!strcmp(name, adam2_env[i].name))
 			return adam2_env[i].value;
@@ -49,65 +39,50 @@ char *prom_getenv(const char *name)
 }
 EXPORT_SYMBOL(prom_getenv);
 
-char * __init prom_getcmdline(void)
-{
-	return &(arcs_cmdline[0]);
-}
-
 static void  __init ar7_init_cmdline(int argc, char *argv[])
 {
-	char *cp;
-	int actr;
+	int i;
 
-	actr = 1; /* Always ignore argv[0] */
-
-	cp = &(arcs_cmdline[0]);
-	while (actr < argc) {
-		strcpy(cp, argv[actr]);
-		cp += strlen(argv[actr]);
-		*cp++ = ' ';
-		actr++;
-	}
-	if (cp != &(arcs_cmdline[0])) {
-		/* get rid of trailing space */
-		--cp;
-		*cp = '\0';
+	for (i = 1; i < argc; i++) {
+		strlcat(arcs_cmdline, argv[i], COMMAND_LINE_SIZE);
+		if (i < (argc - 1))
+			strlcat(arcs_cmdline, " ", COMMAND_LINE_SIZE);
 	}
 }
 
 struct psbl_rec {
-	u32 psbl_size;
-	u32 env_base;
-	u32 env_size;
-	u32 ffs_base;
-	u32 ffs_size;
+	u32	psbl_size;
+	u32	env_base;
+	u32	env_size;
+	u32	ffs_base;
+	u32	ffs_size;
 };
 
-static __initdata char psp_env_version[] = "TIENV0.8";
+static const char psp_env_version[] __initconst = "TIENV0.8";
 
 struct psp_env_chunk {
-	u8 num;
-	u8 ctrl;
-	u16 csum;
-	u8 len;
-	char data[11];
-} __attribute__ ((packed));
+	u8	num;
+	u8	ctrl;
+	u16	csum;
+	u8	len;
+	char	data[11];
+} __packed;
 
 struct psp_var_map_entry {
-	u8 num;
-	char *value;
+	u8	num;
+	char	*value;
 };
 
-static struct psp_var_map_entry psp_var_map[] = {
-	{ 1, "cpufrequency" },
-	{ 2, "memsize" },
-	{ 3, "flashsize" },
-	{ 4, "modetty0" },
-	{ 5, "modetty1" },
-	{ 8, "maca" },
-	{ 9, "macb" },
-	{ 28, "sysfrequency" },
-	{ 38, "mipsfrequency" },
+static const struct psp_var_map_entry psp_var_map[] = {
+	{  1,	"cpufrequency" },
+	{  2,	"memsize" },
+	{  3,	"flashsize" },
+	{  4,	"modetty0" },
+	{  5,	"modetty1" },
+	{  8,	"maca" },
+	{  9,	"macb" },
+	{ 28,	"sysfrequency" },
+	{ 38,	"mipsfrequency" },
 };
 
 /*
@@ -154,6 +129,7 @@ static char * __init lookup_psp_var_map(u8 num)
 static void __init add_adam2_var(char *name, char *value)
 {
 	int i;
+
 	for (i = 0; i < MAX_ENTRY; i++) {
 		if (!adam2_env[i].name) {
 			adam2_env[i].name = name;
@@ -216,16 +192,8 @@ static void __init console_config(void)
 	char parity = '\0', bits = '\0', flow = '\0';
 	char *s, *p;
 
-	if (strstr(prom_getcmdline(), "console="))
+	if (strstr(arcs_cmdline, "console="))
 		return;
-
-#ifdef CONFIG_KGDB
-	if (!strstr(prom_getcmdline(), "nokgdb")) {
-		strcat(prom_getcmdline(), " console=kgdb");
-		kgdb_enabled = 1;
-		return;
-	}
-#endif
 
 	s = prom_getenv("modetty0");
 	if (s) {
@@ -258,7 +226,7 @@ static void __init console_config(void)
 	else
 		sprintf(console_string, " console=ttyS0,%d%c%c", baud, parity,
 			bits);
-	strcat(prom_getcmdline(), console_string);
+	strlcat(arcs_cmdline, console_string, COMMAND_LINE_SIZE);
 #endif
 }
 
@@ -280,18 +248,9 @@ static inline void serial_out(int offset, int value)
 	writel(value, (void *)PORT(offset));
 }
 
-char prom_getchar(void)
-{
-	while (!(serial_in(UART_LSR) & UART_LSR_DR))
-		;
-	return serial_in(UART_RX);
-}
-
-int prom_putchar(char c)
+void prom_putchar(char c)
 {
 	while ((serial_in(UART_LSR) & UART_LSR_TEMT) == 0)
 		;
 	serial_out(UART_TX, c);
-	return 1;
 }
-

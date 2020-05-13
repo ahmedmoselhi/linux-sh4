@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  HP Compaq TC1100 Tablet WMI Extras Driver
  *
@@ -5,33 +6,16 @@
  *  Copyright (C) 2004 Jamey Hicks <jamey.hicks@hp.com>
  *  Copyright (C) 2001, 2002 Andy Grover <andrew.grover@intel.com>
  *  Copyright (C) 2001, 2002 Paul Diefenbaugh <paul.s.diefenbaugh@intel.com>
- *
- * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or (at
- *  your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful, but
- *  WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- *  General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, write to the Free Software Foundation, Inc.,
- *  59 Temple Place, Suite 330, Boston, MA 02111-1307 USA.
- *
- * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/types.h>
-#include <acpi/acpi.h>
-#include <acpi/acpi_bus.h>
-#include <acpi/acpi_drivers.h>
+#include <linux/acpi.h>
 #include <linux/platform_device.h>
 
 #define GUID "C364AC71-36DB-495A-8494-B439D472A505"
@@ -39,29 +23,10 @@
 #define TC1100_INSTANCE_WIRELESS		1
 #define TC1100_INSTANCE_JOGDIAL		2
 
-#define TC1100_LOGPREFIX "tc1100-wmi: "
-#define TC1100_INFO KERN_INFO TC1100_LOGPREFIX
-
 MODULE_AUTHOR("Jamey Hicks, Carlos Corbacho");
 MODULE_DESCRIPTION("HP Compaq TC1100 Tablet WMI Extras");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("wmi:C364AC71-36DB-495A-8494-B439D472A505");
-
-static int tc1100_probe(struct platform_device *device);
-static int tc1100_remove(struct platform_device *device);
-static int tc1100_suspend(struct platform_device *device, pm_message_t state);
-static int tc1100_resume(struct platform_device *device);
-
-static struct platform_driver tc1100_driver = {
-	.driver = {
-		.name = "tc1100-wmi",
-		.owner = THIS_MODULE,
-	},
-	.probe = tc1100_probe,
-	.remove = tc1100_remove,
-	.suspend = tc1100_suspend,
-	.resume = tc1100_resume,
-};
 
 static struct platform_device *tc1100_device;
 
@@ -70,7 +35,9 @@ struct tc1100_data {
 	u32 jogdial;
 };
 
+#ifdef CONFIG_PM
 static struct tc1100_data suspend_data;
+#endif
 
 /* --------------------------------------------------------------------------
 				Device Management
@@ -100,7 +67,7 @@ static int get_state(u32 *out, u8 instance)
 		tmp = 0;
 	}
 
-	if (result.length > 0 && result.pointer)
+	if (result.length > 0)
 		kfree(result.pointer);
 
 	switch (instance) {
@@ -183,51 +150,35 @@ static DEVICE_ATTR(value, S_IRUGO | S_IWUSR, \
 show_set_bool(wireless, TC1100_INSTANCE_WIRELESS);
 show_set_bool(jogdial, TC1100_INSTANCE_JOGDIAL);
 
-static void remove_fs(void)
-{
-	device_remove_file(&tc1100_device->dev, &dev_attr_wireless);
-	device_remove_file(&tc1100_device->dev, &dev_attr_jogdial);
-}
+static struct attribute *tc1100_attributes[] = {
+	&dev_attr_wireless.attr,
+	&dev_attr_jogdial.attr,
+	NULL
+};
 
-static int add_fs(void)
-{
-	int ret;
-
-	ret = device_create_file(&tc1100_device->dev, &dev_attr_wireless);
-	if (ret)
-		goto add_sysfs_error;
-
-	ret = device_create_file(&tc1100_device->dev, &dev_attr_jogdial);
-	if (ret)
-		goto add_sysfs_error;
-
-	return ret;
-
-add_sysfs_error:
-	remove_fs();
-	return ret;
-}
+static struct attribute_group tc1100_attribute_group = {
+	.attrs	= tc1100_attributes,
+};
 
 /* --------------------------------------------------------------------------
 				Driver Model
    -------------------------------------------------------------------------- */
 
-static int tc1100_probe(struct platform_device *device)
+static int __init tc1100_probe(struct platform_device *device)
 {
-	int result = 0;
-
-	result = add_fs();
-	return result;
+	return sysfs_create_group(&device->dev.kobj, &tc1100_attribute_group);
 }
 
 
 static int tc1100_remove(struct platform_device *device)
 {
-	remove_fs();
+	sysfs_remove_group(&device->dev.kobj, &tc1100_attribute_group);
+
 	return 0;
 }
 
-static int tc1100_suspend(struct platform_device *dev, pm_message_t state)
+#ifdef CONFIG_PM
+static int tc1100_suspend(struct device *dev)
 {
 	int ret;
 
@@ -239,10 +190,10 @@ static int tc1100_suspend(struct platform_device *dev, pm_message_t state)
 	if (ret)
 		return ret;
 
-	return ret;
+	return 0;
 }
 
-static int tc1100_resume(struct platform_device *dev)
+static int tc1100_resume(struct device *dev)
 {
 	int ret;
 
@@ -254,34 +205,60 @@ static int tc1100_resume(struct platform_device *dev)
 	if (ret)
 		return ret;
 
-	return ret;
+	return 0;
 }
+
+static const struct dev_pm_ops tc1100_pm_ops = {
+	.suspend	= tc1100_suspend,
+	.resume		= tc1100_resume,
+	.freeze		= tc1100_suspend,
+	.restore	= tc1100_resume,
+};
+#endif
+
+static struct platform_driver tc1100_driver = {
+	.driver = {
+		.name = "tc1100-wmi",
+#ifdef CONFIG_PM
+		.pm = &tc1100_pm_ops,
+#endif
+	},
+	.remove = tc1100_remove,
+};
 
 static int __init tc1100_init(void)
 {
-	int result = 0;
+	int error;
 
 	if (!wmi_has_guid(GUID))
 		return -ENODEV;
 
-	result = platform_driver_register(&tc1100_driver);
-	if (result)
-		return result;
-
 	tc1100_device = platform_device_alloc("tc1100-wmi", -1);
-	platform_device_add(tc1100_device);
+	if (!tc1100_device)
+		return -ENOMEM;
 
-	printk(TC1100_INFO "HP Compaq TC1100 Tablet WMI Extras loaded\n");
+	error = platform_device_add(tc1100_device);
+	if (error)
+		goto err_device_put;
 
-	return result;
+	error = platform_driver_probe(&tc1100_driver, tc1100_probe);
+	if (error)
+		goto err_device_del;
+
+	pr_info("HP Compaq TC1100 Tablet WMI Extras loaded\n");
+	return 0;
+
+ err_device_del:
+	platform_device_del(tc1100_device);
+ err_device_put:
+	platform_device_put(tc1100_device);
+	return error;
 }
 
 static void __exit tc1100_exit(void)
 {
-	platform_device_del(tc1100_device);
+	platform_device_unregister(tc1100_device);
 	platform_driver_unregister(&tc1100_driver);
-
-	printk(TC1100_INFO "HP Compaq TC1100 Tablet WMI Extras unloaded\n");
 }
 
 module_init(tc1100_init);

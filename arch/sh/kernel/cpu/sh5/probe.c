@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * arch/sh/kernel/cpu/sh5/probe.c
  *
@@ -5,10 +6,6 @@
  *
  * Copyright (C) 2000, 2001  Paolo Alberelli
  * Copyright (C) 2003 - 2007  Paul Mundt
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 #include <linux/init.h>
 #include <linux/io.h>
@@ -17,7 +14,7 @@
 #include <asm/cache.h>
 #include <asm/tlb.h>
 
-int __init detect_cpu_and_cache_system(void)
+void cpu_probe(void)
 {
 	unsigned long long cir;
 
@@ -72,6 +69,4 @@ int __init detect_cpu_and_cache_system(void)
 
 	/* Setup some I/D TLB defaults */
 	sh64_tlb_init();
-
-	return 0;
 }

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * arch/sh/boot/compressed/misc.c
  *
@@ -11,10 +12,9 @@
  * Modified to use standard LinuxSH BIOS by Greg Banks 7Jul2000
  */
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/addrspace.h>
 #include <asm/page.h>
-#include <asm/sh_bios.h>
 
 /*
  * gzip declarations
@@ -62,33 +62,19 @@ static unsigned long free_mem_end_ptr;
 #include "../../../../lib/decompress_unlzma.c"
 #endif
 
+#ifdef CONFIG_KERNEL_XZ
+#include "../../../../lib/decompress_unxz.c"
+#endif
+
 #ifdef CONFIG_KERNEL_LZO
 #include "../../../../lib/decompress_unlzo.c"
 #endif
 
-#ifdef CONFIG_SH_STANDARD_BIOS
-size_t strlen(const char *s)
-{
-	int i = 0;
-
-	while (*s++)
-		i++;
-	return i;
-}
-
-int puts(const char *s)
-{
-	int len = strlen(s);
-	sh_bios_console_write(s, len);
-	return len;
-}
-#else
 int puts(const char *s)
 {
 	/* This should be updated to use the sh-sci routines */
 	return 0;
 }
-#endif
 
 void* memset(void* s, int c, size_t n)
 {
@@ -118,6 +104,18 @@ static void error(char *x)
 	while(1);	/* Halt */
 }
 
+const unsigned long __stack_chk_guard = 0x000a0dff;
+
+void __stack_chk_fail(void)
+{
+	error("stack-protector: Kernel stack is corrupted\n");
+}
+
+/* Needed because vmlinux.lds.h references this */
+void ftrace_stub(void)
+{
+}
+
 #ifdef CONFIG_SUPERH64
 #define stackalign	8
 #else
@@ -135,9 +133,9 @@ void decompress_kernel(void)
 #ifdef CONFIG_SUPERH64
 	output_addr = (CONFIG_MEMORY_START + 0x2000);
 #else
-	output_addr = (unsigned long)&_text+PAGE_SIZE;
-#if defined(CONFIG_29BIT) || defined(CONFIG_PMB_FIXED)
-	output_addr = P2SEGADDR(output_addr);
+	output_addr = __pa((unsigned long)&_text+PAGE_SIZE);
+#if defined(CONFIG_29BIT)
+	output_addr |= P2SEG;
 #endif
 #endif
 
@@ -147,7 +145,7 @@ void decompress_kernel(void)
 
 	puts("Uncompressing Linux... ");
 	cache_control(CACHE_ENABLE);
-	decompress(input_data, input_len, NULL, NULL, output, NULL, error);
+	__decompress(input_data, input_len, NULL, NULL, output, 0, NULL, error);
 	cache_control(CACHE_DISABLE);
 	puts("Ok, booting the kernel.\n");
 }

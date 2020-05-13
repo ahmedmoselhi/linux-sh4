@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 
 #include <linux/kernel.h>
+#include <linux/export.h>
 #include <linux/ide.h>
 
 #if defined(CONFIG_ARM) || defined(CONFIG_M68K) || defined(CONFIG_MIPS) || \

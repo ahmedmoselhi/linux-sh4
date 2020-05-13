@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * R8A66597 HCD (Host Controller Driver)
  *
@@ -7,29 +8,12 @@
  * Portions Copyright (C) 1999 Roman Weissgaerber
  *
  * Author : Yoshihiro Shimoda <shimoda.yoshihiro@renesas.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; version 2 of the License.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- *
  */
 
 #ifndef __R8A66597_H__
 #define __R8A66597_H__
 
-#ifdef CONFIG_HAVE_CLK
 #include <linux/clk.h>
-#endif
-
 #include <linux/usb/r8a66597.h>
 
 #define R8A66597_MAX_NUM_PIPE		10
@@ -110,20 +94,25 @@ struct r8a66597_root_hub {
 	struct r8a66597_device	*dev;
 };
 
+struct r8a66597;
+
+struct r8a66597_timers {
+	struct timer_list td;
+	struct timer_list interval;
+	struct r8a66597 *r8a66597;
+};
+
 struct r8a66597 {
 	spinlock_t lock;
-	unsigned long reg;
-#ifdef CONFIG_HAVE_CLK
+	void __iomem *reg;
 	struct clk *clk;
-#endif
 	struct r8a66597_platdata	*pdata;
 	struct r8a66597_device		device0;
 	struct r8a66597_root_hub	root_hub[R8A66597_MAX_ROOT_HUB];
 	struct list_head		pipe_queue[R8A66597_MAX_NUM_PIPE];
 
 	struct timer_list rh_timer;
-	struct timer_list td_timer[R8A66597_MAX_NUM_PIPE];
-	struct timer_list interval_timer[R8A66597_MAX_NUM_PIPE];
+	struct r8a66597_timers timers[R8A66597_MAX_NUM_PIPE];
 
 	unsigned short address_map;
 	unsigned short timeout_map;
@@ -170,69 +159,35 @@ static inline struct urb *r8a66597_get_urb(struct r8a66597 *r8a66597,
 
 static inline u16 r8a66597_read(struct r8a66597 *r8a66597, unsigned long offset)
 {
-	return inw(r8a66597->reg + offset);
+	return ioread16(r8a66597->reg + offset);
 }
 
 static inline void r8a66597_read_fifo(struct r8a66597 *r8a66597,
 				      unsigned long offset, u16 *buf,
 				      int len)
 {
-	unsigned long fifoaddr = r8a66597->reg + offset;
+	void __iomem *fifoaddr = r8a66597->reg + offset;
 	unsigned long count;
 
 	if (r8a66597->pdata->on_chip) {
 		count = len / 4;
-		insl(fifoaddr, buf, count);
+		ioread32_rep(fifoaddr, buf, count);
 
 		if (len & 0x00000003) {
-			unsigned long tmp = inl(fifoaddr);
+			unsigned long tmp = ioread32(fifoaddr);
 			memcpy((unsigned char *)buf + count * 4, &tmp,
 			       len & 0x03);
 		}
 	} else {
 		len = (len + 1) / 2;
-		insw(fifoaddr, buf, len);
+		ioread16_rep(fifoaddr, buf, len);
 	}
 }
 
 static inline void r8a66597_write(struct r8a66597 *r8a66597, u16 val,
 				  unsigned long offset)
 {
-	outw(val, r8a66597->reg + offset);
-}
-
-static inline void r8a66597_write_fifo(struct r8a66597 *r8a66597,
-				       unsigned long offset, u16 *buf,
-				       int len)
-{
-	unsigned long fifoaddr = r8a66597->reg + offset;
-	unsigned long count;
-	unsigned char *pb;
-	int i;
-
-	if (r8a66597->pdata->on_chip) {
-		count = len / 4;
-		outsl(fifoaddr, buf, count);
-
-		if (len & 0x00000003) {
-			pb = (unsigned char *)buf + count * 4;
-			for (i = 0; i < (len & 0x00000003); i++) {
-				if (r8a66597_read(r8a66597, CFIFOSEL) & BIGEND)
-					outb(pb[i], fifoaddr + i);
-				else
-					outb(pb[i], fifoaddr + 3 - i);
-			}
-		}
-	} else {
-		int odd = len & 0x0001;
-
-		len = len / 2;
-		outsw(fifoaddr, buf, len);
-		if (unlikely(odd)) {
-			buf = &buf[len];
-			outb((unsigned char)*buf, fifoaddr);
-		}
-	}
+	iowrite16(val, r8a66597->reg + offset);
 }
 
 static inline void r8a66597_mdfy(struct r8a66597 *r8a66597,
@@ -249,6 +204,44 @@ static inline void r8a66597_mdfy(struct r8a66597 *r8a66597,
 			r8a66597_mdfy(r8a66597, 0, val, offset)
 #define r8a66597_bset(r8a66597, val, offset)	\
 			r8a66597_mdfy(r8a66597, val, 0, offset)
+
+static inline void r8a66597_write_fifo(struct r8a66597 *r8a66597,
+				       struct r8a66597_pipe *pipe, u16 *buf,
+				       int len)
+{
+	void __iomem *fifoaddr = r8a66597->reg + pipe->fifoaddr;
+	unsigned long count;
+	unsigned char *pb;
+	int i;
+
+	if (r8a66597->pdata->on_chip) {
+		count = len / 4;
+		iowrite32_rep(fifoaddr, buf, count);
+
+		if (len & 0x00000003) {
+			pb = (unsigned char *)buf + count * 4;
+			for (i = 0; i < (len & 0x00000003); i++) {
+				if (r8a66597_read(r8a66597, CFIFOSEL) & BIGEND)
+					iowrite8(pb[i], fifoaddr + i);
+				else
+					iowrite8(pb[i], fifoaddr + 3 - i);
+			}
+		}
+	} else {
+		int odd = len & 0x0001;
+
+		len = len / 2;
+		iowrite16_rep(fifoaddr, buf, len);
+		if (unlikely(odd)) {
+			buf = &buf[len];
+			if (r8a66597->pdata->wr0_shorted_to_wr1)
+				r8a66597_bclr(r8a66597, MBW_16, pipe->fifosel);
+			iowrite8((unsigned char)*buf, fifoaddr);
+			if (r8a66597->pdata->wr0_shorted_to_wr1)
+				r8a66597_bset(r8a66597, MBW_16, pipe->fifosel);
+		}
+	}
+}
 
 static inline unsigned long get_syscfg_reg(int port)
 {

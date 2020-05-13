@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_SH_PGTABLE_64_H
 #define __ASM_SH_PGTABLE_64_H
 
@@ -10,10 +11,6 @@
  * Copyright (C) 2000, 2001  Paolo Alberelli
  * Copyright (C) 2003, 2004  Paul Mundt
  * Copyright (C) 2003, 2004  Richard Curnow
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 #include <linux/threads.h>
 #include <asm/processor.h>
@@ -42,11 +39,6 @@ static __inline__ void set_pte(pte_t *pteptr, pte_t pteval)
 	*(xp) = (x & NPHYS_SIGN) ? (x | NPHYS_MASK) : x;
 }
 #define set_pte_at(mm,addr,ptep,pteval) set_pte(ptep,pteval)
-
-static __inline__ void pmd_set(pmd_t *pmdp,pte_t *ptep)
-{
-	pmd_val(*pmdp) = (unsigned long) ptep;
-}
 
 /*
  * PGD defines. Top level.
@@ -89,14 +81,9 @@ static __inline__ void pmd_set(pmd_t *pmdp,pte_t *ptep)
 		((pte_t *) ((pmd_val(*(dir))) & PAGE_MASK) + pte_index((addr)))
 
 #define pte_offset_map(dir,addr)	pte_offset_kernel(dir, addr)
-#define pte_offset_map_nested(dir,addr)	pte_offset_kernel(dir, addr)
 #define pte_unmap(pte)		do { } while (0)
-#define pte_unmap_nested(pte)	do { } while (0)
 
 #ifndef __ASSEMBLY__
-#define IOBASE_VADDR	0xff000000
-#define IOBASE_END	0xffffffff
-
 /*
  * PTEL coherent flags.
  * See Chapter 17 ST50 CPU Core Volume 1, Architecture.
@@ -117,7 +104,6 @@ static __inline__ void pmd_set(pmd_t *pmdp,pte_t *ptep)
 #define _PAGE_DEVICE	0x001  /* CB0: if uncacheable, 1->device (i.e. no write-combining or reordering at bus level) */
 #define _PAGE_CACHABLE	0x002  /* CB1: uncachable/cachable */
 #define _PAGE_PRESENT	0x004  /* software: page referenced */
-#define _PAGE_FILE	0x004  /* software: only when !present */
 #define _PAGE_SIZE0	0x008  /* SZ0-bit : size of page */
 #define _PAGE_SIZE1	0x010  /* SZ1-bit : size of page */
 #define _PAGE_SHARED	0x020  /* software: reflects PTEH's SH */
@@ -128,8 +114,22 @@ static __inline__ void pmd_set(pmd_t *pmdp,pte_t *ptep)
 #define _PAGE_DIRTY	0x400  /* software: page accessed in write */
 #define _PAGE_ACCESSED	0x800  /* software: page referenced */
 
+/* Wrapper for extended mode pgprot twiddling */
+#define _PAGE_EXT(x)		((unsigned long long)(x) << 32)
+
+/*
+ * We can use the sign-extended bits in the PTEL to get 32 bits of
+ * software flags. This works for now because no implementations uses
+ * anything above the PPN field.
+ */
+#define _PAGE_WIRED	_PAGE_EXT(0x001) /* software: wire the tlb entry */
+#define _PAGE_SPECIAL	_PAGE_EXT(0x002)
+
+#define _PAGE_CLEAR_FLAGS	(_PAGE_PRESENT | _PAGE_SHARED | \
+				 _PAGE_DIRTY | _PAGE_ACCESSED | _PAGE_WIRED)
+
 /* Mask which drops software flags */
-#define _PAGE_FLAGS_HARDWARE_MASK	0xfffffffffffff3dbLL
+#define _PAGE_FLAGS_HARDWARE_MASK	(NEFF_MASK & ~(_PAGE_CLEAR_FLAGS))
 
 /*
  * HugeTLB support
@@ -167,7 +167,8 @@ static __inline__ void pmd_set(pmd_t *pmdp,pte_t *ptep)
 /* Default flags for a User page */
 #define _PAGE_TABLE	(_KERNPG_TABLE | _PAGE_USER)
 
-#define _PAGE_CHG_MASK	(PTE_MASK | _PAGE_ACCESSED | _PAGE_DIRTY)
+#define _PAGE_CHG_MASK	(PTE_MASK | _PAGE_ACCESSED | _PAGE_DIRTY | \
+			 _PAGE_SPECIAL)
 
 /*
  * We have full permissions (Read/Write/Execute/Shared).
@@ -201,12 +202,6 @@ static __inline__ void pmd_set(pmd_t *pmdp,pte_t *ptep)
    registers into user-space via /dev/map).  */
 #define pgprot_noncached(x) __pgprot(((x).pgprot & ~(_PAGE_CACHABLE)) | _PAGE_DEVICE)
 #define pgprot_writecombine(prot) __pgprot(pgprot_val(prot) & ~_PAGE_CACHABLE)
-
-/*
- * Handling allocation failures during page table setup.
- */
-extern void __handle_bad_pmd_kernel(pmd_t * pmd);
-#define __handle_bad_pmd(x)	__handle_bad_pmd_kernel(x)
 
 /*
  * PTE level access routines.
@@ -261,9 +256,8 @@ extern void __handle_bad_pmd_kernel(pmd_t * pmd);
  */
 static inline int pte_dirty(pte_t pte)  { return pte_val(pte) & _PAGE_DIRTY; }
 static inline int pte_young(pte_t pte)  { return pte_val(pte) & _PAGE_ACCESSED; }
-static inline int pte_file(pte_t pte)   { return pte_val(pte) & _PAGE_FILE; }
 static inline int pte_write(pte_t pte)  { return pte_val(pte) & _PAGE_WRITE; }
-static inline int pte_special(pte_t pte){ return 0; }
+static inline int pte_special(pte_t pte){ return pte_val(pte) & _PAGE_SPECIAL; }
 
 static inline pte_t pte_wrprotect(pte_t pte)	{ set_pte(&pte, __pte(pte_val(pte) & ~_PAGE_WRITE)); return pte; }
 static inline pte_t pte_mkclean(pte_t pte)	{ set_pte(&pte, __pte(pte_val(pte) & ~_PAGE_DIRTY)); return pte; }
@@ -272,8 +266,7 @@ static inline pte_t pte_mkwrite(pte_t pte)	{ set_pte(&pte, __pte(pte_val(pte) | 
 static inline pte_t pte_mkdirty(pte_t pte)	{ set_pte(&pte, __pte(pte_val(pte) | _PAGE_DIRTY)); return pte; }
 static inline pte_t pte_mkyoung(pte_t pte)	{ set_pte(&pte, __pte(pte_val(pte) | _PAGE_ACCESSED)); return pte; }
 static inline pte_t pte_mkhuge(pte_t pte)	{ set_pte(&pte, __pte(pte_val(pte) | _PAGE_SZHUGE)); return pte; }
-static inline pte_t pte_mkspecial(pte_t pte)	{ return pte; }
-
+static inline pte_t pte_mkspecial(pte_t pte)	{ set_pte(&pte, __pte(pte_val(pte) | _PAGE_SPECIAL)); return pte; }
 
 /*
  * Conversion functions: convert a page and protection to a page entry.
@@ -305,11 +298,6 @@ static inline pte_t pte_modify(pte_t pte, pgprot_t newprot)
 #define __swp_entry(type, offset)	((swp_entry_t) { ((offset << 8) + ((type & 0x3c) << 1) + (type & 3)) })
 #define __pte_to_swp_entry(pte)		((swp_entry_t) { pte_val(pte) })
 #define __swp_entry_to_pte(x)		((pte_t) { (x).val })
-
-/* Encode and decode a nonlinear file mapping entry */
-#define PTE_FILE_MAX_BITS		29
-#define pte_to_pgoff(pte)		(pte_val(pte))
-#define pgoff_to_pte(off)		((pte_t) { (off) | _PAGE_FILE })
 
 #endif /* !__ASSEMBLY__ */
 

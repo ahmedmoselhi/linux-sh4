@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * INET		An implementation of the TCP/IP protocol suite for the LINUX
  *		operating system.  INET is implemented using the  BSD Socket
@@ -18,17 +19,14 @@
  *			     handling.
  *		Andi Kleen,  add zeroing on error
  *                   converted to pure assembler
- *
- *		This program is free software; you can redistribute it and/or
- *		modify it under the terms of the GNU General Public License
- *		as published by the Free Software Foundation; either version
- *		2 of the License, or (at your option) any later version.
  */
 
 #include <linux/linkage.h>
-#include <asm/dwarf2.h>
 #include <asm/errno.h>
-				
+#include <asm/asm.h>
+#include <asm/export.h>
+#include <asm/nospec-branch.h>
+
 /*
  * computes a partial checksum, e.g. for TCP/UDP fragments
  */
@@ -48,21 +46,16 @@ unsigned int csum_partial(const unsigned char * buff, int len, unsigned int sum)
 	   * Fortunately, it is easy to convert 2-byte alignment to 4-byte
 	   * alignment for the unrolled loop.
 	   */		
-ENTRY(csum_partial)
-	CFI_STARTPROC
+SYM_FUNC_START(csum_partial)
 	pushl %esi
-	CFI_ADJUST_CFA_OFFSET 4
-	CFI_REL_OFFSET esi, 0
 	pushl %ebx
-	CFI_ADJUST_CFA_OFFSET 4
-	CFI_REL_OFFSET ebx, 0
 	movl 20(%esp),%eax	# Function arg: unsigned int sum
 	movl 16(%esp),%ecx	# Function arg: int len
 	movl 12(%esp),%esi	# Function arg: unsigned char *buff
 	testl $3, %esi		# Check alignment.
 	jz 2f			# Jump if alignment is ok.
 	testl $1, %esi		# Check alignment.
-	jz 10f			# Jump if alignment is boundary of 2bytes.
+	jz 10f			# Jump if alignment is boundary of 2 bytes.
 
 	# buf is odd
 	dec %ecx
@@ -128,32 +121,22 @@ ENTRY(csum_partial)
 6:	addl %ecx,%eax
 	adcl $0, %eax 
 7:	
-	testl $1, 12(%esp)
+	testb $1, 12(%esp)
 	jz 8f
 	roll $8, %eax
 8:
 	popl %ebx
-	CFI_ADJUST_CFA_OFFSET -4
-	CFI_RESTORE ebx
 	popl %esi
-	CFI_ADJUST_CFA_OFFSET -4
-	CFI_RESTORE esi
 	ret
-	CFI_ENDPROC
-ENDPROC(csum_partial)
+SYM_FUNC_END(csum_partial)
 
 #else
 
 /* Version for PentiumII/PPro */
 
-ENTRY(csum_partial)
-	CFI_STARTPROC
+SYM_FUNC_START(csum_partial)
 	pushl %esi
-	CFI_ADJUST_CFA_OFFSET 4
-	CFI_REL_OFFSET esi, 0
 	pushl %ebx
-	CFI_ADJUST_CFA_OFFSET 4
-	CFI_REL_OFFSET ebx, 0
 	movl 20(%esp),%eax	# Function arg: unsigned int sum
 	movl 16(%esp),%ecx	# Function arg: int len
 	movl 12(%esp),%esi	# Function arg:	const unsigned char *buf
@@ -170,7 +153,7 @@ ENTRY(csum_partial)
 	negl %ebx
 	lea 45f(%ebx,%ebx,2), %ebx
 	testl %esi, %esi
-	jmp *%ebx
+	JMP_NOSPEC %ebx
 
 	# Handle 2-byte-aligned regions
 20:	addw (%esi), %ax
@@ -256,21 +239,17 @@ ENTRY(csum_partial)
 	addl %ebx,%eax
 	adcl $0,%eax
 80: 
-	testl $1, 12(%esp)
+	testb $1, 12(%esp)
 	jz 90f
 	roll $8, %eax
 90: 
 	popl %ebx
-	CFI_ADJUST_CFA_OFFSET -4
-	CFI_RESTORE ebx
 	popl %esi
-	CFI_ADJUST_CFA_OFFSET -4
-	CFI_RESTORE esi
 	ret
-	CFI_ENDPROC
-ENDPROC(csum_partial)
+SYM_FUNC_END(csum_partial)
 				
 #endif
+EXPORT_SYMBOL(csum_partial)
 
 /*
 unsigned int csum_partial_copy_generic (const char *src, char *dst,
@@ -290,34 +269,22 @@ unsigned int csum_partial_copy_generic (const char *src, char *dst,
 
 #define SRC(y...)			\
 	9999: y;			\
-	.section __ex_table, "a";	\
-	.long 9999b, 6001f	;	\
-	.previous
+	_ASM_EXTABLE_UA(9999b, 6001f)
 
 #define DST(y...)			\
 	9999: y;			\
-	.section __ex_table, "a";	\
-	.long 9999b, 6002f	;	\
-	.previous
+	_ASM_EXTABLE_UA(9999b, 6002f)
 
 #ifndef CONFIG_X86_USE_PPRO_CHECKSUM
 
 #define ARGBASE 16		
 #define FP		12
 		
-ENTRY(csum_partial_copy_generic)
-	CFI_STARTPROC
+SYM_FUNC_START(csum_partial_copy_generic)
 	subl  $4,%esp	
-	CFI_ADJUST_CFA_OFFSET 4
 	pushl %edi
-	CFI_ADJUST_CFA_OFFSET 4
-	CFI_REL_OFFSET edi, 0
 	pushl %esi
-	CFI_ADJUST_CFA_OFFSET 4
-	CFI_REL_OFFSET esi, 0
 	pushl %ebx
-	CFI_ADJUST_CFA_OFFSET 4
-	CFI_REL_OFFSET ebx, 0
 	movl ARGBASE+16(%esp),%eax	# sum
 	movl ARGBASE+12(%esp),%ecx	# len
 	movl ARGBASE+4(%esp),%esi	# src
@@ -427,19 +394,11 @@ DST(	movb %cl, (%edi)	)
 .previous
 
 	popl %ebx
-	CFI_ADJUST_CFA_OFFSET -4
-	CFI_RESTORE ebx
 	popl %esi
-	CFI_ADJUST_CFA_OFFSET -4
-	CFI_RESTORE esi
 	popl %edi
-	CFI_ADJUST_CFA_OFFSET -4
-	CFI_RESTORE edi
 	popl %ecx			# equivalent to addl $4,%esp
-	CFI_ADJUST_CFA_OFFSET -4
 	ret	
-	CFI_ENDPROC
-ENDPROC(csum_partial_copy_generic)
+SYM_FUNC_END(csum_partial_copy_generic)
 
 #else
 
@@ -457,17 +416,10 @@ ENDPROC(csum_partial_copy_generic)
 
 #define ARGBASE 12
 		
-ENTRY(csum_partial_copy_generic)
-	CFI_STARTPROC
+SYM_FUNC_START(csum_partial_copy_generic)
 	pushl %ebx
-	CFI_ADJUST_CFA_OFFSET 4
-	CFI_REL_OFFSET ebx, 0
 	pushl %edi
-	CFI_ADJUST_CFA_OFFSET 4
-	CFI_REL_OFFSET edi, 0
 	pushl %esi
-	CFI_ADJUST_CFA_OFFSET 4
-	CFI_REL_OFFSET esi, 0
 	movl ARGBASE+4(%esp),%esi	#src
 	movl ARGBASE+8(%esp),%edi	#dst	
 	movl ARGBASE+12(%esp),%ecx	#len
@@ -484,7 +436,7 @@ ENTRY(csum_partial_copy_generic)
 	andl $-32,%edx
 	lea 3f(%ebx,%ebx), %ebx
 	testl %esi, %esi 
-	jmp *%ebx
+	JMP_NOSPEC %ebx
 1:	addl $64,%esi
 	addl $64,%edi 
 	SRC(movb -32(%edx),%bl)	; SRC(movb (%edx),%bl)
@@ -528,19 +480,13 @@ DST(	movb %dl, (%edi)         )
 .previous				
 
 	popl %esi
-	CFI_ADJUST_CFA_OFFSET -4
-	CFI_RESTORE esi
 	popl %edi
-	CFI_ADJUST_CFA_OFFSET -4
-	CFI_RESTORE edi
 	popl %ebx
-	CFI_ADJUST_CFA_OFFSET -4
-	CFI_RESTORE ebx
 	ret
-	CFI_ENDPROC
-ENDPROC(csum_partial_copy_generic)
+SYM_FUNC_END(csum_partial_copy_generic)
 				
 #undef ROUND
 #undef ROUND1		
 		
 #endif
+EXPORT_SYMBOL(csum_partial_copy_generic)

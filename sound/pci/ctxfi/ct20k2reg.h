@@ -1,9 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /**
  * Copyright (C) 2008, Creative Technology Ltd. All Rights Reserved.
- *
- * This source file is released under GPL v2 license (no other versions).
- * See the COPYING file included in the main directory of this source
- * distribution for the license terms and conditions.
  */
 
 #ifndef _20K2REGISTERS_H_
@@ -55,6 +52,7 @@
 /* GPIO Registers */
 #define GPIO_DATA           0x1B7020
 #define GPIO_CTRL           0x1B7024
+#define GPIO_EXT_DATA       0x1B70A0
 
 /* Virtual memory registers */
 #define VMEM_PTPAL          0x1C6300 /* 0x1C6300 + (16 * Chn) */

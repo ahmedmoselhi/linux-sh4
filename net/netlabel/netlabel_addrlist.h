@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * NetLabel Network Address Lists
  *
@@ -6,27 +7,11 @@
  * system manages static and dynamic label mappings for network protocols such
  * as CIPSO and RIPSO.
  *
- * Author: Paul Moore <paul.moore@hp.com>
- *
+ * Author: Paul Moore <paul@paul-moore.com>
  */
 
 /*
  * (c) Copyright Hewlett-Packard Development Company, L.P., 2008
- *
- * This program is free software;  you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY;  without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See
- * the GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program;  if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
- *
  */
 
 #ifndef _NETLABEL_ADDRLIST_H
@@ -88,7 +73,7 @@ static inline struct netlbl_af4list *__af4list_valid_rcu(struct list_head *s,
 	struct list_head *i = s;
 	struct netlbl_af4list *n = __af4list_entry(s);
 	while (i != h && !n->valid) {
-		i = rcu_dereference(i->next);
+		i = rcu_dereference(list_next_rcu(i));
 		n = __af4list_entry(i);
 	}
 	return n;
@@ -96,12 +81,12 @@ static inline struct netlbl_af4list *__af4list_valid_rcu(struct list_head *s,
 
 #define netlbl_af4list_foreach(iter, head)				\
 	for (iter = __af4list_valid((head)->next, head);		\
-	     prefetch(iter->list.next), &iter->list != (head);		\
+	     &iter->list != (head);					\
 	     iter = __af4list_valid(iter->list.next, head))
 
 #define netlbl_af4list_foreach_rcu(iter, head)				\
 	for (iter = __af4list_valid_rcu((head)->next, head);		\
-	     prefetch(iter->list.next),	&iter->list != (head);		\
+	     &iter->list != (head);					\
 	     iter = __af4list_valid_rcu(iter->list.next, head))
 
 #define netlbl_af4list_foreach_safe(iter, tmp, head)			\
@@ -130,11 +115,10 @@ static inline void netlbl_af4list_audit_addr(struct audit_buffer *audit_buf,
 					     int src, const char *dev,
 					     __be32 addr, __be32 mask)
 {
-	return;
 }
 #endif
 
-#if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
+#if IS_ENABLED(CONFIG_IPV6)
 
 #define __af6list_entry(ptr) container_of(ptr, struct netlbl_af6list, list)
 
@@ -156,7 +140,7 @@ static inline struct netlbl_af6list *__af6list_valid_rcu(struct list_head *s,
 	struct list_head *i = s;
 	struct netlbl_af6list *n = __af6list_entry(s);
 	while (i != h && !n->valid) {
-		i = rcu_dereference(i->next);
+		i = rcu_dereference(list_next_rcu(i));
 		n = __af6list_entry(i);
 	}
 	return n;
@@ -164,12 +148,12 @@ static inline struct netlbl_af6list *__af6list_valid_rcu(struct list_head *s,
 
 #define netlbl_af6list_foreach(iter, head)				\
 	for (iter = __af6list_valid((head)->next, head);		\
-	     prefetch(iter->list.next),	&iter->list != (head);		\
+	     &iter->list != (head);					\
 	     iter = __af6list_valid(iter->list.next, head))
 
 #define netlbl_af6list_foreach_rcu(iter, head)				\
 	for (iter = __af6list_valid_rcu((head)->next, head);		\
-	     prefetch(iter->list.next),	&iter->list != (head);		\
+	     &iter->list != (head);					\
 	     iter = __af6list_valid_rcu(iter->list.next, head))
 
 #define netlbl_af6list_foreach_safe(iter, tmp, head)			\
@@ -203,7 +187,6 @@ static inline void netlbl_af6list_audit_addr(struct audit_buffer *audit_buf,
 					     const struct in6_addr *addr,
 					     const struct in6_addr *mask)
 {
-	return;
 }
 #endif
 #endif /* IPV6 */

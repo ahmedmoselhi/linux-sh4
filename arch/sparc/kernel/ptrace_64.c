@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* ptrace.c: Sparc process tracing support.
  *
  * Copyright (C) 1996, 2008 David S. Miller (davem@davemloft.net)
@@ -12,8 +13,10 @@
 
 #include <linux/kernel.h>
 #include <linux/sched.h>
+#include <linux/sched/task_stack.h>
 #include <linux/mm.h>
 #include <linux/errno.h>
+#include <linux/export.h>
 #include <linux/ptrace.h>
 #include <linux/user.h>
 #include <linux/smp.h>
@@ -23,13 +26,14 @@
 #include <linux/signal.h>
 #include <linux/regset.h>
 #include <linux/tracehook.h>
+#include <trace/syscall.h>
 #include <linux/compat.h>
 #include <linux/elf.h>
+#include <linux/context_tracking.h>
 
 #include <asm/asi.h>
 #include <asm/pgtable.h>
-#include <asm/system.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/psrcompat.h>
 #include <asm/visasm.h>
 #include <asm/spitfire.h>
@@ -37,9 +41,49 @@
 #include <asm/cpudata.h>
 #include <asm/cacheflush.h>
 
+#define CREATE_TRACE_POINTS
+#include <trace/events/syscalls.h>
+
 #include "entry.h"
 
 /* #define ALLOW_INIT_TRACING */
+
+struct pt_regs_offset {
+	const char *name;
+	int offset;
+};
+
+#define REG_OFFSET_NAME(n, r) \
+	{.name = n, .offset = (PT_V9_##r)}
+#define REG_OFFSET_END {.name = NULL, .offset = 0}
+
+static const struct pt_regs_offset regoffset_table[] = {
+	REG_OFFSET_NAME("g0", G0),
+	REG_OFFSET_NAME("g1", G1),
+	REG_OFFSET_NAME("g2", G2),
+	REG_OFFSET_NAME("g3", G3),
+	REG_OFFSET_NAME("g4", G4),
+	REG_OFFSET_NAME("g5", G5),
+	REG_OFFSET_NAME("g6", G6),
+	REG_OFFSET_NAME("g7", G7),
+
+	REG_OFFSET_NAME("i0", I0),
+	REG_OFFSET_NAME("i1", I1),
+	REG_OFFSET_NAME("i2", I2),
+	REG_OFFSET_NAME("i3", I3),
+	REG_OFFSET_NAME("i4", I4),
+	REG_OFFSET_NAME("i5", I5),
+	REG_OFFSET_NAME("i6", I6),
+	REG_OFFSET_NAME("i7", I7),
+
+	REG_OFFSET_NAME("tstate", TSTATE),
+	REG_OFFSET_NAME("pc", TPC),
+	REG_OFFSET_NAME("npc", TNPC),
+	REG_OFFSET_NAME("y", Y),
+	REG_OFFSET_NAME("lr", I7),
+
+	REG_OFFSET_END,
+};
 
 /*
  * Called by kernel/ptrace.c when detaching..
@@ -113,6 +157,7 @@ void flush_ptrace_access(struct vm_area_struct *vma, struct page *page,
 
 	preempt_enable();
 }
+EXPORT_SYMBOL_GPL(flush_ptrace_access);
 
 static int get_from_target(struct task_struct *target, unsigned long uaddr,
 			   void *kbuf, int len)
@@ -121,7 +166,8 @@ static int get_from_target(struct task_struct *target, unsigned long uaddr,
 		if (copy_from_user(kbuf, (void __user *) uaddr, len))
 			return -EFAULT;
 	} else {
-		int len2 = access_process_vm(target, uaddr, kbuf, len, 0);
+		int len2 = access_process_vm(target, uaddr, kbuf, len,
+				FOLL_FORCE);
 		if (len2 != len)
 			return -EFAULT;
 	}
@@ -135,7 +181,8 @@ static int set_to_target(struct task_struct *target, unsigned long uaddr,
 		if (copy_to_user((void __user *) uaddr, kbuf, len))
 			return -EFAULT;
 	} else {
-		int len2 = access_process_vm(target, uaddr, kbuf, len, 1);
+		int len2 = access_process_vm(target, uaddr, kbuf, len,
+				FOLL_FORCE | FOLL_WRITE);
 		if (len2 != len)
 			return -EFAULT;
 	}
@@ -148,7 +195,7 @@ static int regwindow64_get(struct task_struct *target,
 {
 	unsigned long rw_addr = regs->u_regs[UREG_I6];
 
-	if (test_tsk_thread_flag(current, TIF_32BIT)) {
+	if (!test_thread_64bit_stack(rw_addr)) {
 		struct reg_window32 win32;
 		int i;
 
@@ -173,7 +220,7 @@ static int regwindow64_set(struct task_struct *target,
 {
 	unsigned long rw_addr = regs->u_regs[UREG_I6];
 
-	if (test_tsk_thread_flag(current, TIF_32BIT)) {
+	if (!test_thread_64bit_stack(rw_addr)) {
 		struct reg_window32 win32;
 		int i;
 
@@ -305,7 +352,7 @@ static int genregs64_set(struct task_struct *target,
 	}
 
 	if (!ret) {
-		unsigned long y;
+		unsigned long y = regs->y;
 
 		ret = user_regset_copyin(&pos, &count, &kbuf, &ubuf,
 					 &y,
@@ -488,6 +535,7 @@ static int genregs32_get(struct task_struct *target,
 			*k++ = regs->u_regs[pos++];
 
 		reg_window = (compat_ulong_t __user *) regs->u_regs[UREG_I6];
+		reg_window -= 16;
 		if (target == current) {
 			for (; count > 0 && pos < 32; count--) {
 				if (get_user(*k++, &reg_window[pos++]))
@@ -498,7 +546,8 @@ static int genregs32_get(struct task_struct *target,
 				if (access_process_vm(target,
 						      (unsigned long)
 						      &reg_window[pos],
-						      k, sizeof(*k), 0)
+						      k, sizeof(*k),
+						      FOLL_FORCE)
 				    != sizeof(*k))
 					return -EFAULT;
 				k++;
@@ -512,6 +561,7 @@ static int genregs32_get(struct task_struct *target,
 		}
 
 		reg_window = (compat_ulong_t __user *) regs->u_regs[UREG_I6];
+		reg_window -= 16;
 		if (target == current) {
 			for (; count > 0 && pos < 32; count--) {
 				if (get_user(reg, &reg_window[pos++]) ||
@@ -523,12 +573,14 @@ static int genregs32_get(struct task_struct *target,
 				if (access_process_vm(target,
 						      (unsigned long)
 						      &reg_window[pos],
-						      &reg, sizeof(reg), 0)
+						      &reg, sizeof(reg),
+						      FOLL_FORCE)
 				    != sizeof(reg))
 					return -EFAULT;
 				if (access_process_vm(target,
 						      (unsigned long) u,
-						      &reg, sizeof(reg), 1)
+						      &reg, sizeof(reg),
+						      FOLL_FORCE | FOLL_WRITE)
 				    != sizeof(reg))
 					return -EFAULT;
 				pos++;
@@ -595,6 +647,7 @@ static int genregs32_set(struct task_struct *target,
 			regs->u_regs[pos++] = *k++;
 
 		reg_window = (compat_ulong_t __user *) regs->u_regs[UREG_I6];
+		reg_window -= 16;
 		if (target == current) {
 			for (; count > 0 && pos < 32; count--) {
 				if (put_user(*k++, &reg_window[pos++]))
@@ -606,7 +659,8 @@ static int genregs32_set(struct task_struct *target,
 						      (unsigned long)
 						      &reg_window[pos],
 						      (void *) k,
-						      sizeof(*k), 1)
+						      sizeof(*k),
+						      FOLL_FORCE | FOLL_WRITE)
 				    != sizeof(*k))
 					return -EFAULT;
 				k++;
@@ -621,6 +675,7 @@ static int genregs32_set(struct task_struct *target,
 		}
 
 		reg_window = (compat_ulong_t __user *) regs->u_regs[UREG_I6];
+		reg_window -= 16;
 		if (target == current) {
 			for (; count > 0 && pos < 32; count--) {
 				if (get_user(reg, u++) ||
@@ -632,13 +687,15 @@ static int genregs32_set(struct task_struct *target,
 				if (access_process_vm(target,
 						      (unsigned long)
 						      u,
-						      &reg, sizeof(reg), 0)
+						      &reg, sizeof(reg),
+						      FOLL_FORCE)
 				    != sizeof(reg))
 					return -EFAULT;
 				if (access_process_vm(target,
 						      (unsigned long)
 						      &reg_window[pos],
-						      &reg, sizeof(reg), 1)
+						      &reg, sizeof(reg),
+						      FOLL_FORCE | FOLL_WRITE)
 				    != sizeof(reg))
 					return -EFAULT;
 				pos++;
@@ -961,16 +1018,19 @@ struct fps {
 	unsigned long fsr;
 };
 
-long arch_ptrace(struct task_struct *child, long request, long addr, long data)
+long arch_ptrace(struct task_struct *child, long request,
+		 unsigned long addr, unsigned long data)
 {
 	const struct user_regset_view *view = task_user_regset_view(current);
 	unsigned long addr2 = task_pt_regs(current)->u_regs[UREG_I4];
 	struct pt_regs __user *pregs;
 	struct fps __user *fps;
+	void __user *addr2p;
 	int ret;
 
-	pregs = (struct pt_regs __user *) (unsigned long) addr;
-	fps = (struct fps __user *) (unsigned long) addr;
+	pregs = (struct pt_regs __user *) addr;
+	fps = (struct fps __user *) addr;
+	addr2p = (void __user *) addr2;
 
 	switch (request) {
 	case PTRACE_PEEKUSR:
@@ -1021,8 +1081,7 @@ long arch_ptrace(struct task_struct *child, long request, long addr, long data)
 
 	case PTRACE_READTEXT:
 	case PTRACE_READDATA:
-		ret = ptrace_readdata(child, addr,
-				      (char __user *)addr2, data);
+		ret = ptrace_readdata(child, addr, addr2p, data);
 		if (ret == data)
 			ret = 0;
 		else if (ret >= 0)
@@ -1031,8 +1090,7 @@ long arch_ptrace(struct task_struct *child, long request, long addr, long data)
 
 	case PTRACE_WRITETEXT:
 	case PTRACE_WRITEDATA:
-		ret = ptrace_writedata(child, (char __user *) addr2,
-				       addr, data);
+		ret = ptrace_writedata(child, addr2p, addr, data);
 		if (ret == data)
 			ret = 0;
 		else if (ret >= 0)
@@ -1054,36 +1112,90 @@ asmlinkage int syscall_trace_enter(struct pt_regs *regs)
 	int ret = 0;
 
 	/* do the secure computing check first */
-	secure_computing(regs->u_regs[UREG_G1]);
+	secure_computing_strict(regs->u_regs[UREG_G1]);
+
+	if (test_thread_flag(TIF_NOHZ))
+		user_exit();
 
 	if (test_thread_flag(TIF_SYSCALL_TRACE))
 		ret = tracehook_report_syscall_entry(regs);
 
-	if (unlikely(current->audit_context) && !ret)
-		audit_syscall_entry((test_thread_flag(TIF_32BIT) ?
-				     AUDIT_ARCH_SPARC :
-				     AUDIT_ARCH_SPARC64),
-				    regs->u_regs[UREG_G1],
-				    regs->u_regs[UREG_I0],
-				    regs->u_regs[UREG_I1],
-				    regs->u_regs[UREG_I2],
-				    regs->u_regs[UREG_I3]);
+	if (unlikely(test_thread_flag(TIF_SYSCALL_TRACEPOINT)))
+		trace_sys_enter(regs, regs->u_regs[UREG_G1]);
+
+	audit_syscall_entry(regs->u_regs[UREG_G1], regs->u_regs[UREG_I0],
+			    regs->u_regs[UREG_I1], regs->u_regs[UREG_I2],
+			    regs->u_regs[UREG_I3]);
 
 	return ret;
 }
 
 asmlinkage void syscall_trace_leave(struct pt_regs *regs)
 {
-	if (unlikely(current->audit_context)) {
-		unsigned long tstate = regs->tstate;
-		int result = AUDITSC_SUCCESS;
+	if (test_thread_flag(TIF_NOHZ))
+		user_exit();
 
-		if (unlikely(tstate & (TSTATE_XCARRY | TSTATE_ICARRY)))
-			result = AUDITSC_FAILURE;
+	audit_syscall_exit(regs);
 
-		audit_syscall_exit(result, regs->u_regs[UREG_I0]);
-	}
+	if (unlikely(test_thread_flag(TIF_SYSCALL_TRACEPOINT)))
+		trace_sys_exit(regs, regs->u_regs[UREG_I0]);
 
 	if (test_thread_flag(TIF_SYSCALL_TRACE))
 		tracehook_report_syscall_exit(regs, 0);
+
+	if (test_thread_flag(TIF_NOHZ))
+		user_enter();
+}
+
+/**
+ * regs_query_register_offset() - query register offset from its name
+ * @name:	the name of a register
+ *
+ * regs_query_register_offset() returns the offset of a register in struct
+ * pt_regs from its name. If the name is invalid, this returns -EINVAL;
+ */
+int regs_query_register_offset(const char *name)
+{
+	const struct pt_regs_offset *roff;
+
+	for (roff = regoffset_table; roff->name != NULL; roff++)
+		if (!strcmp(roff->name, name))
+			return roff->offset;
+	return -EINVAL;
+}
+
+/**
+ * regs_within_kernel_stack() - check the address in the stack
+ * @regs:	pt_regs which contains kernel stack pointer.
+ * @addr:	address which is checked.
+ *
+ * regs_within_kernel_stack() checks @addr is within the kernel stack page(s).
+ * If @addr is within the kernel stack, it returns true. If not, returns false.
+ */
+static inline int regs_within_kernel_stack(struct pt_regs *regs,
+					   unsigned long addr)
+{
+	unsigned long ksp = kernel_stack_pointer(regs) + STACK_BIAS;
+	return ((addr & ~(THREAD_SIZE - 1))  ==
+		(ksp & ~(THREAD_SIZE - 1)));
+}
+
+/**
+ * regs_get_kernel_stack_nth() - get Nth entry of the stack
+ * @regs:	pt_regs which contains kernel stack pointer.
+ * @n:		stack entry number.
+ *
+ * regs_get_kernel_stack_nth() returns @n th entry of the kernel stack which
+ * is specified by @regs. If the @n th entry is NOT in the kernel stack,
+ * this returns 0.
+ */
+unsigned long regs_get_kernel_stack_nth(struct pt_regs *regs, unsigned int n)
+{
+	unsigned long ksp = kernel_stack_pointer(regs) + STACK_BIAS;
+	unsigned long *addr = (unsigned long *)ksp;
+	addr += n;
+	if (regs_within_kernel_stack(regs, (unsigned long)addr))
+		return *addr;
+	else
+		return 0;
 }

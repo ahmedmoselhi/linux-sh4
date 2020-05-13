@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * arch/arm/mach-ixp4xx/common-pci.c 
  *
@@ -8,11 +9,6 @@
  * Copyright (C) 2002 Intel Corporation.
  * Copyright (C) 2003 Greg Ungerer <gerg@snapgear.com>
  * Copyright (C) 2003-2004 MontaVista Software, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  */
 
 #include <linux/sched.h>
@@ -26,12 +22,12 @@
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/io.h>
+#include <linux/export.h>
 #include <asm/dma-mapping.h>
 
 #include <asm/cputype.h>
 #include <asm/irq.h>
-#include <asm/sizes.h>
-#include <asm/system.h>
+#include <linux/sizes.h>
 #include <asm/mach/pci.h>
 #include <mach/hardware.h>
 
@@ -43,18 +39,18 @@
 int (*ixp4xx_pci_read)(u32 addr, u32 cmd, u32* data);
 
 /*
- * Base address for PCI regsiter region
+ * Base address for PCI register region
  */
 unsigned long ixp4xx_pci_reg_base = 0;
 
 /*
  * PCI cfg an I/O routines are done by programming a 
  * command/byte enable register, and then read/writing
- * the data from a data regsiter. We need to ensure
+ * the data from a data register. We need to ensure
  * these transactions are atomic or we will end up
  * with corrupt data on the bus or in a driver.
  */
-static DEFINE_SPINLOCK(ixp4xx_pci_lock);
+static DEFINE_RAW_SPINLOCK(ixp4xx_pci_lock);
 
 /*
  * Read from PCI config space
@@ -62,10 +58,10 @@ static DEFINE_SPINLOCK(ixp4xx_pci_lock);
 static void crp_read(u32 ad_cbe, u32 *data)
 {
 	unsigned long flags;
-	spin_lock_irqsave(&ixp4xx_pci_lock, flags);
+	raw_spin_lock_irqsave(&ixp4xx_pci_lock, flags);
 	*PCI_CRP_AD_CBE = ad_cbe;
 	*data = *PCI_CRP_RDATA;
-	spin_unlock_irqrestore(&ixp4xx_pci_lock, flags);
+	raw_spin_unlock_irqrestore(&ixp4xx_pci_lock, flags);
 }
 
 /*
@@ -74,10 +70,10 @@ static void crp_read(u32 ad_cbe, u32 *data)
 static void crp_write(u32 ad_cbe, u32 data)
 { 
 	unsigned long flags;
-	spin_lock_irqsave(&ixp4xx_pci_lock, flags);
+	raw_spin_lock_irqsave(&ixp4xx_pci_lock, flags);
 	*PCI_CRP_AD_CBE = CRP_AD_CBE_WRITE | ad_cbe;
 	*PCI_CRP_WDATA = data;
-	spin_unlock_irqrestore(&ixp4xx_pci_lock, flags);
+	raw_spin_unlock_irqrestore(&ixp4xx_pci_lock, flags);
 }
 
 static inline int check_master_abort(void)
@@ -101,7 +97,7 @@ int ixp4xx_pci_read_errata(u32 addr, u32 cmd, u32* data)
 	int retval = 0;
 	int i;
 
-	spin_lock_irqsave(&ixp4xx_pci_lock, flags);
+	raw_spin_lock_irqsave(&ixp4xx_pci_lock, flags);
 
 	*PCI_NP_AD = addr;
 
@@ -118,7 +114,7 @@ int ixp4xx_pci_read_errata(u32 addr, u32 cmd, u32* data)
 	if(check_master_abort())
 		retval = 1;
 
-	spin_unlock_irqrestore(&ixp4xx_pci_lock, flags);
+	raw_spin_unlock_irqrestore(&ixp4xx_pci_lock, flags);
 	return retval;
 }
 
@@ -127,7 +123,7 @@ int ixp4xx_pci_read_no_errata(u32 addr, u32 cmd, u32* data)
 	unsigned long flags;
 	int retval = 0;
 
-	spin_lock_irqsave(&ixp4xx_pci_lock, flags);
+	raw_spin_lock_irqsave(&ixp4xx_pci_lock, flags);
 
 	*PCI_NP_AD = addr;
 
@@ -140,7 +136,7 @@ int ixp4xx_pci_read_no_errata(u32 addr, u32 cmd, u32* data)
 	if(check_master_abort())
 		retval = 1;
 
-	spin_unlock_irqrestore(&ixp4xx_pci_lock, flags);
+	raw_spin_unlock_irqrestore(&ixp4xx_pci_lock, flags);
 	return retval;
 }
 
@@ -149,7 +145,7 @@ int ixp4xx_pci_write(u32 addr, u32 cmd, u32 data)
 	unsigned long flags;
 	int retval = 0;
 
-	spin_lock_irqsave(&ixp4xx_pci_lock, flags);
+	raw_spin_lock_irqsave(&ixp4xx_pci_lock, flags);
 
 	*PCI_NP_AD = addr;
 
@@ -162,7 +158,7 @@ int ixp4xx_pci_write(u32 addr, u32 cmd, u32 data)
 	if(check_master_abort())
 		retval = 1;
 
-	spin_unlock_irqrestore(&ixp4xx_pci_lock, flags);
+	raw_spin_unlock_irqrestore(&ixp4xx_pci_lock, flags);
 	return retval;
 }
 
@@ -315,60 +311,15 @@ static int abort_handler(unsigned long addr, unsigned int fsr, struct pt_regs *r
 	return 0;
 }
 
-
-/*
- * Setup DMA mask to 64MB on PCI devices. Ignore all other devices.
- */
-static int ixp4xx_pci_platform_notify(struct device *dev)
-{
-	if(dev->bus == &pci_bus_type) {
-		*dev->dma_mask =  SZ_64M - 1;
-		dev->coherent_dma_mask = SZ_64M - 1;
-		dmabounce_register_dev(dev, 2048, 4096);
-	}
-	return 0;
-}
-
-static int ixp4xx_pci_platform_notify_remove(struct device *dev)
-{
-	if(dev->bus == &pci_bus_type) {
-		dmabounce_unregister_dev(dev);
-	}
-	return 0;
-}
-
-int dma_needs_bounce(struct device *dev, dma_addr_t dma_addr, size_t size)
-{
-	return (dev->bus == &pci_bus_type ) && ((dma_addr + size) >= SZ_64M);
-}
-
-/*
- * Only first 64MB of memory can be accessed via PCI.
- * We use GFP_DMA to allocate safe buffers to do map/unmap.
- * This is really ugly and we need a better way of specifying
- * DMA-capable regions of memory.
- */
-void __init ixp4xx_adjust_zones(int node, unsigned long *zone_size,
-	unsigned long *zhole_size)
-{
-	unsigned int sz = SZ_64M >> PAGE_SHIFT;
-
-	/*
-	 * Only adjust if > 64M on current system
-	 */
-	if (node || (zone_size[0] <= sz))
-		return;
-
-	zone_size[1] = zone_size[0] - sz;
-	zone_size[0] = sz;
-	zhole_size[1] = zhole_size[0];
-	zhole_size[0] = 0;
-}
-
 void __init ixp4xx_pci_preinit(void)
 {
 	unsigned long cpuid = read_cpuid_id();
 
+#ifdef CONFIG_IXP4XX_INDIRECT_PCI
+	pcibios_min_mem = 0x10000000; /* 1 GB of indirect PCI MMIO space */
+#else
+	pcibios_min_mem = 0x48000000; /* 64 MB of PCI MMIO space */
+#endif
 	/*
 	 * Determine which PCI read method to use.
 	 * Rev 0 IXP425 requires workaround.
@@ -382,7 +333,8 @@ void __init ixp4xx_pci_preinit(void)
 
 
 	/* hook in our fault handler for PCI errors */
-	hook_fault_code(16+6, abort_handler, SIGBUS, "imprecise external abort");
+	hook_fault_code(16+6, abort_handler, SIGBUS, 0,
+			"imprecise external abort");
 
 	pr_debug("setup PCI-AHB(inbound) and AHB-PCI(outbound) address mappings\n");
 
@@ -414,7 +366,8 @@ void __init ixp4xx_pci_preinit(void)
 		local_write_config(PCI_BASE_ADDRESS_0, 4, PHYS_OFFSET);
 		local_write_config(PCI_BASE_ADDRESS_1, 4, PHYS_OFFSET + SZ_16M);
 		local_write_config(PCI_BASE_ADDRESS_2, 4, PHYS_OFFSET + SZ_32M);
-		local_write_config(PCI_BASE_ADDRESS_3, 4, PHYS_OFFSET + SZ_48M);
+		local_write_config(PCI_BASE_ADDRESS_3, 4,
+					PHYS_OFFSET + SZ_32M + SZ_16M);
 
 		/*
 		 * Enable CSR window at 64 MiB to allow PCI masters
@@ -426,6 +379,7 @@ void __init ixp4xx_pci_preinit(void)
 		 * Enable the IO window to be way up high, at 0xfffffc00
 		 */
 		local_write_config(PCI_BASE_ADDRESS_5, 4, 0xfffffc01);
+		local_write_config(0x40, 4, 0x000080FF); /* No TRDY time limit */
 	} else {
 		printk("PCI: IXP4xx is target - No bus scan performed\n");
 	}
@@ -463,7 +417,7 @@ int ixp4xx_setup(int nr, struct pci_sys_data *sys)
 	if (nr >= 1)
 		return 0;
 
-	res = kzalloc(sizeof(*res) * 2, GFP_KERNEL);
+	res = kcalloc(2, sizeof(*res), GFP_KERNEL);
 	if (res == NULL) {
 		/* 
 		 * If we're out of memory this early, something is wrong,
@@ -481,57 +435,17 @@ int ixp4xx_setup(int nr, struct pci_sys_data *sys)
 
 	res[1].name = "PCI Memory Space";
 	res[1].start = PCIBIOS_MIN_MEM;
-#ifndef CONFIG_IXP4XX_INDIRECT_PCI
-	res[1].end = 0x4bffffff;
-#else
-	res[1].end = 0x4fffffff;
-#endif
+	res[1].end = PCIBIOS_MAX_MEM;
 	res[1].flags = IORESOURCE_MEM;
 
 	request_resource(&ioport_resource, &res[0]);
 	request_resource(&iomem_resource, &res[1]);
 
-	sys->resource[0] = &res[0];
-	sys->resource[1] = &res[1];
-	sys->resource[2] = NULL;
-
-	platform_notify = ixp4xx_pci_platform_notify;
-	platform_notify_remove = ixp4xx_pci_platform_notify_remove;
+	pci_add_resource_offset(&sys->resources, &res[0], sys->io_offset);
+	pci_add_resource_offset(&sys->resources, &res[1], sys->mem_offset);
 
 	return 1;
 }
 
-struct pci_bus * __devinit ixp4xx_scan_bus(int nr, struct pci_sys_data *sys)
-{
-	return pci_scan_bus(sys->busnr, &ixp4xx_ops, sys);
-}
-
-/*
- * We override these so we properly do dmabounce otherwise drivers
- * are able to set the dma_mask to 0xffffffff and we can no longer
- * trap bounces. :(
- *
- * We just return true on everyhing except for < 64MB in which case 
- * we will fail miseralby and die since we can't handle that case.
- */
-int
-pci_set_dma_mask(struct pci_dev *dev, u64 mask)
-{
-	if (mask >= SZ_64M - 1 )
-		return 0;
-
-	return -EIO;
-}
-    
-int
-pci_set_consistent_dma_mask(struct pci_dev *dev, u64 mask)
-{
-	if (mask >= SZ_64M - 1 )
-		return 0;
-
-	return -EIO;
-}
-
 EXPORT_SYMBOL(ixp4xx_pci_read);
 EXPORT_SYMBOL(ixp4xx_pci_write);
-

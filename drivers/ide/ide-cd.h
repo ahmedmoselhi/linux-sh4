@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *  Copyright (C) 1996-98  Erik Andersen
  *  Copyright (C) 1998-2000 Jens Axboe
@@ -20,11 +21,7 @@
 
 /************************************************************************/
 
-#define SECTOR_BITS 		9
-#ifndef SECTOR_SIZE
-#define SECTOR_SIZE		(1 << SECTOR_BITS)
-#endif
-#define SECTORS_PER_FRAME	(CD_FRAMESIZE >> SECTOR_BITS)
+#define SECTORS_PER_FRAME	(CD_FRAMESIZE >> SECTOR_SHIFT)
 #define SECTOR_BUFFER_SIZE	(CD_FRAMESIZE * 32)
 
 /* Capabilities Page size including 8 bytes of Mode Page Header */
@@ -101,17 +98,18 @@ void ide_cd_log_error(const char *, struct request *, struct request_sense *);
 
 /* ide-cd.c functions used by ide-cd_ioctl.c */
 int ide_cd_queue_pc(ide_drive_t *, const unsigned char *, int, void *,
-		    unsigned *, struct request_sense *, int, unsigned int);
-int ide_cd_read_toc(ide_drive_t *, struct request_sense *);
+		    unsigned *, struct scsi_sense_hdr *, int, req_flags_t);
+int ide_cd_read_toc(ide_drive_t *);
 int ide_cdrom_get_capabilities(ide_drive_t *, u8 *);
 void ide_cdrom_update_speed(ide_drive_t *, u8 *);
-int cdrom_check_status(ide_drive_t *, struct request_sense *);
+int cdrom_check_status(ide_drive_t *, struct scsi_sense_hdr *);
 
 /* ide-cd_ioctl.c */
 int ide_cdrom_open_real(struct cdrom_device_info *, int);
 void ide_cdrom_release_real(struct cdrom_device_info *);
 int ide_cdrom_drive_status(struct cdrom_device_info *, int);
-int ide_cdrom_check_media_change_real(struct cdrom_device_info *, int);
+unsigned int ide_cdrom_check_events_real(struct cdrom_device_info *,
+					 unsigned int clearing, int slot_nr);
 int ide_cdrom_tray_move(struct cdrom_device_info *, int);
 int ide_cdrom_lock_door(struct cdrom_device_info *, int);
 int ide_cdrom_select_speed(struct cdrom_device_info *, int);

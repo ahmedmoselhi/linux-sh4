@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* envctrl.c: Temperature and Fan monitoring on Machines providing it.
  *
  * Copyright (C) 1998  Eddie C. Dost  (ecd@skynet.be)
@@ -19,25 +20,22 @@
  */
 
 #include <linux/module.h>
-#include <linux/init.h>
 #include <linux/kthread.h>
 #include <linux/delay.h>
 #include <linux/ioport.h>
 #include <linux/miscdevice.h>
 #include <linux/kmod.h>
 #include <linux/reboot.h>
-#include <linux/smp_lock.h>
+#include <linux/slab.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/envctrl.h>
 #include <asm/io.h>
 
 #define DRIVER_NAME	"envctrl"
 #define PFX		DRIVER_NAME ": "
-
-#define ENVCTRL_MINOR	162
 
 #define PCF8584_ADDRESS	0x55
 
@@ -92,11 +90,11 @@
 #define ENVCTRL_CPUTEMP_MON			1    /* cpu temperature monitor */
 #define ENVCTRL_CPUVOLTAGE_MON	  	2    /* voltage monitor         */
 #define ENVCTRL_FANSTAT_MON  		3    /* fan status monitor      */
-#define ENVCTRL_ETHERTEMP_MON		4    /* ethernet temperarture */
+#define ENVCTRL_ETHERTEMP_MON		4    /* ethernet temperature */
 					     /* monitor                     */
 #define ENVCTRL_VOLTAGESTAT_MON	  	5    /* voltage status monitor  */
 #define ENVCTRL_MTHRBDTEMP_MON		6    /* motherboard temperature */
-#define ENVCTRL_SCSITEMP_MON		7    /* scsi temperarture */
+#define ENVCTRL_SCSITEMP_MON		7    /* scsi temperature */
 #define ENVCTRL_GLOBALADDR_MON		8    /* global address */
 
 /* Child device type.
@@ -353,7 +351,7 @@ static int envctrl_i2c_data_translate(unsigned char data, int translate_type,
 
 	default:
 		break;
-	};
+	}
 
 	return len;
 }
@@ -644,7 +642,7 @@ envctrl_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 	default:
 		break;
 
-	};
+	}
 
 	return ret;
 }
@@ -687,7 +685,7 @@ envctrl_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 
 	default:
 		return -EINVAL;
-	};
+	}
 
 	return 0;
 }
@@ -698,7 +696,6 @@ envctrl_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 static int
 envctrl_open(struct inode *inode, struct file *file)
 {
-	cycle_kernel_lock();
 	file->private_data = NULL;
 	return 0;
 }
@@ -716,11 +713,10 @@ static const struct file_operations envctrl_fops = {
 	.owner =		THIS_MODULE,
 	.read =			envctrl_read,
 	.unlocked_ioctl =	envctrl_ioctl,
-#ifdef CONFIG_COMPAT
-	.compat_ioctl =		envctrl_ioctl,
-#endif
+	.compat_ioctl =		compat_ptr_ioctl,
 	.open =			envctrl_open,
 	.release =		envctrl_release,
+	.llseek =		noop_llseek,
 };	
 
 static struct miscdevice envctrl_dev = {
@@ -907,12 +903,14 @@ static void envctrl_init_i2c_child(struct device_node *dp,
 		int len;
 
 		root_node = of_find_node_by_path("/");
-		if (!strcmp(root_node->name, "SUNW,UltraSPARC-IIi-cEngine")) {
+		if (of_node_name_eq(root_node, "SUNW,UltraSPARC-IIi-cEngine")) {
 			for (len = 0; len < PCF8584_MAX_CHANNELS; ++len) {
 				pchild->mon_type[len] = ENVCTRL_NOMON;
 			}
+			of_node_put(root_node);
 			return;
 		}
+		of_node_put(root_node);
 	}
 
 	/* Get the monitor channels. */
@@ -947,7 +945,7 @@ static void envctrl_init_i2c_child(struct device_node *dp,
 
 		default:
 			break;
-		};
+		}
 	}
 }
 
@@ -971,18 +969,13 @@ static struct i2c_child_t *envctrl_get_i2c_child(unsigned char mon_type)
 static void envctrl_do_shutdown(void)
 {
 	static int inprog = 0;
-	int ret;
 
 	if (inprog != 0)
 		return;
 
 	inprog = 1;
 	printk(KERN_CRIT "kenvctrld: WARNING: Shutting down the system now.\n");
-	ret = orderly_poweroff(true);
-	if (ret < 0) {
-		printk(KERN_CRIT "kenvctrld: WARNING: system shutdown failed!\n"); 
-		inprog = 0;  /* unlikely to succeed, but we could try again */
-	}
+	orderly_poweroff(true);
 }
 
 static struct task_struct *kenvctrld_task;
@@ -1028,8 +1021,7 @@ static int kenvctrld(void *__unused)
 	return 0;
 }
 
-static int __devinit envctrl_probe(struct of_device *op,
-				   const struct of_device_id *match)
+static int envctrl_probe(struct platform_device *op)
 {
 	struct device_node *dp;
 	int index, err;
@@ -1042,12 +1034,12 @@ static int __devinit envctrl_probe(struct of_device *op,
 		return -ENOMEM;
 
 	index = 0;
-	dp = op->node->child;
+	dp = op->dev.of_node->child;
 	while (dp) {
-		if (!strcmp(dp->name, "gpio")) {
+		if (of_node_name_eq(dp, "gpio")) {
 			i2c_childlist[index].i2ctype = I2C_GPIO;
 			envctrl_init_i2c_child(dp, &(i2c_childlist[index++]));
-		} else if (!strcmp(dp->name, "adc")) {
+		} else if (of_node_name_eq(dp, "adc")) {
 			i2c_childlist[index].i2ctype = I2C_ADC;
 			envctrl_init_i2c_child(dp, &(i2c_childlist[index++]));
 		}
@@ -1105,7 +1097,7 @@ out_iounmap:
 	return err;
 }
 
-static int __devexit envctrl_remove(struct of_device *op)
+static int envctrl_remove(struct platform_device *op)
 {
 	int index;
 
@@ -1129,23 +1121,15 @@ static const struct of_device_id envctrl_match[] = {
 };
 MODULE_DEVICE_TABLE(of, envctrl_match);
 
-static struct of_platform_driver envctrl_driver = {
-	.name		= DRIVER_NAME,
-	.match_table	= envctrl_match,
+static struct platform_driver envctrl_driver = {
+	.driver = {
+		.name = DRIVER_NAME,
+		.of_match_table = envctrl_match,
+	},
 	.probe		= envctrl_probe,
-	.remove		= __devexit_p(envctrl_remove),
+	.remove		= envctrl_remove,
 };
 
-static int __init envctrl_init(void)
-{
-	return of_register_driver(&envctrl_driver, &of_bus_type);
-}
+module_platform_driver(envctrl_driver);
 
-static void __exit envctrl_exit(void)
-{
-	of_unregister_driver(&envctrl_driver);
-}
-
-module_init(envctrl_init);
-module_exit(envctrl_exit);
 MODULE_LICENSE("GPL");

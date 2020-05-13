@@ -1,11 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *
  * Copyright (C) 2008-2009 ST-Ericsson AB
- * License terms: GNU General Public License (GPL) version 2
  *
  * Author: Rickard Andersson <rickard.andersson@stericsson.com>
  * Author: Linus Walleij <linus.walleij@stericsson.com>
- *
  */
 #ifndef __ASMARM_TCM_H
 #define __ASMARM_TCM_H
@@ -27,5 +26,7 @@
 
 void *tcm_alloc(size_t len);
 void tcm_free(void *addr, size_t len);
+bool tcm_dtcm_present(void);
+bool tcm_itcm_present(void);
 
 #endif

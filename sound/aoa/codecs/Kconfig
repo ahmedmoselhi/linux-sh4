@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 config SND_AOA_ONYX
 	tristate "support Onyx chip"
 	select I2C
@@ -6,14 +7,6 @@ config SND_AOA_ONYX
 	This option enables support for the Onyx (pcm3052)
 	codec chip found in the latest Apple machines
 	(most of those with digital audio output).
-
-#config SND_AOA_TOPAZ
-#	tristate "support Topaz chips"
-#	---help---
-#	This option enables support for the Topaz (CS84xx)
-#	codec chips found in the latest Apple machines,
-#	these chips do the digital input and output on
-#	some PowerMacs.
 
 config SND_AOA_TAS
 	tristate "support TAS chips"

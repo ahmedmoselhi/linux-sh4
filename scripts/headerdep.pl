@@ -1,4 +1,5 @@
-#! /usr/bin/perl
+#! /usr/bin/env perl
+# SPDX-License-Identifier: GPL-2.0
 #
 # Detect cycles in the header file dependency graph
 # Vegard Nossum <vegardno@ifi.uio.no>
@@ -80,8 +81,7 @@ sub search {
 		my $path = "$i/$filename";
 		return $path if -f $path;
 	}
-
-	return undef;
+	return;
 }
 
 sub parse_all {

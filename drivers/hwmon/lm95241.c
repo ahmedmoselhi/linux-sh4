@@ -1,46 +1,27 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * lm95241.c - Part of lm_sensors, Linux kernel modules for hardware
- *             monitoring
- * Copyright (C) 2008 Davide Rizzo <elpa-rizzo@gmail.com>
+ * Copyright (C) 2008, 2010 Davide Rizzo <elpa.rizzo@gmail.com>
  *
- * Based on the max1619 driver. The LM95241 is a sensor chip made by National
- *   Semiconductors.
- * It reports up to three temperatures (its own plus up to
- * two external ones). Complete datasheet can be
- * obtained from National's website at:
+ * The LM95241 is a sensor chip made by National Semiconductors.
+ * It reports up to three temperatures (its own plus up to two external ones).
+ * Complete datasheet can be obtained from National's website at:
  *   http://www.national.com/ds.cgi/LM/LM95241.pdf
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
-#include <linux/module.h>
-#include <linux/init.h>
-#include <linux/slab.h>
-#include <linux/jiffies.h>
-#include <linux/i2c.h>
-#include <linux/hwmon.h>
-#include <linux/hwmon-sysfs.h>
+#include <linux/bitops.h>
 #include <linux/err.h>
+#include <linux/i2c.h>
+#include <linux/init.h>
+#include <linux/jiffies.h>
+#include <linux/hwmon.h>
+#include <linux/module.h>
 #include <linux/mutex.h>
-#include <linux/sysfs.h>
+#include <linux/slab.h>
+
+#define DEVNAME "lm95241"
 
 static const unsigned short normal_i2c[] = {
-	0x19, 0x2a, 0x2b, I2C_CLIENT_END};
-
-/* Insmod parameters */
-I2C_CLIENT_INSMOD_1(lm95241);
+	0x19, 0x2a, 0x2b, I2C_CLIENT_END };
 
 /* LM95241 registers */
 #define LM95241_REG_R_MAN_ID		0xFE
@@ -49,7 +30,7 @@ I2C_CLIENT_INSMOD_1(lm95241);
 #define LM95241_REG_RW_CONFIG		0x03
 #define LM95241_REG_RW_REM_FILTER	0x06
 #define LM95241_REG_RW_TRUTHERM		0x07
-#define LM95241_REG_W_ONE_SHOT  	0x0F
+#define LM95241_REG_W_ONE_SHOT		0x0F
 #define LM95241_REG_R_LOCAL_TEMPH	0x10
 #define LM95241_REG_R_REMOTE1_TEMPH	0x11
 #define LM95241_REG_R_REMOTE2_TEMPH	0x12
@@ -59,410 +40,83 @@ I2C_CLIENT_INSMOD_1(lm95241);
 #define LM95241_REG_RW_REMOTE_MODEL	0x30
 
 /* LM95241 specific bitfields */
-#define CFG_STOP 0x40
-#define CFG_CR0076 0x00
-#define CFG_CR0182 0x10
-#define CFG_CR1000 0x20
-#define CFG_CR2700 0x30
-#define R1MS_SHIFT 0
-#define R2MS_SHIFT 2
-#define R1MS_MASK (0x01 << (R1MS_SHIFT))
-#define R2MS_MASK (0x01 << (R2MS_SHIFT))
-#define R1DF_SHIFT 1
-#define R2DF_SHIFT 2
-#define R1DF_MASK (0x01 << (R1DF_SHIFT))
-#define R2DF_MASK (0x01 << (R2DF_SHIFT))
-#define R1FE_MASK 0x01
-#define R2FE_MASK 0x05
-#define TT1_SHIFT 0
-#define TT2_SHIFT 4
-#define TT_OFF 0
-#define TT_ON 1
-#define TT_MASK 7
-#define MANUFACTURER_ID 0x01
-#define DEFAULT_REVISION 0xA4
+#define CFG_STOP	BIT(6)
+#define CFG_CR0076	0x00
+#define CFG_CR0182	BIT(4)
+#define CFG_CR1000	BIT(5)
+#define CFG_CR2700	(BIT(4) | BIT(5))
+#define CFG_CRMASK	(BIT(4) | BIT(5))
+#define R1MS_MASK	BIT(0)
+#define R2MS_MASK	BIT(2)
+#define R1DF_MASK	BIT(1)
+#define R2DF_MASK	BIT(2)
+#define R1FE_MASK	BIT(0)
+#define R2FE_MASK	BIT(2)
+#define R1DM		BIT(0)
+#define R2DM		BIT(1)
+#define TT1_SHIFT	0
+#define TT2_SHIFT	4
+#define TT_OFF		0
+#define TT_ON		1
+#define TT_MASK		7
+#define NATSEMI_MAN_ID	0x01
+#define LM95231_CHIP_ID	0xA1
+#define LM95241_CHIP_ID	0xA4
 
-/* Conversions and various macros */
-#define TEMP_FROM_REG(val_h, val_l) (((val_h) & 0x80 ? (val_h) - 0x100 : \
-    (val_h)) * 1000 + (val_l) * 1000 / 256)
-
-/* Functions declaration */
-static void lm95241_init_client(struct i2c_client *client);
-static struct lm95241_data *lm95241_update_device(struct device *dev);
+static const u8 lm95241_reg_address[] = {
+	LM95241_REG_R_LOCAL_TEMPH,
+	LM95241_REG_R_LOCAL_TEMPL,
+	LM95241_REG_R_REMOTE1_TEMPH,
+	LM95241_REG_R_REMOTE1_TEMPL,
+	LM95241_REG_R_REMOTE2_TEMPH,
+	LM95241_REG_R_REMOTE2_TEMPL
+};
 
 /* Client data (each client gets its own) */
 struct lm95241_data {
-	struct device *hwmon_dev;
+	struct i2c_client *client;
 	struct mutex update_lock;
-	unsigned long last_updated, rate; /* in jiffies */
-	char valid; /* zero until following fields are valid */
+	unsigned long last_updated;	/* in jiffies */
+	unsigned long interval;		/* in milli-seconds */
+	char valid;		/* zero until following fields are valid */
 	/* registers values */
-	u8 local_h, local_l; /* local */
-	u8 remote1_h, remote1_l; /* remote1 */
-	u8 remote2_h, remote2_l; /* remote2 */
-	u8 config, model, trutherm;
+	u8 temp[ARRAY_SIZE(lm95241_reg_address)];
+	u8 status, config, model, trutherm;
 };
 
-/* Sysfs stuff */
-#define show_temp(value) \
-static ssize_t show_##value(struct device *dev, \
-    struct device_attribute *attr, char *buf) \
-{ \
-	struct lm95241_data *data = lm95241_update_device(dev); \
-	snprintf(buf, PAGE_SIZE - 1, "%d\n", \
-		TEMP_FROM_REG(data->value##_h, data->value##_l)); \
-	return strlen(buf); \
-}
-show_temp(local);
-show_temp(remote1);
-show_temp(remote2);
-
-static ssize_t show_rate(struct device *dev, struct device_attribute *attr,
-			 char *buf)
+/* Conversions */
+static int temp_from_reg_signed(u8 val_h, u8 val_l)
 {
-	struct lm95241_data *data = lm95241_update_device(dev);
-
-	snprintf(buf, PAGE_SIZE - 1, "%lu\n", 1000 * data->rate / HZ);
-	return strlen(buf);
+	s16 val_hl = (val_h << 8) | val_l;
+	return val_hl * 1000 / 256;
 }
 
-static ssize_t set_rate(struct device *dev, struct device_attribute *attr,
-			const char *buf, size_t count)
+static int temp_from_reg_unsigned(u8 val_h, u8 val_l)
 {
-	struct i2c_client *client = to_i2c_client(dev);
-	struct lm95241_data *data = i2c_get_clientdata(client);
-
-	strict_strtol(buf, 10, &data->rate);
-	data->rate = data->rate * HZ / 1000;
-
-	return count;
-}
-
-#define show_type(flag) \
-static ssize_t show_type##flag(struct device *dev, \
-				   struct device_attribute *attr, char *buf) \
-{ \
-	struct i2c_client *client = to_i2c_client(dev); \
-	struct lm95241_data *data = i2c_get_clientdata(client); \
-\
-	snprintf(buf, PAGE_SIZE - 1, \
-		data->model & R##flag##MS_MASK ? "1\n" : "2\n"); \
-	return strlen(buf); \
-}
-show_type(1);
-show_type(2);
-
-#define show_min(flag) \
-static ssize_t show_min##flag(struct device *dev, \
-    struct device_attribute *attr, char *buf) \
-{ \
-	struct i2c_client *client = to_i2c_client(dev); \
-	struct lm95241_data *data = i2c_get_clientdata(client); \
-\
-	snprintf(buf, PAGE_SIZE - 1, \
-		data->config & R##flag##DF_MASK ?	\
-		"-127000\n" : "0\n"); \
-	return strlen(buf); \
-}
-show_min(1);
-show_min(2);
-
-#define show_max(flag) \
-static ssize_t show_max##flag(struct device *dev, \
-    struct device_attribute *attr, char *buf) \
-{ \
-	struct i2c_client *client = to_i2c_client(dev); \
-	struct lm95241_data *data = i2c_get_clientdata(client); \
-\
-	snprintf(buf, PAGE_SIZE - 1, \
-		data->config & R##flag##DF_MASK ? \
-		"127000\n" : "255000\n"); \
-	return strlen(buf); \
-}
-show_max(1);
-show_max(2);
-
-#define set_type(flag) \
-static ssize_t set_type##flag(struct device *dev, \
-				  struct device_attribute *attr, \
-				  const char *buf, size_t count) \
-{ \
-	struct i2c_client *client = to_i2c_client(dev); \
-	struct lm95241_data *data = i2c_get_clientdata(client); \
-\
-	long val; \
-	strict_strtol(buf, 10, &val); \
-\
-	if ((val == 1) || (val == 2)) { \
-\
-		mutex_lock(&data->update_lock); \
-\
-		data->trutherm &= ~(TT_MASK << TT##flag##_SHIFT); \
-		if (val == 1) { \
-			data->model |= R##flag##MS_MASK; \
-			data->trutherm |= (TT_ON << TT##flag##_SHIFT); \
-		} \
-		else { \
-			data->model &= ~R##flag##MS_MASK; \
-			data->trutherm |= (TT_OFF << TT##flag##_SHIFT); \
-		} \
-\
-		data->valid = 0; \
-\
-		i2c_smbus_write_byte_data(client, LM95241_REG_RW_REMOTE_MODEL, \
-					  data->model); \
-		i2c_smbus_write_byte_data(client, LM95241_REG_RW_TRUTHERM, \
-					  data->trutherm); \
-\
-		mutex_unlock(&data->update_lock); \
-\
-	} \
-	return count; \
-}
-set_type(1);
-set_type(2);
-
-#define set_min(flag) \
-static ssize_t set_min##flag(struct device *dev, \
-	struct device_attribute *devattr, const char *buf, size_t count) \
-{ \
-	struct i2c_client *client = to_i2c_client(dev); \
-	struct lm95241_data *data = i2c_get_clientdata(client); \
-\
-	long val; \
-	strict_strtol(buf, 10, &val); \
-\
-	mutex_lock(&data->update_lock); \
-\
-	if (val < 0) \
-		data->config |= R##flag##DF_MASK; \
-	else \
-		data->config &= ~R##flag##DF_MASK; \
-\
-	data->valid = 0; \
-\
-	i2c_smbus_write_byte_data(client, LM95241_REG_RW_CONFIG, \
-		data->config); \
-\
-	mutex_unlock(&data->update_lock); \
-\
-	return count; \
-}
-set_min(1);
-set_min(2);
-
-#define set_max(flag) \
-static ssize_t set_max##flag(struct device *dev, \
-	struct device_attribute *devattr, const char *buf, size_t count) \
-{ \
-	struct i2c_client *client = to_i2c_client(dev); \
-	struct lm95241_data *data = i2c_get_clientdata(client); \
-\
-	long val; \
-	strict_strtol(buf, 10, &val); \
-\
-	mutex_lock(&data->update_lock); \
-\
-	if (val <= 127000) \
-		data->config |= R##flag##DF_MASK; \
-	else \
-		data->config &= ~R##flag##DF_MASK; \
-\
-	data->valid = 0; \
-\
-	i2c_smbus_write_byte_data(client, LM95241_REG_RW_CONFIG, \
-		data->config); \
-\
-	mutex_unlock(&data->update_lock); \
-\
-	return count; \
-}
-set_max(1);
-set_max(2);
-
-static DEVICE_ATTR(temp1_input, S_IRUGO, show_local, NULL);
-static DEVICE_ATTR(temp2_input, S_IRUGO, show_remote1, NULL);
-static DEVICE_ATTR(temp3_input, S_IRUGO, show_remote2, NULL);
-static DEVICE_ATTR(temp2_type, S_IWUSR | S_IRUGO, show_type1, set_type1);
-static DEVICE_ATTR(temp3_type, S_IWUSR | S_IRUGO, show_type2, set_type2);
-static DEVICE_ATTR(temp2_min, S_IWUSR | S_IRUGO, show_min1, set_min1);
-static DEVICE_ATTR(temp3_min, S_IWUSR | S_IRUGO, show_min2, set_min2);
-static DEVICE_ATTR(temp2_max, S_IWUSR | S_IRUGO, show_max1, set_max1);
-static DEVICE_ATTR(temp3_max, S_IWUSR | S_IRUGO, show_max2, set_max2);
-static DEVICE_ATTR(rate, S_IWUSR | S_IRUGO, show_rate, set_rate);
-
-static struct attribute *lm95241_attributes[] = {
-	&dev_attr_temp1_input.attr,
-	&dev_attr_temp2_input.attr,
-	&dev_attr_temp3_input.attr,
-	&dev_attr_temp2_type.attr,
-	&dev_attr_temp3_type.attr,
-	&dev_attr_temp2_min.attr,
-	&dev_attr_temp3_min.attr,
-	&dev_attr_temp2_max.attr,
-	&dev_attr_temp3_max.attr,
-	&dev_attr_rate.attr,
-	NULL
-};
-
-static const struct attribute_group lm95241_group = {
-	.attrs = lm95241_attributes,
-};
-
-/* Return 0 if detection is successful, -ENODEV otherwise */
-static int lm95241_detect(struct i2c_client *new_client, int kind,
-			  struct i2c_board_info *info)
-{
-	struct i2c_adapter *adapter = new_client->adapter;
-	int address = new_client->addr;
-	const char *name = "";
-
-	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE_DATA))
-		return -ENODEV;
-
-	/*
-	 * Now we do the remaining detection. A negative kind means that
-	 * the driver was loaded with no force parameter (default), so we
-	 * must both detect and identify the chip. A zero kind means that
-	 * the driver was loaded with the force parameter, the detection
-	 * step shall be skipped. A positive kind means that the driver
-	 * was loaded with the force parameter and a given kind of chip is
-	 * requested, so both the detection and the identification steps
-	 * are skipped.
-	 */
-	if (kind < 0) {	/* detection */
-		if ((i2c_smbus_read_byte_data(new_client, LM95241_REG_R_MAN_ID)
-		     != MANUFACTURER_ID)
-		|| (i2c_smbus_read_byte_data(new_client, LM95241_REG_R_CHIP_ID)
-		    < DEFAULT_REVISION)) {
-			dev_dbg(&adapter->dev,
-				"LM95241 detection failed at 0x%02x.\n",
-				address);
-			return -ENODEV;
-		}
-	}
-
-	if (kind <= 0) { /* identification */
-		if ((i2c_smbus_read_byte_data(new_client, LM95241_REG_R_MAN_ID)
-		     == MANUFACTURER_ID)
-		&& (i2c_smbus_read_byte_data(new_client, LM95241_REG_R_CHIP_ID)
-		    >= DEFAULT_REVISION)) {
-
-			kind = lm95241;
-
-			if (kind <= 0) { /* identification failed */
-				dev_info(&adapter->dev, "Unsupported chip\n");
-				return -ENODEV;
-			}
-		}
-	}
-
-	/* Fill the i2c board info */
-	if (kind == lm95241)
-		name = "lm95241";
-	strlcpy(info->type, name, I2C_NAME_SIZE);
-	return 0;
-}
-
-static int lm95241_probe(struct i2c_client *new_client,
-			 const struct i2c_device_id *id)
-{
-	struct lm95241_data *data;
-	int err;
-
-	data = kzalloc(sizeof(struct lm95241_data), GFP_KERNEL);
-	if (!data) {
-		err = -ENOMEM;
-		goto exit;
-	}
-
-	i2c_set_clientdata(new_client, data);
-	mutex_init(&data->update_lock);
-
-	/* Initialize the LM95241 chip */
-	lm95241_init_client(new_client);
-
-	/* Register sysfs hooks */
-	err = sysfs_create_group(&new_client->dev.kobj, &lm95241_group);
-	if (err)
-		goto exit_free;
-
-	data->hwmon_dev = hwmon_device_register(&new_client->dev);
-	if (IS_ERR(data->hwmon_dev)) {
-		err = PTR_ERR(data->hwmon_dev);
-		goto exit_remove_files;
-	}
-
-	return 0;
-
-exit_remove_files:
-	sysfs_remove_group(&new_client->dev.kobj, &lm95241_group);
-exit_free:
-	kfree(data);
-exit:
-	return err;
-}
-
-static void lm95241_init_client(struct i2c_client *client)
-{
-	struct lm95241_data *data = i2c_get_clientdata(client);
-
-	data->rate = HZ;    /* 1 sec default */
-	data->valid = 0;
-	data->config = CFG_CR0076;
-	data->model = 0;
-	data->trutherm = (TT_OFF << TT1_SHIFT) | (TT_OFF << TT2_SHIFT);
-
-	i2c_smbus_write_byte_data(client, LM95241_REG_RW_CONFIG,
-				  data->config);
-	i2c_smbus_write_byte_data(client, LM95241_REG_RW_REM_FILTER,
-				  R1FE_MASK | R2FE_MASK);
-	i2c_smbus_write_byte_data(client, LM95241_REG_RW_TRUTHERM,
-				  data->trutherm);
-	i2c_smbus_write_byte_data(client, LM95241_REG_RW_REMOTE_MODEL,
-				  data->model);
-}
-
-static int lm95241_remove(struct i2c_client *client)
-{
-	struct lm95241_data *data = i2c_get_clientdata(client);
-
-	hwmon_device_unregister(data->hwmon_dev);
-	sysfs_remove_group(&client->dev.kobj, &lm95241_group);
-
-	i2c_set_clientdata(client, NULL);
-	kfree(data);
-	return 0;
+	u16 val_hl = (val_h << 8) | val_l;
+	return val_hl * 1000 / 256;
 }
 
 static struct lm95241_data *lm95241_update_device(struct device *dev)
 {
-	struct i2c_client *client = to_i2c_client(dev);
-	struct lm95241_data *data = i2c_get_clientdata(client);
+	struct lm95241_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
 
 	mutex_lock(&data->update_lock);
 
-	if (time_after(jiffies, data->last_updated + data->rate) ||
+	if (time_after(jiffies, data->last_updated
+		       + msecs_to_jiffies(data->interval)) ||
 	    !data->valid) {
-		dev_dbg(&client->dev, "Updating lm95241 data.\n");
-		data->local_h =
-			i2c_smbus_read_byte_data(client,
-						 LM95241_REG_R_LOCAL_TEMPH);
-		data->local_l =
-			i2c_smbus_read_byte_data(client,
-						 LM95241_REG_R_LOCAL_TEMPL);
-		data->remote1_h =
-			i2c_smbus_read_byte_data(client,
-						 LM95241_REG_R_REMOTE1_TEMPH);
-		data->remote1_l =
-			i2c_smbus_read_byte_data(client,
-						 LM95241_REG_R_REMOTE1_TEMPL);
-		data->remote2_h =
-			i2c_smbus_read_byte_data(client,
-						 LM95241_REG_R_REMOTE2_TEMPH);
-		data->remote2_l =
-			i2c_smbus_read_byte_data(client,
-						 LM95241_REG_R_REMOTE2_TEMPL);
+		int i;
+
+		dev_dbg(dev, "Updating lm95241 data.\n");
+		for (i = 0; i < ARRAY_SIZE(lm95241_reg_address); i++)
+			data->temp[i]
+			  = i2c_smbus_read_byte_data(client,
+						     lm95241_reg_address[i]);
+
+		data->status = i2c_smbus_read_byte_data(client,
+							LM95241_REG_R_STATUS);
 		data->last_updated = jiffies;
 		data->valid = 1;
 	}
@@ -472,9 +126,340 @@ static struct lm95241_data *lm95241_update_device(struct device *dev)
 	return data;
 }
 
+static int lm95241_read_chip(struct device *dev, u32 attr, int channel,
+			     long *val)
+{
+	struct lm95241_data *data = dev_get_drvdata(dev);
+
+	switch (attr) {
+	case hwmon_chip_update_interval:
+		*val = data->interval;
+		return 0;
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
+static int lm95241_read_temp(struct device *dev, u32 attr, int channel,
+			     long *val)
+{
+	struct lm95241_data *data = lm95241_update_device(dev);
+
+	switch (attr) {
+	case hwmon_temp_input:
+		if (!channel || (data->config & BIT(channel - 1)))
+			*val = temp_from_reg_signed(data->temp[channel * 2],
+						data->temp[channel * 2 + 1]);
+		else
+			*val = temp_from_reg_unsigned(data->temp[channel * 2],
+						data->temp[channel * 2 + 1]);
+		return 0;
+	case hwmon_temp_min:
+		if (channel == 1)
+			*val = (data->config & R1DF_MASK) ? -128000 : 0;
+		else
+			*val = (data->config & R2DF_MASK) ? -128000 : 0;
+		return 0;
+	case hwmon_temp_max:
+		if (channel == 1)
+			*val = (data->config & R1DF_MASK) ? 127875 : 255875;
+		else
+			*val = (data->config & R2DF_MASK) ? 127875 : 255875;
+		return 0;
+	case hwmon_temp_type:
+		if (channel == 1)
+			*val = (data->model & R1MS_MASK) ? 1 : 2;
+		else
+			*val = (data->model & R2MS_MASK) ? 1 : 2;
+		return 0;
+	case hwmon_temp_fault:
+		if (channel == 1)
+			*val = !!(data->status & R1DM);
+		else
+			*val = !!(data->status & R2DM);
+		return 0;
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
+static int lm95241_read(struct device *dev, enum hwmon_sensor_types type,
+			u32 attr, int channel, long *val)
+{
+	switch (type) {
+	case hwmon_chip:
+		return lm95241_read_chip(dev, attr, channel, val);
+	case hwmon_temp:
+		return lm95241_read_temp(dev, attr, channel, val);
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
+static int lm95241_write_chip(struct device *dev, u32 attr, int channel,
+			      long val)
+{
+	struct lm95241_data *data = dev_get_drvdata(dev);
+	int convrate;
+	u8 config;
+	int ret;
+
+	mutex_lock(&data->update_lock);
+
+	switch (attr) {
+	case hwmon_chip_update_interval:
+		config = data->config & ~CFG_CRMASK;
+		if (val < 130) {
+			convrate = 76;
+			config |= CFG_CR0076;
+		} else if (val < 590) {
+			convrate = 182;
+			config |= CFG_CR0182;
+		} else if (val < 1850) {
+			convrate = 1000;
+			config |= CFG_CR1000;
+		} else {
+			convrate = 2700;
+			config |= CFG_CR2700;
+		}
+		data->interval = convrate;
+		data->config = config;
+		ret = i2c_smbus_write_byte_data(data->client,
+						LM95241_REG_RW_CONFIG, config);
+		break;
+	default:
+		ret = -EOPNOTSUPP;
+		break;
+	}
+	mutex_unlock(&data->update_lock);
+	return ret;
+}
+
+static int lm95241_write_temp(struct device *dev, u32 attr, int channel,
+			      long val)
+{
+	struct lm95241_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
+	int ret;
+
+	mutex_lock(&data->update_lock);
+
+	switch (attr) {
+	case hwmon_temp_min:
+		if (channel == 1) {
+			if (val < 0)
+				data->config |= R1DF_MASK;
+			else
+				data->config &= ~R1DF_MASK;
+		} else {
+			if (val < 0)
+				data->config |= R2DF_MASK;
+			else
+				data->config &= ~R2DF_MASK;
+		}
+		data->valid = 0;
+		ret = i2c_smbus_write_byte_data(client, LM95241_REG_RW_CONFIG,
+						data->config);
+		break;
+	case hwmon_temp_max:
+		if (channel == 1) {
+			if (val <= 127875)
+				data->config |= R1DF_MASK;
+			else
+				data->config &= ~R1DF_MASK;
+		} else {
+			if (val <= 127875)
+				data->config |= R2DF_MASK;
+			else
+				data->config &= ~R2DF_MASK;
+		}
+		data->valid = 0;
+		ret = i2c_smbus_write_byte_data(client, LM95241_REG_RW_CONFIG,
+						data->config);
+		break;
+	case hwmon_temp_type:
+		if (val != 1 && val != 2) {
+			ret = -EINVAL;
+			break;
+		}
+		if (channel == 1) {
+			data->trutherm &= ~(TT_MASK << TT1_SHIFT);
+			if (val == 1) {
+				data->model |= R1MS_MASK;
+				data->trutherm |= (TT_ON << TT1_SHIFT);
+			} else {
+				data->model &= ~R1MS_MASK;
+				data->trutherm |= (TT_OFF << TT1_SHIFT);
+			}
+		} else {
+			data->trutherm &= ~(TT_MASK << TT2_SHIFT);
+			if (val == 1) {
+				data->model |= R2MS_MASK;
+				data->trutherm |= (TT_ON << TT2_SHIFT);
+			} else {
+				data->model &= ~R2MS_MASK;
+				data->trutherm |= (TT_OFF << TT2_SHIFT);
+			}
+		}
+		ret = i2c_smbus_write_byte_data(client,
+						LM95241_REG_RW_REMOTE_MODEL,
+						data->model);
+		if (ret < 0)
+			break;
+		ret = i2c_smbus_write_byte_data(client, LM95241_REG_RW_TRUTHERM,
+						data->trutherm);
+		break;
+	default:
+		ret = -EOPNOTSUPP;
+		break;
+	}
+
+	mutex_unlock(&data->update_lock);
+
+	return ret;
+}
+
+static int lm95241_write(struct device *dev, enum hwmon_sensor_types type,
+			 u32 attr, int channel, long val)
+{
+	switch (type) {
+	case hwmon_chip:
+		return lm95241_write_chip(dev, attr, channel, val);
+	case hwmon_temp:
+		return lm95241_write_temp(dev, attr, channel, val);
+	default:
+		return -EOPNOTSUPP;
+	}
+}
+
+static umode_t lm95241_is_visible(const void *data,
+				  enum hwmon_sensor_types type,
+				  u32 attr, int channel)
+{
+	switch (type) {
+	case hwmon_chip:
+		switch (attr) {
+		case hwmon_chip_update_interval:
+			return 0644;
+		}
+		break;
+	case hwmon_temp:
+		switch (attr) {
+		case hwmon_temp_input:
+			return 0444;
+		case hwmon_temp_fault:
+			return 0444;
+		case hwmon_temp_min:
+		case hwmon_temp_max:
+		case hwmon_temp_type:
+			return 0644;
+		}
+		break;
+	default:
+		break;
+	}
+	return 0;
+}
+
+/* Return 0 if detection is successful, -ENODEV otherwise */
+static int lm95241_detect(struct i2c_client *new_client,
+			  struct i2c_board_info *info)
+{
+	struct i2c_adapter *adapter = new_client->adapter;
+	const char *name;
+	int mfg_id, chip_id;
+
+	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE_DATA))
+		return -ENODEV;
+
+	mfg_id = i2c_smbus_read_byte_data(new_client, LM95241_REG_R_MAN_ID);
+	if (mfg_id != NATSEMI_MAN_ID)
+		return -ENODEV;
+
+	chip_id = i2c_smbus_read_byte_data(new_client, LM95241_REG_R_CHIP_ID);
+	switch (chip_id) {
+	case LM95231_CHIP_ID:
+		name = "lm95231";
+		break;
+	case LM95241_CHIP_ID:
+		name = "lm95241";
+		break;
+	default:
+		return -ENODEV;
+	}
+
+	/* Fill the i2c board info */
+	strlcpy(info->type, name, I2C_NAME_SIZE);
+	return 0;
+}
+
+static void lm95241_init_client(struct i2c_client *client,
+				struct lm95241_data *data)
+{
+	data->interval = 1000;
+	data->config = CFG_CR1000;
+	data->trutherm = (TT_OFF << TT1_SHIFT) | (TT_OFF << TT2_SHIFT);
+
+	i2c_smbus_write_byte_data(client, LM95241_REG_RW_CONFIG, data->config);
+	i2c_smbus_write_byte_data(client, LM95241_REG_RW_REM_FILTER,
+				  R1FE_MASK | R2FE_MASK);
+	i2c_smbus_write_byte_data(client, LM95241_REG_RW_TRUTHERM,
+				  data->trutherm);
+	i2c_smbus_write_byte_data(client, LM95241_REG_RW_REMOTE_MODEL,
+				  data->model);
+}
+
+static const struct hwmon_channel_info *lm95241_info[] = {
+	HWMON_CHANNEL_INFO(chip,
+			   HWMON_C_UPDATE_INTERVAL),
+	HWMON_CHANNEL_INFO(temp,
+			   HWMON_T_INPUT,
+			   HWMON_T_INPUT | HWMON_T_MAX | HWMON_T_MIN |
+			   HWMON_T_TYPE | HWMON_T_FAULT,
+			   HWMON_T_INPUT | HWMON_T_MAX | HWMON_T_MIN |
+			   HWMON_T_TYPE | HWMON_T_FAULT),
+	NULL
+};
+
+static const struct hwmon_ops lm95241_hwmon_ops = {
+	.is_visible = lm95241_is_visible,
+	.read = lm95241_read,
+	.write = lm95241_write,
+};
+
+static const struct hwmon_chip_info lm95241_chip_info = {
+	.ops = &lm95241_hwmon_ops,
+	.info = lm95241_info,
+};
+
+static int lm95241_probe(struct i2c_client *client,
+			 const struct i2c_device_id *id)
+{
+	struct device *dev = &client->dev;
+	struct lm95241_data *data;
+	struct device *hwmon_dev;
+
+	data = devm_kzalloc(dev, sizeof(struct lm95241_data), GFP_KERNEL);
+	if (!data)
+		return -ENOMEM;
+
+	data->client = client;
+	mutex_init(&data->update_lock);
+
+	/* Initialize the LM95241 chip */
+	lm95241_init_client(client, data);
+
+	hwmon_dev = devm_hwmon_device_register_with_info(dev, client->name,
+							   data,
+							   &lm95241_chip_info,
+							   NULL);
+	return PTR_ERR_OR_ZERO(hwmon_dev);
+}
+
 /* Driver data (common to all clients) */
 static const struct i2c_device_id lm95241_id[] = {
-	{ "lm95241", lm95241 },
+	{ "lm95231", 0 },
+	{ "lm95241", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, lm95241_id);
@@ -482,28 +467,16 @@ MODULE_DEVICE_TABLE(i2c, lm95241_id);
 static struct i2c_driver lm95241_driver = {
 	.class		= I2C_CLASS_HWMON,
 	.driver = {
-		.name   = "lm95241",
+		.name	= DEVNAME,
 	},
 	.probe		= lm95241_probe,
-	.remove		= lm95241_remove,
 	.id_table	= lm95241_id,
 	.detect		= lm95241_detect,
-	.address_data	= &addr_data,
+	.address_list	= normal_i2c,
 };
 
-static int __init sensors_lm95241_init(void)
-{
-	return i2c_add_driver(&lm95241_driver);
-}
+module_i2c_driver(lm95241_driver);
 
-static void __exit sensors_lm95241_exit(void)
-{
-	i2c_del_driver(&lm95241_driver);
-}
-
-MODULE_AUTHOR("Davide Rizzo <elpa-rizzo@gmail.com>");
-MODULE_DESCRIPTION("LM95241 sensor driver");
+MODULE_AUTHOR("Davide Rizzo <elpa.rizzo@gmail.com>");
+MODULE_DESCRIPTION("LM95231/LM95241 sensor driver");
 MODULE_LICENSE("GPL");
-
-module_init(sensors_lm95241_init);
-module_exit(sensors_lm95241_exit);

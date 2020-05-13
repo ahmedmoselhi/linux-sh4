@@ -1,16 +1,19 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * ALSA SoC TLV320AIC23 codec driver
  *
  * Author:      Arun KS, <arunks@mistralsolutions.com>
  * Copyright:   (C) 2008 Mistral Solutions Pvt Ltd
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef _TLV320AIC23_H
 #define _TLV320AIC23_H
+
+struct device;
+struct regmap_config;
+
+extern const struct regmap_config tlv320aic23_regmap;
+int tlv320aic23_probe(struct device *dev, struct regmap *regmap);
 
 /* Codec TLV320AIC23 */
 #define TLV320AIC23_LINVOL		0x00
@@ -115,8 +118,5 @@
 #define TLV320AIC23_SIDETONE_9		0x040
 #define TLV320AIC23_SIDETONE_12		0x080
 #define TLV320AIC23_SIDETONE_18		0x0c0
-
-extern struct snd_soc_dai tlv320aic23_dai;
-extern struct snd_soc_codec_device soc_codec_dev_tlv320aic23;
 
 #endif /* _TLV320AIC23_H */

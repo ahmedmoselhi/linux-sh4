@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Renesas Technology Corp. R0P7785LC0011RL Support.
  *
  * Copyright (C) 2008  Yoshihiro Shimoda
  * Copyright (C) 2009  Paul Mundt
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 #include <linux/init.h>
 #include <linux/platform_device.h>
@@ -17,41 +14,36 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/i2c.h>
-#include <linux/i2c-pca-platform.h>
+#include <linux/platform_data/i2c-pca-platform.h>
 #include <linux/i2c-algo-pca.h>
 #include <linux/usb/r8a66597.h>
+#include <linux/sh_intc.h>
 #include <linux/irq.h>
+#include <linux/io.h>
 #include <linux/clk.h>
 #include <linux/errno.h>
+#include <linux/gpio/machine.h>
 #include <mach/sh7785lcr.h>
 #include <cpu/sh7785.h>
 #include <asm/heartbeat.h>
 #include <asm/clock.h>
+#include <asm/bl_bit.h>
 
 /*
  * NOTE: This board has 2 physical memory maps.
  *	 Please look at include/asm-sh/sh7785lcr.h or hardware manual.
  */
-static struct resource heartbeat_resources[] = {
-	[0] = {
-		.start	= PLD_LEDCR,
-		.end	= PLD_LEDCR,
-		.flags	= IORESOURCE_MEM,
-	},
-};
-
-static struct heartbeat_data heartbeat_data = {
-	.regsize = 8,
+static struct resource heartbeat_resource = {
+	.start	= PLD_LEDCR,
+	.end	= PLD_LEDCR,
+	.flags	= IORESOURCE_MEM | IORESOURCE_MEM_8BIT,
 };
 
 static struct platform_device heartbeat_device = {
 	.name		= "heartbeat",
 	.id		= -1,
-	.dev	= {
-		.platform_data	= &heartbeat_data,
-	},
-	.num_resources	= ARRAY_SIZE(heartbeat_resources),
-	.resource	= heartbeat_resources,
+	.num_resources	= 1,
+	.resource	= &heartbeat_resource,
 };
 
 static struct mtd_partition nor_flash_partitions[] = {
@@ -112,8 +104,8 @@ static struct resource r8a66597_usb_host_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= 2,
-		.end	= 2,
+		.start	= evt2irq(0x240),
+		.end	= evt2irq(0x240),
 		.flags	= IORESOURCE_IRQ | IRQF_TRIGGER_LOW,
 	},
 };
@@ -142,7 +134,7 @@ static struct resource sm501_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[2]	= {
-		.start	= 10,
+		.start	= evt2irq(0x340),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -230,8 +222,8 @@ static struct resource i2c_proto_resources[] = {
 		.flags	= IORESOURCE_MEM | IORESOURCE_MEM_8BIT,
 	},
 	[1] = {
-		.start	= 12,
-		.end	= 12,
+		.start	= evt2irq(0x380),
+		.end	= evt2irq(0x380),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -243,14 +235,21 @@ static struct resource i2c_resources[] = {
 		.flags	= IORESOURCE_MEM | IORESOURCE_MEM_8BIT,
 	},
 	[1] = {
-		.start	= 12,
-		.end	= 12,
+		.start	= evt2irq(0x380),
+		.end	= evt2irq(0x380),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
 
+static struct gpiod_lookup_table i2c_gpio_table = {
+	.dev_id = "i2c.0",
+	.table = {
+		GPIO_LOOKUP("pfc-sh7757", 0, "reset-gpios", GPIO_ACTIVE_LOW),
+		{ },
+	},
+};
+
 static struct i2c_pca9564_pf_platform_data i2c_platform_data = {
-	.gpio			= 0,
 	.i2c_clock_speed	= I2C_PCA_CON_330kHz,
 	.timeout		= HZ,
 };
@@ -289,10 +288,11 @@ static int __init sh7785lcr_devices_setup(void)
 		i2c_device.num_resources = ARRAY_SIZE(i2c_proto_resources);
 	}
 
+	gpiod_add_lookup_table(&i2c_gpio_table);
 	return platform_add_devices(sh7785lcr_devices,
 				    ARRAY_SIZE(sh7785lcr_devices));
 }
-__initcall(sh7785lcr_devices_setup);
+device_initcall(sh7785lcr_devices_setup);
 
 /* Initialize IRQ setting */
 void __init init_sh7785lcr_IRQ(void)
@@ -307,7 +307,7 @@ static int sh7785lcr_clk_init(void)
 	int ret;
 
 	clk = clk_get(NULL, "extal");
-	if (!clk || IS_ERR(clk))
+	if (IS_ERR(clk))
 		return PTR_ERR(clk);
 	ret = clk_set_rate(clk, 33333333);
 	clk_put(clk);
@@ -341,8 +341,14 @@ static void __init sh7785lcr_setup(char **cmdline_p)
 	pm_power_off = sh7785lcr_power_off;
 
 	/* sm501 DRAM configuration */
-	sm501_reg = (void __iomem *)0xb3e00000 + SM501_DRAM_CONTROL;
-	writel(0x000307c2, sm501_reg);
+	sm501_reg = ioremap(SM107_REG_ADDR, SM501_DRAM_CONTROL);
+	if (!sm501_reg) {
+		printk(KERN_ERR "%s: ioremap error.\n", __func__);
+		return;
+	}
+
+	writel(0x000307c2, sm501_reg + SM501_DRAM_CONTROL);
+	iounmap(sm501_reg);
 }
 
 /* Return the board specific boot mode pin configuration */

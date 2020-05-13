@@ -1,5 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * June 2006 steve.glendinning@smsc.com
+ * June 2006 Steve Glendinning <steve.glendinning@shawell.net>
  *
  * Polaris-specific resource declaration
  *
@@ -9,6 +10,8 @@
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/platform_device.h>
+#include <linux/regulator/fixed.h>
+#include <linux/regulator/machine.h>
 #include <linux/smsc911x.h>
 #include <linux/io.h>
 #include <asm/irq.h>
@@ -21,6 +24,12 @@
 #define WCR2		(0xFFFFFF66)
 #define AREA5_WAIT_CTRL	(0x1C00)
 #define WAIT_STATES_10	(0x7)
+
+/* Dummy supplies, where voltage doesn't matter */
+static struct regulator_consumer_supply dummy_supplies[] = {
+	REGULATOR_SUPPLY("vddvario", "smsc911x.0"),
+	REGULATOR_SUPPLY("vdd33a", "smsc911x.0"),
+};
 
 static struct resource smsc911x_resources[] = {
 	[0] = {
@@ -59,15 +68,12 @@ static unsigned char heartbeat_bit_pos[] = { 0, 1, 2, 3 };
 static struct heartbeat_data heartbeat_data = {
 	.bit_pos	= heartbeat_bit_pos,
 	.nr_bits	= ARRAY_SIZE(heartbeat_bit_pos),
-	.regsize	= 8,
 };
 
-static struct resource heartbeat_resources[] = {
-	[0] = {
-		.start	= PORT_PCDR,
-		.end	= PORT_PCDR,
-		.flags	= IORESOURCE_MEM,
-	},
+static struct resource heartbeat_resource = {
+	.start	= PORT_PCDR,
+	.end	= PORT_PCDR,
+	.flags	= IORESOURCE_MEM | IORESOURCE_MEM_8BIT,
 };
 
 static struct platform_device heartbeat_device = {
@@ -76,8 +82,8 @@ static struct platform_device heartbeat_device = {
 	.dev	= {
 		.platform_data	= &heartbeat_data,
 	},
-	.num_resources	= ARRAY_SIZE(heartbeat_resources),
-	.resource	= heartbeat_resources,
+	.num_resources	= 1,
+	.resource	= &heartbeat_resource,
 };
 
 static struct platform_device *polaris_devices[] __initdata = {
@@ -91,16 +97,18 @@ static int __init polaris_initialise(void)
 
 	printk(KERN_INFO "Configuring Polaris external bus\n");
 
+	regulator_register_fixed(0, dummy_supplies, ARRAY_SIZE(dummy_supplies));
+
 	/* Configure area 5 with 2 wait states */
-	wcr = ctrl_inw(WCR2);
+	wcr = __raw_readw(WCR2);
 	wcr &= (~AREA5_WAIT_CTRL);
 	wcr |= (WAIT_STATES_10 << 10);
-	ctrl_outw(wcr, WCR2);
+	__raw_writew(wcr, WCR2);
 
 	/* Configure area 5 for 32-bit access */
-	bcr_mask = ctrl_inw(BCR2);
+	bcr_mask = __raw_readw(BCR2);
 	bcr_mask |= 1 << 10;
-	ctrl_outw(bcr_mask, BCR2);
+	__raw_writew(bcr_mask, BCR2);
 
 	return platform_add_devices(polaris_devices,
 				    ARRAY_SIZE(polaris_devices));
@@ -131,19 +139,18 @@ static struct ipr_desc ipr_irq_desc = {
 static void __init init_polaris_irq(void)
 {
 	/* Disable all interrupts */
-	ctrl_outw(0, BCR_ILCRA);
-	ctrl_outw(0, BCR_ILCRB);
-	ctrl_outw(0, BCR_ILCRC);
-	ctrl_outw(0, BCR_ILCRD);
-	ctrl_outw(0, BCR_ILCRE);
-	ctrl_outw(0, BCR_ILCRF);
-	ctrl_outw(0, BCR_ILCRG);
+	__raw_writew(0, BCR_ILCRA);
+	__raw_writew(0, BCR_ILCRB);
+	__raw_writew(0, BCR_ILCRC);
+	__raw_writew(0, BCR_ILCRD);
+	__raw_writew(0, BCR_ILCRE);
+	__raw_writew(0, BCR_ILCRF);
+	__raw_writew(0, BCR_ILCRG);
 
 	register_ipr_controller(&ipr_irq_desc);
 }
 
 static struct sh_machine_vector mv_polaris __initmv = {
 	.mv_name		= "Polaris",
-	.mv_nr_irqs		= 61,
 	.mv_init_irq		= init_polaris_irq,
 };

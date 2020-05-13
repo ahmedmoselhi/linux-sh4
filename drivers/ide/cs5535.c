@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2004-2005 Advanced Micro Devices, Inc.
  * Copyright (C)      2007 Bartlomiej Zolnierkiewicz
@@ -13,10 +14,6 @@
  *
  * Development of this chipset driver was funded
  * by the nice folks at National Semiconductor/AMD.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
  *
  * Documentation:
  *  CS5535 documentation available from AMD
@@ -86,7 +83,7 @@ static void cs5535_set_speed(ide_drive_t *drive, const u8 speed)
 		cmd = pioa = speed - XFER_PIO_0;
 
 		if (pair) {
-			u8 piob = ide_get_best_pio_mode(pair, 255, 4);
+			u8 piob = pair->pio_mode - XFER_PIO_0;
 
 			if (piob < cmd)
 				cmd = piob;
@@ -129,28 +126,28 @@ static void cs5535_set_speed(ide_drive_t *drive, const u8 speed)
 
 /**
  *	cs5535_set_dma_mode	-	set host controller for DMA mode
+ *	@hwif: port
  *	@drive: drive
- *	@speed: DMA mode
  *
  *	Programs the chipset for DMA mode.
  */
 
-static void cs5535_set_dma_mode(ide_drive_t *drive, const u8 speed)
+static void cs5535_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
-	cs5535_set_speed(drive, speed);
+	cs5535_set_speed(drive, drive->dma_mode);
 }
 
 /**
  *	cs5535_set_pio_mode	-	set host controller for PIO mode
+ *	@hwif: port
  *	@drive: drive
- *	@pio: PIO mode number
  *
  *	A callback from the upper layers for PIO-only tuning.
  */
 
-static void cs5535_set_pio_mode(ide_drive_t *drive, const u8 pio)
+static void cs5535_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
-	cs5535_set_speed(drive, XFER_PIO_0 + pio);
+	cs5535_set_speed(drive, drive->pio_mode);
 }
 
 static u8 cs5535_cable_detect(ide_hwif_t *hwif)
@@ -170,7 +167,7 @@ static const struct ide_port_ops cs5535_port_ops = {
 	.cable_detect		= cs5535_cable_detect,
 };
 
-static const struct ide_port_info cs5535_chipset __devinitdata = {
+static const struct ide_port_info cs5535_chipset = {
 	.name		= DRV_NAME,
 	.port_ops	= &cs5535_port_ops,
 	.host_flags	= IDE_HFLAG_SINGLE | IDE_HFLAG_POST_SET_MODE,
@@ -179,14 +176,14 @@ static const struct ide_port_info cs5535_chipset __devinitdata = {
 	.udma_mask	= ATA_UDMA4,
 };
 
-static int __devinit cs5535_init_one(struct pci_dev *dev,
-					const struct pci_device_id *id)
+static int cs5535_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 {
 	return ide_pci_init_one(dev, &cs5535_chipset, NULL);
 }
 
 static const struct pci_device_id cs5535_pci_tbl[] = {
 	{ PCI_VDEVICE(NS, PCI_DEVICE_ID_NS_CS5535_IDE), 0 },
+	{ PCI_VDEVICE(AMD, PCI_DEVICE_ID_AMD_CS5535_IDE), },
 	{ 0, },
 };
 

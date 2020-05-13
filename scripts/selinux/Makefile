@@ -1,2 +1,2 @@
-subdir-y := mdp
-subdir-	+= mdp
+# SPDX-License-Identifier: GPL-2.0-only
+subdir-y := mdp genheaders

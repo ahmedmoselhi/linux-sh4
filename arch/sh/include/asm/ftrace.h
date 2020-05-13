@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_SH_FTRACE_H
 #define __ASM_SH_FTRACE_H
 
@@ -9,7 +10,7 @@
 #ifndef __ASSEMBLY__
 extern void mcount(void);
 
-#define MCOUNT_ADDR		((long)(mcount))
+#define MCOUNT_ADDR		((unsigned long)(mcount))
 
 #ifdef CONFIG_DYNAMIC_FTRACE
 #define CALL_ADDR		((long)(ftrace_call))
@@ -34,5 +35,14 @@ static inline unsigned long ftrace_call_adjust(unsigned long addr)
 
 #endif /* __ASSEMBLY__ */
 #endif /* CONFIG_FUNCTION_TRACER */
+
+#ifndef __ASSEMBLY__
+
+/* arch/sh/kernel/return_address.c */
+extern void *return_address(unsigned int);
+
+#define ftrace_return_address(n) return_address(n)
+
+#endif /* __ASSEMBLY__ */
 
 #endif /* __ASM_SH_FTRACE_H */

@@ -1,15 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * ip_vs_ftp.c: IPVS ftp application module
  *
  * Authors:	Wensong Zhang <wensong@linuxvirtualserver.org>
  *
  * Changes:
- *
- *
- *	This program is free software; you can redistribute it and/or
- *	modify it under the terms of the GNU General Public License
- *	as published by the Free Software Foundation; either version
- *	2 of the License, or (at your option) any later version.
  *
  * Most code here is taken from ip_masq_ftp.c in kernel 2.2. The difference
  * is that ip_vs_ftp module handles the reverse direction to ip_masq_ftp.
@@ -19,7 +14,6 @@
  * Version:	@(#)ip_masq_ftp.c 0.04   02/05/96
  *
  * Author:	Wouter Gadeyne
- *
  */
 
 #define KMSG_COMPONENT "IPVS"
@@ -29,9 +23,16 @@
 #include <linux/moduleparam.h>
 #include <linux/kernel.h>
 #include <linux/skbuff.h>
+#include <linux/ctype.h>
+#include <linux/inet.h>
 #include <linux/in.h>
 #include <linux/ip.h>
 #include <linux/netfilter.h>
+#include <net/netfilter/nf_conntrack.h>
+#include <net/netfilter/nf_conntrack_expect.h>
+#include <net/netfilter/nf_nat.h>
+#include <net/netfilter/nf_nat_helper.h>
+#include <linux/gfp.h>
 #include <net/protocol.h>
 #include <net/tcp.h>
 #include <asm/unaligned.h>
@@ -39,26 +40,44 @@
 #include <net/ip_vs.h>
 
 
-#define SERVER_STRING "227 Entering Passive Mode ("
-#define CLIENT_STRING "PORT "
+#define SERVER_STRING_PASV "227 "
+#define CLIENT_STRING_PORT "PORT"
+#define SERVER_STRING_EPSV "229 "
+#define CLIENT_STRING_EPRT "EPRT"
 
+enum {
+	IP_VS_FTP_ACTIVE = 0,
+	IP_VS_FTP_PORT = 0,
+	IP_VS_FTP_PASV,
+	IP_VS_FTP_EPRT,
+	IP_VS_FTP_EPSV,
+};
 
 /*
  * List of ports (up to IP_VS_APP_MAX_PORTS) to be handled by helper
  * First port is set to the default port.
  */
+static unsigned int ports_count = 1;
 static unsigned short ports[IP_VS_APP_MAX_PORTS] = {21, 0};
-module_param_array(ports, ushort, NULL, 0);
+module_param_array(ports, ushort, &ports_count, 0444);
 MODULE_PARM_DESC(ports, "Ports to monitor for FTP control commands");
 
 
-/*	Dummy variable */
-static int ip_vs_ftp_pasv;
+static char *ip_vs_ftp_data_ptr(struct sk_buff *skb, struct ip_vs_iphdr *ipvsh)
+{
+	struct tcphdr *th = (struct tcphdr *)((char *)skb->data + ipvsh->len);
 
+	if ((th->doff << 2) < sizeof(struct tcphdr))
+		return NULL;
+
+	return (char *)th + (th->doff << 2);
+}
 
 static int
 ip_vs_ftp_init_conn(struct ip_vs_app *app, struct ip_vs_conn *cp)
 {
+	/* We use connection tracking for the command connection */
+	cp->flags |= IP_VS_CONN_F_NFCT;
 	return 0;
 }
 
@@ -70,61 +89,149 @@ ip_vs_ftp_done_conn(struct ip_vs_app *app, struct ip_vs_conn *cp)
 }
 
 
-/*
- * Get <addr,port> from the string "xxx.xxx.xxx.xxx,ppp,ppp", started
- * with the "pattern" and terminated with the "term" character.
- * <addr,port> is in network order.
+/* Get <addr,port> from the string "xxx.xxx.xxx.xxx,ppp,ppp", started
+ * with the "pattern". <addr,port> is in network order.
+ * Parse extended format depending on ext. In this case addr can be pre-set.
  */
 static int ip_vs_ftp_get_addrport(char *data, char *data_limit,
-				  const char *pattern, size_t plen, char term,
-				  __be32 *addr, __be16 *port,
-				  char **start, char **end)
+				  const char *pattern, size_t plen,
+				  char skip, bool ext, int mode,
+				  union nf_inet_addr *addr, __be16 *port,
+				  __u16 af, char **start, char **end)
 {
+	char *s, c;
 	unsigned char p[6];
+	char edelim;
+	__u16 hport;
 	int i = 0;
 
 	if (data_limit - data < plen) {
 		/* check if there is partial match */
-		if (strnicmp(data, pattern, data_limit - data) == 0)
+		if (strncasecmp(data, pattern, data_limit - data) == 0)
 			return -1;
 		else
 			return 0;
 	}
 
-	if (strnicmp(data, pattern, plen) != 0) {
+	if (strncasecmp(data, pattern, plen) != 0) {
 		return 0;
 	}
-	*start = data + plen;
+	s = data + plen;
+	if (skip) {
+		bool found = false;
 
-	for (data = *start; *data != term; data++) {
-		if (data == data_limit)
-			return -1;
-	}
-	*end = data;
-
-	memset(p, 0, sizeof(p));
-	for (data = *start; data != *end; data++) {
-		if (*data >= '0' && *data <= '9') {
-			p[i] = p[i]*10 + *data - '0';
-		} else if (*data == ',' && i < 5) {
-			i++;
-		} else {
-			/* unexpected character */
-			return -1;
+		for (;; s++) {
+			if (s == data_limit)
+				return -1;
+			if (!found) {
+				/* "(" is optional for non-extended format,
+				 * so catch the start of IPv4 address
+				 */
+				if (!ext && isdigit(*s))
+					break;
+				if (*s == skip)
+					found = true;
+			} else if (*s != skip) {
+				break;
+			}
 		}
 	}
+	/* Old IPv4-only format? */
+	if (!ext) {
+		p[0] = 0;
+		for (data = s; ; data++) {
+			if (data == data_limit)
+				return -1;
+			c = *data;
+			if (isdigit(c)) {
+				p[i] = p[i]*10 + c - '0';
+			} else if (c == ',' && i < 5) {
+				i++;
+				p[i] = 0;
+			} else {
+				/* unexpected character or terminator */
+				break;
+			}
+		}
 
-	if (i != 5)
+		if (i != 5)
+			return -1;
+
+		*start = s;
+		*end = data;
+		addr->ip = get_unaligned((__be32 *) p);
+		*port = get_unaligned((__be16 *) (p + 4));
+		return 1;
+	}
+	if (s == data_limit)
 		return -1;
+	*start = s;
+	edelim = *s++;
+	if (edelim < 33 || edelim > 126)
+		return -1;
+	if (s == data_limit)
+		return -1;
+	if (*s == edelim) {
+		/* Address family is usually missing for EPSV response */
+		if (mode != IP_VS_FTP_EPSV)
+			return -1;
+		s++;
+		if (s == data_limit)
+			return -1;
+		/* Then address should be missing too */
+		if (*s != edelim)
+			return -1;
+		/* Caller can pre-set addr, if needed */
+		s++;
+	} else {
+		const char *ep;
 
-	*addr = get_unaligned((__be32 *)p);
-	*port = get_unaligned((__be16 *)(p + 4));
+		/* We allow address only from same family */
+		if (af == AF_INET6 && *s != '2')
+			return -1;
+		if (af == AF_INET && *s != '1')
+			return -1;
+		s++;
+		if (s == data_limit)
+			return -1;
+		if (*s != edelim)
+			return -1;
+		s++;
+		if (s == data_limit)
+			return -1;
+		if (af == AF_INET6) {
+			if (in6_pton(s, data_limit - s, (u8 *)addr, edelim,
+				     &ep) <= 0)
+				return -1;
+		} else {
+			if (in4_pton(s, data_limit - s, (u8 *)addr, edelim,
+				     &ep) <= 0)
+				return -1;
+		}
+		s = (char *) ep;
+		if (s == data_limit)
+			return -1;
+		if (*s != edelim)
+			return -1;
+		s++;
+	}
+	for (hport = 0; ; s++)
+	{
+		if (s == data_limit)
+			return -1;
+		if (!isdigit(*s))
+			break;
+		hport = hport * 10 + *s - '0';
+	}
+	if (s == data_limit || !hport || *s != edelim)
+		return -1;
+	s++;
+	*end = s;
+	*port = htons(hport);
 	return 1;
 }
 
-
-/*
- * Look at outgoing ftp packets to catch the response to a PASV command
+/* Look at outgoing ftp packets to catch the response to a PASV/EPSV command
  * from the server (inside-to-outside).
  * When we see one, we build a connection entry with the client address,
  * client port 0 (unknown at the moment), the server address and the
@@ -135,108 +242,162 @@ static int ip_vs_ftp_get_addrport(char *data, char *data_limit,
  * The outgoing packet should be something like
  *   "227 Entering Passive Mode (xxx,xxx,xxx,xxx,ppp,ppp)".
  * xxx,xxx,xxx,xxx is the server address, ppp,ppp is the server port number.
+ * The extended format for EPSV response provides usually only port:
+ *   "229 Entering Extended Passive Mode (|||ppp|)"
  */
 static int ip_vs_ftp_out(struct ip_vs_app *app, struct ip_vs_conn *cp,
-			 struct sk_buff *skb, int *diff)
+			 struct sk_buff *skb, int *diff,
+			 struct ip_vs_iphdr *ipvsh)
 {
-	struct iphdr *iph;
-	struct tcphdr *th;
 	char *data, *data_limit;
 	char *start, *end;
 	union nf_inet_addr from;
 	__be16 port;
 	struct ip_vs_conn *n_cp;
 	char buf[24];		/* xxx.xxx.xxx.xxx,ppp,ppp\000 */
-	unsigned buf_len;
-	int ret;
+	unsigned int buf_len;
+	int ret = 0;
+	enum ip_conntrack_info ctinfo;
+	struct nf_conn *ct;
 
 	*diff = 0;
-
-#ifdef CONFIG_IP_VS_IPV6
-	/* This application helper doesn't work with IPv6 yet,
-	 * so turn this into a no-op for IPv6 packets
-	 */
-	if (cp->af == AF_INET6)
-		return 1;
-#endif
 
 	/* Only useful for established sessions */
 	if (cp->state != IP_VS_TCP_S_ESTABLISHED)
 		return 1;
 
 	/* Linear packets are much easier to deal with. */
-	if (!skb_make_writable(skb, skb->len))
+	if (skb_ensure_writable(skb, skb->len))
 		return 0;
 
-	if (cp->app_data == &ip_vs_ftp_pasv) {
-		iph = ip_hdr(skb);
-		th = (struct tcphdr *)&(((char *)iph)[iph->ihl*4]);
-		data = (char *)th + (th->doff << 2);
+	if (cp->app_data == (void *) IP_VS_FTP_PASV) {
+		data = ip_vs_ftp_data_ptr(skb, ipvsh);
 		data_limit = skb_tail_pointer(skb);
 
+		if (!data || data >= data_limit)
+			return 1;
+
 		if (ip_vs_ftp_get_addrport(data, data_limit,
-					   SERVER_STRING,
-					   sizeof(SERVER_STRING)-1, ')',
-					   &from.ip, &port,
+					   SERVER_STRING_PASV,
+					   sizeof(SERVER_STRING_PASV)-1,
+					   '(', false, IP_VS_FTP_PASV,
+					   &from, &port, cp->af,
 					   &start, &end) != 1)
 			return 1;
 
-		IP_VS_DBG(7, "PASV response (%pI4:%d) -> %pI4:%d detected\n",
+		IP_VS_DBG(7, "PASV response (%pI4:%u) -> %pI4:%u detected\n",
 			  &from.ip, ntohs(port), &cp->caddr.ip, 0);
+	} else if (cp->app_data == (void *) IP_VS_FTP_EPSV) {
+		data = ip_vs_ftp_data_ptr(skb, ipvsh);
+		data_limit = skb_tail_pointer(skb);
 
-		/*
-		 * Now update or create an connection entry for it
+		if (!data || data >= data_limit)
+			return 1;
+
+		/* Usually, data address is not specified but
+		 * we support different address, so pre-set it.
 		 */
-		n_cp = ip_vs_conn_out_get(AF_INET, iph->protocol, &from, port,
-					  &cp->caddr, 0);
-		if (!n_cp) {
-			n_cp = ip_vs_conn_new(AF_INET, IPPROTO_TCP,
-					      &cp->caddr, 0,
-					      &cp->vaddr, port,
-					      &from, port,
-					      IP_VS_CONN_F_NO_CPORT,
-					      cp->dest);
-			if (!n_cp)
-				return 0;
+		from = cp->daddr;
+		if (ip_vs_ftp_get_addrport(data, data_limit,
+					   SERVER_STRING_EPSV,
+					   sizeof(SERVER_STRING_EPSV)-1,
+					   '(', true, IP_VS_FTP_EPSV,
+					   &from, &port, cp->af,
+					   &start, &end) != 1)
+			return 1;
 
-			/* add its controller */
-			ip_vs_control_add(n_cp, cp);
-		}
+		IP_VS_DBG_BUF(7, "EPSV response (%s:%u) -> %s:%u detected\n",
+			      IP_VS_DBG_ADDR(cp->af, &from), ntohs(port),
+			      IP_VS_DBG_ADDR(cp->af, &cp->caddr), 0);
+	} else {
+		return 1;
+	}
 
-		/*
-		 * Replace the old passive address with the new one
-		 */
+	/* Now update or create a connection entry for it */
+	{
+		struct ip_vs_conn_param p;
+
+		ip_vs_conn_fill_param(cp->ipvs, cp->af,
+				      ipvsh->protocol, &from, port,
+				      &cp->caddr, 0, &p);
+		n_cp = ip_vs_conn_out_get(&p);
+	}
+	if (!n_cp) {
+		struct ip_vs_conn_param p;
+
+		ip_vs_conn_fill_param(cp->ipvs,
+				      cp->af, ipvsh->protocol, &cp->caddr,
+				      0, &cp->vaddr, port, &p);
+		n_cp = ip_vs_conn_new(&p, cp->af, &from, port,
+				      IP_VS_CONN_F_NO_CPORT |
+				      IP_VS_CONN_F_NFCT,
+				      cp->dest, skb->mark);
+		if (!n_cp)
+			return 0;
+
+		/* add its controller */
+		ip_vs_control_add(n_cp, cp);
+	}
+
+	/* Replace the old passive address with the new one */
+	if (cp->app_data == (void *) IP_VS_FTP_PASV) {
 		from.ip = n_cp->vaddr.ip;
 		port = n_cp->vport;
-		sprintf(buf, "%d,%d,%d,%d,%d,%d", NIPQUAD(from.ip),
-			(ntohs(port)>>8)&255, ntohs(port)&255);
-		buf_len = strlen(buf);
-
-		/*
-		 * Calculate required delta-offset to keep TCP happy
-		 */
-		*diff = buf_len - (end-start);
-
-		if (*diff == 0) {
-			/* simply replace it with new passive address */
-			memcpy(start, buf, buf_len);
-			ret = 1;
-		} else {
-			ret = !ip_vs_skb_replace(skb, GFP_ATOMIC, start,
-					  end-start, buf, buf_len);
-		}
-
-		cp->app_data = NULL;
-		ip_vs_tcp_conn_listen(n_cp);
-		ip_vs_conn_put(n_cp);
-		return ret;
+		snprintf(buf, sizeof(buf), "%u,%u,%u,%u,%u,%u",
+			 ((unsigned char *)&from.ip)[0],
+			 ((unsigned char *)&from.ip)[1],
+			 ((unsigned char *)&from.ip)[2],
+			 ((unsigned char *)&from.ip)[3],
+			 ntohs(port) >> 8,
+			 ntohs(port) & 0xFF);
+	} else if (cp->app_data == (void *) IP_VS_FTP_EPSV) {
+		from = n_cp->vaddr;
+		port = n_cp->vport;
+		/* Only port, client will use VIP for the data connection */
+		snprintf(buf, sizeof(buf), "|||%u|",
+			 ntohs(port));
+	} else {
+		*buf = 0;
 	}
-	return 1;
+	buf_len = strlen(buf);
+
+	ct = nf_ct_get(skb, &ctinfo);
+	if (ct) {
+		bool mangled;
+
+		/* If mangling fails this function will return 0
+		 * which will cause the packet to be dropped.
+		 * Mangling can only fail under memory pressure,
+		 * hopefully it will succeed on the retransmitted
+		 * packet.
+		 */
+		mangled = nf_nat_mangle_tcp_packet(skb, ct, ctinfo,
+						   ipvsh->len,
+						   start - data,
+						   end - start,
+						   buf, buf_len);
+		if (mangled) {
+			ip_vs_nfct_expect_related(skb, ct, n_cp,
+						  ipvsh->protocol, 0, 0);
+			if (skb->ip_summed == CHECKSUM_COMPLETE)
+				skb->ip_summed = CHECKSUM_UNNECESSARY;
+			/* csum is updated */
+			ret = 1;
+		}
+	}
+
+	/* Not setting 'diff' is intentional, otherwise the sequence
+	 * would be adjusted twice.
+	 */
+
+	cp->app_data = (void *) IP_VS_FTP_ACTIVE;
+	ip_vs_tcp_conn_listen(n_cp);
+	ip_vs_conn_put(n_cp);
+	return ret;
 }
 
 
-/*
- * Look at incoming ftp packets to catch the PASV/PORT command
+/* Look at incoming ftp packets to catch the PASV/PORT/EPRT/EPSV command
  * (outside-to-inside).
  *
  * The incoming packet having the PORT command should be something like
@@ -245,12 +406,19 @@ static int ip_vs_ftp_out(struct ip_vs_app *app, struct ip_vs_conn *cp,
  * In this case, we create a connection entry using the client address and
  * port, so that the active ftp data connection from the server can reach
  * the client.
+ * Extended format:
+ *	"EPSV\r\n" when client requests server address from same family
+ *	"EPSV 1\r\n" when client requests IPv4 server address
+ *	"EPSV 2\r\n" when client requests IPv6 server address
+ *	"EPSV ALL\r\n" - not supported
+ *	EPRT with specified delimiter (ASCII 33..126), "|" by default:
+ *	"EPRT |1|IPv4ADDR|PORT|\r\n" when client provides IPv4 addrport
+ *	"EPRT |2|IPv6ADDR|PORT|\r\n" when client provides IPv6 addrport
  */
 static int ip_vs_ftp_in(struct ip_vs_app *app, struct ip_vs_conn *cp,
-			struct sk_buff *skb, int *diff)
+			struct sk_buff *skb, int *diff,
+			struct ip_vs_iphdr *ipvsh)
 {
-	struct iphdr *iph;
-	struct tcphdr *th;
 	char *data, *data_start, *data_limit;
 	char *start, *end;
 	union nf_inet_addr to;
@@ -260,43 +428,56 @@ static int ip_vs_ftp_in(struct ip_vs_app *app, struct ip_vs_conn *cp,
 	/* no diff required for incoming packets */
 	*diff = 0;
 
-#ifdef CONFIG_IP_VS_IPV6
-	/* This application helper doesn't work with IPv6 yet,
-	 * so turn this into a no-op for IPv6 packets
-	 */
-	if (cp->af == AF_INET6)
-		return 1;
-#endif
-
 	/* Only useful for established sessions */
 	if (cp->state != IP_VS_TCP_S_ESTABLISHED)
 		return 1;
 
 	/* Linear packets are much easier to deal with. */
-	if (!skb_make_writable(skb, skb->len))
+	if (skb_ensure_writable(skb, skb->len))
 		return 0;
 
-	/*
-	 * Detecting whether it is passive
-	 */
-	iph = ip_hdr(skb);
-	th = (struct tcphdr *)&(((char *)iph)[iph->ihl*4]);
-
-	/* Since there may be OPTIONS in the TCP packet and the HLEN is
-	   the length of the header in 32-bit multiples, it is accurate
-	   to calculate data address by th+HLEN*4 */
-	data = data_start = (char *)th + (th->doff << 2);
+	data = data_start = ip_vs_ftp_data_ptr(skb, ipvsh);
 	data_limit = skb_tail_pointer(skb);
+	if (!data || data >= data_limit)
+		return 1;
 
 	while (data <= data_limit - 6) {
-		if (strnicmp(data, "PASV\r\n", 6) == 0) {
+		if (cp->af == AF_INET &&
+		    strncasecmp(data, "PASV\r\n", 6) == 0) {
 			/* Passive mode on */
 			IP_VS_DBG(7, "got PASV at %td of %td\n",
 				  data - data_start,
 				  data_limit - data_start);
-			cp->app_data = &ip_vs_ftp_pasv;
+			cp->app_data = (void *) IP_VS_FTP_PASV;
 			return 1;
 		}
+
+		/* EPSV or EPSV<space><net-prt> */
+		if (strncasecmp(data, "EPSV", 4) == 0 &&
+		    (data[4] == ' ' || data[4] == '\r')) {
+			if (data[4] == ' ') {
+				char proto = data[5];
+
+				if (data > data_limit - 7 || data[6] != '\r')
+					return 1;
+
+#ifdef CONFIG_IP_VS_IPV6
+				if (cp->af == AF_INET6 && proto == '2') {
+				} else
+#endif
+				if (cp->af == AF_INET && proto == '1') {
+				} else {
+					return 1;
+				}
+			}
+			/* Extended Passive mode on */
+			IP_VS_DBG(7, "got EPSV at %td of %td\n",
+				  data - data_start,
+				  data_limit - data_start);
+			cp->app_data = (void *) IP_VS_FTP_EPSV;
+			return 1;
+		}
+
 		data++;
 	}
 
@@ -307,39 +488,61 @@ static int ip_vs_ftp_in(struct ip_vs_app *app, struct ip_vs_conn *cp,
 	 * then create a new connection entry for the coming data
 	 * connection.
 	 */
-	if (ip_vs_ftp_get_addrport(data_start, data_limit,
-				   CLIENT_STRING, sizeof(CLIENT_STRING)-1,
-				   '\r', &to.ip, &port,
-				   &start, &end) != 1)
-		return 1;
+	if (cp->af == AF_INET &&
+	    ip_vs_ftp_get_addrport(data_start, data_limit,
+				   CLIENT_STRING_PORT,
+				   sizeof(CLIENT_STRING_PORT)-1,
+				   ' ', false, IP_VS_FTP_PORT,
+				   &to, &port, cp->af,
+				   &start, &end) == 1) {
 
-	IP_VS_DBG(7, "PORT %pI4:%d detected\n", &to.ip, ntohs(port));
+		IP_VS_DBG(7, "PORT %pI4:%u detected\n", &to.ip, ntohs(port));
+
+		/* Now update or create a connection entry for it */
+		IP_VS_DBG(7, "protocol %s %pI4:%u %pI4:%u\n",
+			  ip_vs_proto_name(ipvsh->protocol),
+			  &to.ip, ntohs(port), &cp->vaddr.ip,
+			  ntohs(cp->vport)-1);
+	} else if (ip_vs_ftp_get_addrport(data_start, data_limit,
+					  CLIENT_STRING_EPRT,
+					  sizeof(CLIENT_STRING_EPRT)-1,
+					  ' ', true, IP_VS_FTP_EPRT,
+					  &to, &port, cp->af,
+					  &start, &end) == 1) {
+
+		IP_VS_DBG_BUF(7, "EPRT %s:%u detected\n",
+			      IP_VS_DBG_ADDR(cp->af, &to), ntohs(port));
+
+		/* Now update or create a connection entry for it */
+		IP_VS_DBG_BUF(7, "protocol %s %s:%u %s:%u\n",
+			      ip_vs_proto_name(ipvsh->protocol),
+			      IP_VS_DBG_ADDR(cp->af, &to), ntohs(port),
+			      IP_VS_DBG_ADDR(cp->af, &cp->vaddr),
+			      ntohs(cp->vport)-1);
+	} else {
+		return 1;
+	}
 
 	/* Passive mode off */
-	cp->app_data = NULL;
+	cp->app_data = (void *) IP_VS_FTP_ACTIVE;
 
-	/*
-	 * Now update or create a connection entry for it
-	 */
-	IP_VS_DBG(7, "protocol %s %pI4:%d %pI4:%d\n",
-		  ip_vs_proto_name(iph->protocol),
-		  &to.ip, ntohs(port), &cp->vaddr.ip, 0);
+	{
+		struct ip_vs_conn_param p;
+		ip_vs_conn_fill_param(cp->ipvs, cp->af,
+				      ipvsh->protocol, &to, port, &cp->vaddr,
+				      htons(ntohs(cp->vport)-1), &p);
+		n_cp = ip_vs_conn_in_get(&p);
+		if (!n_cp) {
+			n_cp = ip_vs_conn_new(&p, cp->af, &cp->daddr,
+					      htons(ntohs(cp->dport)-1),
+					      IP_VS_CONN_F_NFCT, cp->dest,
+					      skb->mark);
+			if (!n_cp)
+				return 0;
 
-	n_cp = ip_vs_conn_in_get(AF_INET, iph->protocol,
-				 &to, port,
-				 &cp->vaddr, htons(ntohs(cp->vport)-1));
-	if (!n_cp) {
-		n_cp = ip_vs_conn_new(AF_INET, IPPROTO_TCP,
-				      &to, port,
-				      &cp->vaddr, htons(ntohs(cp->vport)-1),
-				      &cp->daddr, htons(ntohs(cp->dport)-1),
-				      0,
-				      cp->dest);
-		if (!n_cp)
-			return 0;
-
-		/* add its controller */
-		ip_vs_control_add(n_cp, cp);
+			/* add its controller */
+			ip_vs_control_add(n_cp, cp);
+		}
 	}
 
 	/*
@@ -366,42 +569,68 @@ static struct ip_vs_app ip_vs_ftp = {
 	.pkt_in =	ip_vs_ftp_in,
 };
 
-
 /*
- *	ip_vs_ftp initialization
+ *	per netns ip_vs_ftp initialization
  */
-static int __init ip_vs_ftp_init(void)
+static int __net_init __ip_vs_ftp_init(struct net *net)
 {
 	int i, ret;
-	struct ip_vs_app *app = &ip_vs_ftp;
+	struct ip_vs_app *app;
+	struct netns_ipvs *ipvs = net_ipvs(net);
 
-	ret = register_ip_vs_app(app);
-	if (ret)
-		return ret;
+	if (!ipvs)
+		return -ENOENT;
 
-	for (i=0; i<IP_VS_APP_MAX_PORTS; i++) {
+	app = register_ip_vs_app(ipvs, &ip_vs_ftp);
+	if (IS_ERR(app))
+		return PTR_ERR(app);
+
+	for (i = 0; i < ports_count; i++) {
 		if (!ports[i])
 			continue;
-		ret = register_ip_vs_app_inc(app, app->protocol, ports[i]);
+		ret = register_ip_vs_app_inc(ipvs, app, app->protocol, ports[i]);
 		if (ret)
-			break;
-		pr_info("%s: loaded support on port[%d] = %d\n",
+			goto err_unreg;
+		pr_info("%s: loaded support on port[%d] = %u\n",
 			app->name, i, ports[i]);
 	}
+	return 0;
 
-	if (ret)
-		unregister_ip_vs_app(app);
-
+err_unreg:
+	unregister_ip_vs_app(ipvs, &ip_vs_ftp);
 	return ret;
 }
+/*
+ *	netns exit
+ */
+static void __ip_vs_ftp_exit(struct net *net)
+{
+	struct netns_ipvs *ipvs = net_ipvs(net);
 
+	if (!ipvs)
+		return;
+
+	unregister_ip_vs_app(ipvs, &ip_vs_ftp);
+}
+
+static struct pernet_operations ip_vs_ftp_ops = {
+	.init = __ip_vs_ftp_init,
+	.exit = __ip_vs_ftp_exit,
+};
+
+static int __init ip_vs_ftp_init(void)
+{
+	/* rcu_barrier() is called by netns on error */
+	return register_pernet_subsys(&ip_vs_ftp_ops);
+}
 
 /*
  *	ip_vs_ftp finish.
  */
 static void __exit ip_vs_ftp_exit(void)
 {
-	unregister_ip_vs_app(&ip_vs_ftp);
+	unregister_pernet_subsys(&ip_vs_ftp_ops);
+	/* rcu_barrier() is called by netns */
 }
 
 

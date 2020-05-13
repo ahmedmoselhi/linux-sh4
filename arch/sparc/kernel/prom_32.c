@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Procedures for creating, accessing and interpreting the device tree.
  *
@@ -8,19 +9,13 @@
  *    {engebret|bergner}@us.ibm.com 
  *
  *  Adapted for sparc32 by David S. Miller davem@davemloft.net
- *
- *      This program is free software; you can redistribute it and/or
- *      modify it under the terms of the GNU General Public License
- *      as published by the Free Software Foundation; either version
- *      2 of the License, or (at your option) any later version.
  */
 
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/string.h>
 #include <linux/mm.h>
-#include <linux/bootmem.h>
-#include <linux/module.h>
+#include <linux/memblock.h>
 
 #include <asm/prom.h>
 #include <asm/oplib.h>
@@ -33,9 +28,9 @@ void * __init prom_early_alloc(unsigned long size)
 {
 	void *ret;
 
-	ret = __alloc_bootmem(size, SMP_CACHE_BYTES, 0UL);
-	if (ret != NULL)
-		memset(ret, 0, size);
+	ret = memblock_alloc(size, SMP_CACHE_BYTES);
+	if (!ret)
+		panic("%s: Failed to allocate %lu bytes\n", __func__, size);
 
 	prom_early_allocated += size;
 
@@ -61,6 +56,7 @@ void * __init prom_early_alloc(unsigned long size)
  */
 static void __init sparc32_path_component(struct device_node *dp, char *tmp_buf)
 {
+	const char *name = of_get_property(dp, "name", NULL);
 	struct linux_prom_registers *regs;
 	struct property *rprop;
 
@@ -70,13 +66,14 @@ static void __init sparc32_path_component(struct device_node *dp, char *tmp_buf)
 
 	regs = rprop->value;
 	sprintf(tmp_buf, "%s@%x,%x",
-		dp->name,
+		name,
 		regs->which_io, regs->phys_addr);
 }
 
 /* "name@slot,offset"  */
 static void __init sbus_path_component(struct device_node *dp, char *tmp_buf)
 {
+	const char *name = of_get_property(dp, "name", NULL);
 	struct linux_prom_registers *regs;
 	struct property *prop;
 
@@ -86,7 +83,7 @@ static void __init sbus_path_component(struct device_node *dp, char *tmp_buf)
 
 	regs = prop->value;
 	sprintf(tmp_buf, "%s@%x,%x",
-		dp->name,
+		name,
 		regs->which_io,
 		regs->phys_addr);
 }
@@ -94,6 +91,7 @@ static void __init sbus_path_component(struct device_node *dp, char *tmp_buf)
 /* "name@devnum[,func]" */
 static void __init pci_path_component(struct device_node *dp, char *tmp_buf)
 {
+	const char *name = of_get_property(dp, "name", NULL);
 	struct linux_prom_pci_registers *regs;
 	struct property *prop;
 	unsigned int devfn;
@@ -106,12 +104,12 @@ static void __init pci_path_component(struct device_node *dp, char *tmp_buf)
 	devfn = (regs->phys_hi >> 8) & 0xff;
 	if (devfn & 0x07) {
 		sprintf(tmp_buf, "%s@%x,%x",
-			dp->name,
+			name,
 			devfn >> 3,
 			devfn & 0x07);
 	} else {
 		sprintf(tmp_buf, "%s@%x",
-			dp->name,
+			name,
 			devfn >> 3);
 	}
 }
@@ -119,6 +117,7 @@ static void __init pci_path_component(struct device_node *dp, char *tmp_buf)
 /* "name@addrhi,addrlo" */
 static void __init ebus_path_component(struct device_node *dp, char *tmp_buf)
 {
+	const char *name = of_get_property(dp, "name", NULL);
 	struct linux_prom_registers *regs;
 	struct property *prop;
 
@@ -129,37 +128,39 @@ static void __init ebus_path_component(struct device_node *dp, char *tmp_buf)
 	regs = prop->value;
 
 	sprintf(tmp_buf, "%s@%x,%x",
-		dp->name,
+		name,
 		regs->which_io, regs->phys_addr);
 }
 
-/* "name:vendor:device@irq,addrlo" */
+/* "name@irq,addrlo" */
 static void __init ambapp_path_component(struct device_node *dp, char *tmp_buf)
 {
-	struct amba_prom_registers *regs; unsigned int *intr;
-	unsigned int *device, *vendor;
+	const char *name = of_get_property(dp, "name", NULL);
+	struct amba_prom_registers *regs;
+	unsigned int *intr;
+	unsigned int reg0;
 	struct property *prop;
+	int interrupt = 0;
 
+	/* In order to get a unique ID in the device tree (multiple AMBA devices
+	 * may have the same name) the node number is printed
+	 */
 	prop = of_find_property(dp, "reg", NULL);
-	if (!prop)
-		return;
-	regs = prop->value;
+	if (!prop) {
+		reg0 = (unsigned int)dp->phandle;
+	} else {
+		regs = prop->value;
+		reg0 = regs->phys_addr;
+	}
+
+	/* Not all cores have Interrupt */
 	prop = of_find_property(dp, "interrupts", NULL);
 	if (!prop)
-		return;
-	intr = prop->value;
-	prop = of_find_property(dp, "vendor", NULL);
-	if (!prop)
-		return;
-	vendor = prop->value;
-	prop = of_find_property(dp, "device", NULL);
-	if (!prop)
-		return;
-	device = prop->value;
+		intr = &interrupt; /* IRQ0 does not exist */
+	else
+		intr = prop->value;
 
-	sprintf(tmp_buf, "%s:%d:%d@%x,%x",
-		dp->name, *vendor, *device,
-		*intr, regs->phys_addr);
+	sprintf(tmp_buf, "%s@%x,%x", name, *intr, reg0);
 }
 
 static void __init __build_path_component(struct device_node *dp, char *tmp_buf)
@@ -167,14 +168,14 @@ static void __init __build_path_component(struct device_node *dp, char *tmp_buf)
 	struct device_node *parent = dp->parent;
 
 	if (parent != NULL) {
-		if (!strcmp(parent->type, "pci") ||
-		    !strcmp(parent->type, "pciex"))
+		if (of_node_is_type(parent, "pci") ||
+		    of_node_is_type(parent, "pciex"))
 			return pci_path_component(dp, tmp_buf);
-		if (!strcmp(parent->type, "sbus"))
+		if (of_node_is_type(parent, "sbus"))
 			return sbus_path_component(dp, tmp_buf);
-		if (!strcmp(parent->type, "ebus"))
+		if (of_node_is_type(parent, "ebus"))
 			return ebus_path_component(dp, tmp_buf);
-		if (!strcmp(parent->type, "ambapp"))
+		if (of_node_is_type(parent, "ambapp"))
 			return ambapp_path_component(dp, tmp_buf);
 
 		/* "isa" is handled with platform naming */
@@ -186,12 +187,13 @@ static void __init __build_path_component(struct device_node *dp, char *tmp_buf)
 
 char * __init build_path_component(struct device_node *dp)
 {
+	const char *name = of_get_property(dp, "name", NULL);
 	char tmp_buf[64], *n;
 
 	tmp_buf[0] = '\0';
 	__build_path_component(dp, tmp_buf);
 	if (tmp_buf[0] == '\0')
-		strcpy(tmp_buf, dp->name);
+		strcpy(tmp_buf, name);
 
 	n = prom_early_alloc(strlen(tmp_buf) + 1);
 	strcpy(n, tmp_buf);
@@ -245,7 +247,7 @@ void __init of_console_init(void)
 		}
 		of_console_device = dp;
 
-		strcpy(of_console_path, dp->full_name);
+		sprintf(of_console_path, "%pOF", dp);
 		if (!strcmp(type, "serial")) {
 			strcat(of_console_path,
 			       (skip ? ":b" : ":a"));
@@ -268,15 +270,9 @@ void __init of_console_init(void)
 			prom_halt();
 		}
 		dp = of_find_node_by_phandle(node);
-		type = of_get_property(dp, "device_type", NULL);
 
-		if (!type) {
-			prom_printf("Console stdout lacks "
-				    "device_type property.\n");
-			prom_halt();
-		}
-
-		if (strcmp(type, "display") && strcmp(type, "serial")) {
+		if (!of_node_is_type(dp, "display") &&
+		    !of_node_is_type(dp, "serial")) {
 			prom_printf("Console device_type is neither display "
 				    "nor serial.\n");
 			prom_halt();
@@ -285,7 +281,7 @@ void __init of_console_init(void)
 		of_console_device = dp;
 
 		if (prom_vers == PROM_V2) {
-			strcpy(of_console_path, dp->full_name);
+			sprintf(of_console_path, "%pOF", dp);
 			switch (*romvec->pv_stdout) {
 			case PROMDEV_TTYA:
 				strcat(of_console_path, ":a");
@@ -315,7 +311,6 @@ void __init of_console_init(void)
 			of_console_options = NULL;
 	}
 
-	prom_printf(msg, of_console_path);
 	printk(msg, of_console_path);
 }
 

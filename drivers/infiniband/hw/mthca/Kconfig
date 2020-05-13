@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 config INFINIBAND_MTHCA
 	tristate "Mellanox HCA support"
 	depends on PCI
@@ -7,7 +8,7 @@ config INFINIBAND_MTHCA
 	  ("Tavor") and the MT25208 PCI Express HCA ("Arbel").
 
 config INFINIBAND_MTHCA_DEBUG
-	bool "Verbose debugging output" if EMBEDDED
+	bool "Verbose debugging output" if EXPERT
 	depends on INFINIBAND_MTHCA
 	default y
 	---help---

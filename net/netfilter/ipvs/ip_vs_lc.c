@@ -1,17 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * IPVS:        Least-Connection Scheduling module
  *
  * Authors:     Wensong Zhang <wensong@linuxvirtualserver.org>
  *
- *              This program is free software; you can redistribute it and/or
- *              modify it under the terms of the GNU General Public License
- *              as published by the Free Software Foundation; either version
- *              2 of the License, or (at your option) any later version.
- *
  * Changes:
  *     Wensong Zhang            :     added the ip_vs_lc_update_svc
  *     Wensong Zhang            :     added any dest with weight=0 is quiesced
- *
  */
 
 #define KMSG_COMPONENT "IPVS"
@@ -22,27 +17,12 @@
 
 #include <net/ip_vs.h>
 
-
-static inline unsigned int
-ip_vs_lc_dest_overhead(struct ip_vs_dest *dest)
-{
-	/*
-	 * We think the overhead of processing active connections is 256
-	 * times higher than that of inactive connections in average. (This
-	 * 256 times might not be accurate, we will change it later) We
-	 * use the following formula to estimate the overhead now:
-	 *		  dest->activeconns*256 + dest->inactconns
-	 */
-	return (atomic_read(&dest->activeconns) << 8) +
-		atomic_read(&dest->inactconns);
-}
-
-
 /*
  *	Least Connection scheduling
  */
 static struct ip_vs_dest *
-ip_vs_lc_schedule(struct ip_vs_service *svc, const struct sk_buff *skb)
+ip_vs_lc_schedule(struct ip_vs_service *svc, const struct sk_buff *skb,
+		  struct ip_vs_iphdr *iph)
 {
 	struct ip_vs_dest *dest, *least = NULL;
 	unsigned int loh = 0, doh;
@@ -58,11 +38,11 @@ ip_vs_lc_schedule(struct ip_vs_service *svc, const struct sk_buff *skb)
 	 * served, but no new connection is assigned to the server.
 	 */
 
-	list_for_each_entry(dest, &svc->destinations, n_list) {
+	list_for_each_entry_rcu(dest, &svc->destinations, n_list) {
 		if ((dest->flags & IP_VS_DEST_F_OVERLOAD) ||
 		    atomic_read(&dest->weight) == 0)
 			continue;
-		doh = ip_vs_lc_dest_overhead(dest);
+		doh = ip_vs_dest_conn_overhead(dest);
 		if (!least || doh < loh) {
 			least = dest;
 			loh = doh;
@@ -70,11 +50,11 @@ ip_vs_lc_schedule(struct ip_vs_service *svc, const struct sk_buff *skb)
 	}
 
 	if (!least)
-		IP_VS_ERR_RL("LC: no destination available\n");
+		ip_vs_scheduler_err(svc, "no destination available");
 	else
 		IP_VS_DBG_BUF(6, "LC: server %s:%u activeconns %d "
 			      "inactconns %d\n",
-			      IP_VS_DBG_ADDR(svc->af, &least->addr),
+			      IP_VS_DBG_ADDR(least->af, &least->addr),
 			      ntohs(least->port),
 			      atomic_read(&least->activeconns),
 			      atomic_read(&least->inactconns));
@@ -100,6 +80,7 @@ static int __init ip_vs_lc_init(void)
 static void __exit ip_vs_lc_cleanup(void)
 {
 	unregister_ip_vs_scheduler(&ip_vs_lc_scheduler);
+	synchronize_rcu();
 }
 
 module_init(ip_vs_lc_init);

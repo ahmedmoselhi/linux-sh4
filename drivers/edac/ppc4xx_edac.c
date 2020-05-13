@@ -1,12 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2008 Nuovation System Designs, LLC
  *   Grant Erickson <gerickson@nuovations.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation; version 2 of the
- * License.
- *
  */
 
 #include <linux/edac.h>
@@ -21,7 +16,7 @@
 
 #include <asm/dcr.h>
 
-#include "edac_core.h"
+#include "edac_module.h"
 #include "ppc4xx_edac.h"
 
 /*
@@ -113,7 +108,7 @@
 #define EDAC_OPSTATE_UNKNOWN_STR	"unknown"
 
 #define PPC4XX_EDAC_MODULE_NAME		"ppc4xx_edac"
-#define PPC4XX_EDAC_MODULE_REVISION	"v1.0.0 " __DATE__
+#define PPC4XX_EDAC_MODULE_REVISION	"v1.0.0"
 
 #define PPC4XX_EDAC_MESSAGE_SIZE	256
 
@@ -142,7 +137,7 @@
 
 /*
  * The ibm,sdram-4xx-ddr2 Device Control Registers (DCRs) are
- * indirectly acccessed and have a base and length defined by the
+ * indirectly accessed and have a base and length defined by the
  * device tree. The base can be anything; however, we expect the
  * length to be precisely two registers, the first for the address
  * window and the second for the data window.
@@ -184,9 +179,8 @@ struct ppc4xx_ecc_status {
 
 /* Function Prototypes */
 
-static int ppc4xx_edac_probe(struct of_device *device,
-			     const struct of_device_id *device_id);
-static int ppc4xx_edac_remove(struct of_device *device);
+static int ppc4xx_edac_probe(struct platform_device *device);
+static int ppc4xx_edac_remove(struct platform_device *device);
 
 /* Global Variables */
 
@@ -194,21 +188,21 @@ static int ppc4xx_edac_remove(struct of_device *device);
  * Device tree node type and compatible tuples this driver can match
  * on.
  */
-static struct of_device_id ppc4xx_edac_match[] = {
+static const struct of_device_id ppc4xx_edac_match[] = {
 	{
 		.compatible	= "ibm,sdram-4xx-ddr2"
 	},
 	{ }
 };
+MODULE_DEVICE_TABLE(of, ppc4xx_edac_match);
 
-static struct of_platform_driver ppc4xx_edac_driver = {
-	.match_table		= ppc4xx_edac_match,
+static struct platform_driver ppc4xx_edac_driver = {
 	.probe			= ppc4xx_edac_probe,
 	.remove			= ppc4xx_edac_remove,
-	.driver			= {
-		.owner	= THIS_MODULE,
-		.name	= PPC4XX_EDAC_MODULE_NAME
-	}
+	.driver = {
+		.name = PPC4XX_EDAC_MODULE_NAME,
+		.of_match_table = ppc4xx_edac_match,
+	},
 };
 
 /*
@@ -728,7 +722,10 @@ ppc4xx_edac_handle_ce(struct mem_ctl_info *mci,
 
 	for (row = 0; row < mci->nr_csrows; row++)
 		if (ppc4xx_edac_check_bank_error(status, row))
-			edac_mc_handle_ce_no_info(mci, message);
+			edac_mc_handle_error(HW_EVENT_ERR_CORRECTED, mci, 1,
+					     0, 0, 0,
+					     row, 0, -1,
+					     message, "");
 }
 
 /**
@@ -756,7 +753,10 @@ ppc4xx_edac_handle_ue(struct mem_ctl_info *mci,
 
 	for (row = 0; row < mci->nr_csrows; row++)
 		if (ppc4xx_edac_check_bank_error(status, row))
-			edac_mc_handle_ue(mci, page, offset, row, message);
+			edac_mc_handle_error(HW_EVENT_ERR_UNCORRECTED, mci, 1,
+					     page, offset, 0,
+					     row, 0, -1,
+					     message, "");
 }
 
 /**
@@ -833,8 +833,7 @@ ppc4xx_edac_isr(int irq, void *dev_id)
  *
  * Returns a device type width enumeration.
  */
-static enum dev_type __devinit
-ppc4xx_edac_get_dtype(u32 mcopt1)
+static enum dev_type ppc4xx_edac_get_dtype(u32 mcopt1)
 {
 	switch (mcopt1 & SDRAM_MCOPT1_WDTH_MASK) {
 	case SDRAM_MCOPT1_WDTH_16:
@@ -857,8 +856,7 @@ ppc4xx_edac_get_dtype(u32 mcopt1)
  *
  * Returns a memory type enumeration.
  */
-static enum mem_type __devinit
-ppc4xx_edac_get_mtype(u32 mcopt1)
+static enum mem_type ppc4xx_edac_get_mtype(u32 mcopt1)
 {
 	bool rden = ((mcopt1 & SDRAM_MCOPT1_RDEN_MASK) == SDRAM_MCOPT1_RDEN);
 
@@ -873,7 +871,7 @@ ppc4xx_edac_get_mtype(u32 mcopt1)
 }
 
 /**
- * ppc4xx_edac_init_csrows - intialize driver instance rows
+ * ppc4xx_edac_init_csrows - initialize driver instance rows
  * @mci: A pointer to the EDAC memory controller instance
  *       associated with the ibm,sdram-4xx-ddr2 controller for which
  *       the csrows (i.e. banks/ranks) are being initialized.
@@ -881,24 +879,22 @@ ppc4xx_edac_get_mtype(u32 mcopt1)
  *          currently set for the controller, from which bank width
  *          and memory typ information is derived.
  *
- * This routine intializes the virtual "chip select rows" associated
+ * This routine initializes the virtual "chip select rows" associated
  * with the EDAC memory controller instance. An ibm,sdram-4xx-ddr2
  * controller bank/rank is mapped to a row.
  *
  * Returns 0 if OK; otherwise, -EINVAL if the memory bank size
  * configuration cannot be determined.
  */
-static int __devinit
-ppc4xx_edac_init_csrows(struct mem_ctl_info *mci, u32 mcopt1)
+static int ppc4xx_edac_init_csrows(struct mem_ctl_info *mci, u32 mcopt1)
 {
 	const struct ppc4xx_edac_pdata *pdata = mci->pvt_info;
 	int status = 0;
 	enum mem_type mtype;
 	enum dev_type dtype;
 	enum edac_type edac_mode;
-	int row;
-	u32 mbxcf, size;
-	static u32 ppc4xx_last_page;
+	int row, j;
+	u32 mbxcf, size, nr_pages;
 
 	/* Establish the memory type and width */
 
@@ -920,7 +916,7 @@ ppc4xx_edac_init_csrows(struct mem_ctl_info *mci, u32 mcopt1)
 	 */
 
 	for (row = 0; row < mci->nr_csrows; row++) {
-		struct csrow_info *csi = &mci->csrows[row];
+		struct csrow_info *csi = mci->csrows[row];
 
 		/*
 		 * Get the configuration settings for this
@@ -949,7 +945,7 @@ ppc4xx_edac_init_csrows(struct mem_ctl_info *mci, u32 mcopt1)
 		case SDRAM_MBCF_SZ_2GB:
 		case SDRAM_MBCF_SZ_4GB:
 		case SDRAM_MBCF_SZ_8GB:
-			csi->nr_pages = SDRAM_MBCF_SZ_TO_PAGES(size);
+			nr_pages = SDRAM_MBCF_SZ_TO_PAGES(size);
 			break;
 		default:
 			ppc4xx_edac_mc_printk(KERN_ERR, mci,
@@ -959,10 +955,6 @@ ppc4xx_edac_init_csrows(struct mem_ctl_info *mci, u32 mcopt1)
 			status = -EINVAL;
 			goto done;
 		}
-
-		csi->first_page = ppc4xx_last_page;
-		csi->last_page	= csi->first_page + csi->nr_pages - 1;
-		csi->page_mask	= 0;
 
 		/*
 		 * It's unclear exactly what grain should be set to
@@ -976,15 +968,17 @@ ppc4xx_edac_init_csrows(struct mem_ctl_info *mci, u32 mcopt1)
 		 * possible values would be the PLB width (16), the
 		 * page size (PAGE_SIZE) or the memory width (2 or 4).
 		 */
+		for (j = 0; j < csi->nr_channels; j++) {
+			struct dimm_info *dimm = csi->channels[j]->dimm;
 
-		csi->grain	= 1;
+			dimm->nr_pages  = nr_pages / csi->nr_channels;
+			dimm->grain	= 1;
 
-		csi->mtype	= mtype;
-		csi->dtype	= dtype;
+			dimm->mtype	= mtype;
+			dimm->dtype	= dtype;
 
-		csi->edac_mode	= edac_mode;
-
-		ppc4xx_last_page += csi->nr_pages;
+			dimm->edac_mode	= edac_mode;
+		}
 	}
 
  done:
@@ -992,14 +986,11 @@ ppc4xx_edac_init_csrows(struct mem_ctl_info *mci, u32 mcopt1)
 }
 
 /**
- * ppc4xx_edac_mc_init - intialize driver instance
+ * ppc4xx_edac_mc_init - initialize driver instance
  * @mci: A pointer to the EDAC memory controller instance being
  *       initialized.
  * @op: A pointer to the OpenFirmware device tree node associated
  *      with the controller this EDAC instance is bound to.
- * @match: A pointer to the OpenFirmware device tree match
- *         information associated with the controller this EDAC instance
- *         is bound to.
  * @dcr_host: A pointer to the DCR data containing the DCR mapping
  *            for this controller instance.
  * @mcopt1: The 32-bit Memory Controller Option 1 register value
@@ -1012,32 +1003,27 @@ ppc4xx_edac_init_csrows(struct mem_ctl_info *mci, u32 mcopt1)
  *
  * Returns 0 if OK; otherwise, < 0 on error.
  */
-static int __devinit
-ppc4xx_edac_mc_init(struct mem_ctl_info *mci,
-		    struct of_device *op,
-		    const struct of_device_id *match,
-		    const dcr_host_t *dcr_host,
-		    u32 mcopt1)
+static int ppc4xx_edac_mc_init(struct mem_ctl_info *mci,
+			       struct platform_device *op,
+			       const dcr_host_t *dcr_host, u32 mcopt1)
 {
 	int status = 0;
 	const u32 memcheck = (mcopt1 & SDRAM_MCOPT1_MCHK_MASK);
 	struct ppc4xx_edac_pdata *pdata = NULL;
-	const struct device_node *np = op->node;
+	const struct device_node *np = op->dev.of_node;
 
-	if (match == NULL)
+	if (of_match_device(ppc4xx_edac_match, &op->dev) == NULL)
 		return -EINVAL;
 
 	/* Initial driver pointers and private data */
 
-	mci->dev		= &op->dev;
+	mci->pdev		= &op->dev;
 
-	dev_set_drvdata(mci->dev, mci);
+	dev_set_drvdata(mci->pdev, mci);
 
 	pdata			= mci->pvt_info;
 
 	pdata->dcr_host		= *dcr_host;
-	pdata->irqs.sec		= NO_IRQ;
-	pdata->irqs.ded		= NO_IRQ;
 
 	/* Initialize controller capabilities and configuration */
 
@@ -1072,8 +1058,7 @@ ppc4xx_edac_mc_init(struct mem_ctl_info *mci,
 	/* Initialize strings */
 
 	mci->mod_name		= PPC4XX_EDAC_MODULE_NAME;
-	mci->mod_ver		= PPC4XX_EDAC_MODULE_REVISION;
-	mci->ctl_name		= match->compatible,
+	mci->ctl_name		= ppc4xx_edac_match->compatible,
 	mci->dev_name		= np->full_name;
 
 	/* Initialize callbacks */
@@ -1107,18 +1092,18 @@ ppc4xx_edac_mc_init(struct mem_ctl_info *mci,
  * Returns 0 if OK; otherwise, -ENODEV if the interrupts could not be
  * mapped and assigned.
  */
-static int __devinit
-ppc4xx_edac_register_irq(struct of_device *op, struct mem_ctl_info *mci)
+static int ppc4xx_edac_register_irq(struct platform_device *op,
+				    struct mem_ctl_info *mci)
 {
 	int status = 0;
 	int ded_irq, sec_irq;
 	struct ppc4xx_edac_pdata *pdata = mci->pvt_info;
-	struct device_node *np = op->node;
+	struct device_node *np = op->dev.of_node;
 
 	ded_irq = irq_of_parse_and_map(np, INTMAP_ECCDED_INDEX);
 	sec_irq = irq_of_parse_and_map(np, INTMAP_ECCSEC_INDEX);
 
-	if (ded_irq == NO_IRQ || sec_irq == NO_IRQ) {
+	if (!ded_irq || !sec_irq) {
 		ppc4xx_edac_mc_printk(KERN_ERR, mci,
 				      "Unable to map interrupts.\n");
 		status = -ENODEV;
@@ -1127,7 +1112,7 @@ ppc4xx_edac_register_irq(struct of_device *op, struct mem_ctl_info *mci)
 
 	status = request_irq(ded_irq,
 			     ppc4xx_edac_isr,
-			     IRQF_DISABLED,
+			     0,
 			     "[EDAC] MC ECCDED",
 			     mci);
 
@@ -1141,7 +1126,7 @@ ppc4xx_edac_register_irq(struct of_device *op, struct mem_ctl_info *mci)
 
 	status = request_irq(sec_irq,
 			     ppc4xx_edac_isr,
-			     IRQF_DISABLED,
+			     0,
 			     "[EDAC] MC ECCSEC",
 			     mci);
 
@@ -1185,8 +1170,8 @@ ppc4xx_edac_register_irq(struct of_device *op, struct mem_ctl_info *mci)
  * Returns 0 if the DCRs were successfully mapped; otherwise, < 0 on
  * error.
  */
-static int __devinit
-ppc4xx_edac_map_dcrs(const struct device_node *np, dcr_host_t *dcr_host)
+static int ppc4xx_edac_map_dcrs(const struct device_node *np,
+				dcr_host_t *dcr_host)
 {
 	unsigned int dcr_base, dcr_len;
 
@@ -1227,9 +1212,6 @@ ppc4xx_edac_map_dcrs(const struct device_node *np, dcr_host_t *dcr_host)
  * ppc4xx_edac_probe - check controller and bind driver
  * @op: A pointer to the OpenFirmware device tree node associated
  *      with the controller being probed for driver binding.
- * @match: A pointer to the OpenFirmware device tree match
- *         information associated with the controller being probed
- *         for driver binding.
  *
  * This routine probes a specific ibm,sdram-4xx-ddr2 controller
  * instance for binding with the driver.
@@ -1237,14 +1219,14 @@ ppc4xx_edac_map_dcrs(const struct device_node *np, dcr_host_t *dcr_host)
  * Returns 0 if the controller instance was successfully bound to the
  * driver; otherwise, < 0 on error.
  */
-static int __devinit
-ppc4xx_edac_probe(struct of_device *op, const struct of_device_id *match)
+static int ppc4xx_edac_probe(struct platform_device *op)
 {
 	int status = 0;
 	u32 mcopt1, memcheck;
 	dcr_host_t dcr_host;
-	const struct device_node *np = op->node;
+	const struct device_node *np = op->dev.of_node;
 	struct mem_ctl_info *mci = NULL;
+	struct edac_mc_layer layers[2];
 	static int ppc4xx_edac_instance;
 
 	/*
@@ -1279,8 +1261,8 @@ ppc4xx_edac_probe(struct of_device *op, const struct of_device_id *match)
 	memcheck = (mcopt1 & SDRAM_MCOPT1_MCHK_MASK);
 
 	if (memcheck == SDRAM_MCOPT1_MCHK_NON) {
-		ppc4xx_edac_printk(KERN_INFO, "%s: No ECC memory detected or "
-				   "ECC is disabled.\n", np->full_name);
+		ppc4xx_edac_printk(KERN_INFO, "%pOF: No ECC memory detected or "
+				   "ECC is disabled.\n", np);
 		status = -ENODEV;
 		goto done;
 	}
@@ -1290,21 +1272,23 @@ ppc4xx_edac_probe(struct of_device *op, const struct of_device_id *match)
 	 * controller instance and perform the appropriate
 	 * initialization.
 	 */
-
-	mci = edac_mc_alloc(sizeof(struct ppc4xx_edac_pdata),
-			    ppc4xx_edac_nr_csrows,
-			    ppc4xx_edac_nr_chans,
-			    ppc4xx_edac_instance);
-
+	layers[0].type = EDAC_MC_LAYER_CHIP_SELECT;
+	layers[0].size = ppc4xx_edac_nr_csrows;
+	layers[0].is_virt_csrow = true;
+	layers[1].type = EDAC_MC_LAYER_CHANNEL;
+	layers[1].size = ppc4xx_edac_nr_chans;
+	layers[1].is_virt_csrow = false;
+	mci = edac_mc_alloc(ppc4xx_edac_instance, ARRAY_SIZE(layers), layers,
+			    sizeof(struct ppc4xx_edac_pdata));
 	if (mci == NULL) {
-		ppc4xx_edac_printk(KERN_ERR, "%s: "
+		ppc4xx_edac_printk(KERN_ERR, "%pOF: "
 				   "Failed to allocate EDAC MC instance!\n",
-				   np->full_name);
+				   np);
 		status = -ENOMEM;
 		goto done;
 	}
 
-	status = ppc4xx_edac_mc_init(mci, op, match, &dcr_host, mcopt1);
+	status = ppc4xx_edac_mc_init(mci, op, &dcr_host, mcopt1);
 
 	if (status) {
 		ppc4xx_edac_mc_printk(KERN_ERR, mci,
@@ -1337,7 +1321,7 @@ ppc4xx_edac_probe(struct of_device *op, const struct of_device_id *match)
 	return 0;
 
  fail1:
-	edac_mc_del_mc(mci->dev);
+	edac_mc_del_mc(mci->pdev);
 
  fail:
 	edac_mc_free(mci);
@@ -1359,7 +1343,7 @@ ppc4xx_edac_probe(struct of_device *op, const struct of_device_id *match)
  * Unconditionally returns 0.
  */
 static int
-ppc4xx_edac_remove(struct of_device *op)
+ppc4xx_edac_remove(struct platform_device *op)
 {
 	struct mem_ctl_info *mci = dev_get_drvdata(&op->dev);
 	struct ppc4xx_edac_pdata *pdata = mci->pvt_info;
@@ -1371,7 +1355,7 @@ ppc4xx_edac_remove(struct of_device *op)
 
 	dcr_unmap(pdata->dcr_host, SDRAM_DCR_RESOURCE_LEN);
 
-	edac_mc_del_mc(mci->dev);
+	edac_mc_del_mc(mci->pdev);
 	edac_mc_free(mci);
 
 	return 0;
@@ -1421,7 +1405,7 @@ ppc4xx_edac_init(void)
 
 	ppc4xx_edac_opstate_init();
 
-	return of_register_platform_driver(&ppc4xx_edac_driver);
+	return platform_driver_register(&ppc4xx_edac_driver);
 }
 
 /**
@@ -1434,7 +1418,7 @@ ppc4xx_edac_init(void)
 static void __exit
 ppc4xx_edac_exit(void)
 {
-	of_unregister_platform_driver(&ppc4xx_edac_driver);
+	platform_driver_unregister(&ppc4xx_edac_driver);
 }
 
 module_init(ppc4xx_edac_init);

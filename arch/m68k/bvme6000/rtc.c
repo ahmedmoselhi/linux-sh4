@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *	Real Time Clock interface for Linux on the BVME6000
  *
@@ -9,21 +10,18 @@
 #include <linux/types.h>
 #include <linux/errno.h>
 #include <linux/miscdevice.h>
-#include <linux/slab.h>
-#include <linux/smp_lock.h>
 #include <linux/ioport.h>
 #include <linux/capability.h>
 #include <linux/fcntl.h>
 #include <linux/init.h>
 #include <linux/poll.h>
 #include <linux/module.h>
-#include <linux/mc146818rtc.h>	/* For struct rtc_time and ioctls, etc */
+#include <linux/rtc.h>	/* For struct rtc_time and ioctls, etc */
 #include <linux/bcd.h>
 #include <asm/bvme6000hw.h>
 
 #include <asm/io.h>
-#include <asm/uaccess.h>
-#include <asm/system.h>
+#include <linux/uaccess.h>
 #include <asm/setup.h>
 
 /*
@@ -36,10 +34,9 @@
 static unsigned char days_in_mo[] =
 {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
 
-static char rtc_status;
+static atomic_t rtc_status = ATOMIC_INIT(1);
 
-static int rtc_ioctl(struct inode *inode, struct file *file, unsigned int cmd,
-		     unsigned long arg)
+static long rtc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	volatile RtcPtr_t rtc = (RtcPtr_t)BVME_RTC_BASE;
 	unsigned char msr;
@@ -133,29 +130,20 @@ static int rtc_ioctl(struct inode *inode, struct file *file, unsigned int cmd,
 }
 
 /*
- *	We enforce only one user at a time here with the open/close.
- *	Also clear the previous interrupt data on an open, and clean
- *	up things on a close.
+ * We enforce only one user at a time here with the open/close.
  */
-
 static int rtc_open(struct inode *inode, struct file *file)
 {
-	lock_kernel();
-	if(rtc_status) {
-		unlock_kernel();
+	if (!atomic_dec_and_test(&rtc_status)) {
+		atomic_inc(&rtc_status);
 		return -EBUSY;
 	}
-
-	rtc_status = 1;
-	unlock_kernel();
 	return 0;
 }
 
 static int rtc_release(struct inode *inode, struct file *file)
 {
-	lock_kernel();
-	rtc_status = 0;
-	unlock_kernel();
+	atomic_inc(&rtc_status);
 	return 0;
 }
 
@@ -164,9 +152,10 @@ static int rtc_release(struct inode *inode, struct file *file)
  */
 
 static const struct file_operations rtc_fops = {
-	.ioctl =	rtc_ioctl,
-	.open =		rtc_open,
-	.release =	rtc_release,
+	.unlocked_ioctl	= rtc_ioctl,
+	.open		= rtc_open,
+	.release	= rtc_release,
+	.llseek		= noop_llseek,
 };
 
 static struct miscdevice rtc_dev = {
@@ -180,7 +169,7 @@ static int __init rtc_DP8570A_init(void)
 	if (!MACH_IS_BVME6000)
 		return -ENODEV;
 
-	printk(KERN_INFO "DP8570A Real Time Clock Driver v%s\n", RTC_VERSION);
+	pr_info("DP8570A Real Time Clock Driver v%s\n", RTC_VERSION);
 	return misc_register(&rtc_dev);
 }
 module_init(rtc_DP8570A_init);

@@ -20,7 +20,7 @@
 #include <asm/processor.h>
 #include <asm/cache.h>
 #include <asm/io.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/pgalloc.h>
 #include <asm/mmu_context.h>
 #include <asm/cacheflush.h>
@@ -48,10 +48,10 @@ static inline void cache_wback_all(void)
 			unsigned long data;
 			int v = SH_CACHE_UPDATED | SH_CACHE_VALID;
 
-			data = ctrl_inl(addr);
+			data = __raw_readl(addr);
 
 			if ((data & v) == v)
-				ctrl_outl(data & ~v, addr);
+				__raw_writel(data & ~v, addr);
 
 		}
 
@@ -78,7 +78,7 @@ static void sh7705_flush_icache_range(void *args)
 /*
  * Writeback&Invalidate the D-cache of the page
  */
-static void __uses_jump_to_uncached __flush_dcache_page(unsigned long phys)
+static void __flush_dcache_page(unsigned long phys)
 {
 	unsigned long ways, waysize, addrstart;
 	unsigned long flags;
@@ -115,10 +115,10 @@ static void __uses_jump_to_uncached __flush_dcache_page(unsigned long phys)
 		     addr += current_cpu_data.dcache.linesz) {
 			unsigned long data;
 
-			data = ctrl_inl(addr) & (0x1ffffC00 | SH_CACHE_VALID);
+			data = __raw_readl(addr) & (0x1ffffC00 | SH_CACHE_VALID);
 		        if (data == phys) {
 				data &= ~(SH_CACHE_VALID | SH_CACHE_UPDATED);
-				ctrl_outl(data, addr);
+				__raw_writel(data, addr);
 			}
 		}
 
@@ -136,15 +136,15 @@ static void __uses_jump_to_uncached __flush_dcache_page(unsigned long phys)
 static void sh7705_flush_dcache_page(void *arg)
 {
 	struct page *page = arg;
-	struct address_space *mapping = page_mapping(page);
+	struct address_space *mapping = page_mapping_file(page);
 
 	if (mapping && !mapping_mapped(mapping))
-		set_bit(PG_dcache_dirty, &page->flags);
+		clear_bit(PG_dcache_clean, &page->flags);
 	else
-		__flush_dcache_page(PHYSADDR(page_address(page)));
+		__flush_dcache_page(__pa(page_address(page)));
 }
 
-static void __uses_jump_to_uncached sh7705_flush_cache_all(void *args)
+static void sh7705_flush_cache_all(void *args)
 {
 	unsigned long flags;
 

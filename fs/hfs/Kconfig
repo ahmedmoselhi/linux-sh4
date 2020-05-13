@@ -1,6 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
 config HFS_FS
-	tristate "Apple Macintosh file system support (EXPERIMENTAL)"
-	depends on BLOCK && EXPERIMENTAL
+	tristate "Apple Macintosh file system support"
+	depends on BLOCK
 	select NLS
 	help
 	  If you say Y here, you will be able to mount Macintosh-formatted

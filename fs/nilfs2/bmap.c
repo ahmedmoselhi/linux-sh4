@@ -1,23 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * bmap.c - NILFS block mapping.
  *
  * Copyright (C) 2006-2008 Nippon Telegraph and Telephone Corporation.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- *
- * Written by Koji Sato <koji@osrg.net>.
+ * Written by Koji Sato.
  */
 
 #include <linux/fs.h>
@@ -25,7 +12,8 @@
 #include <linux/errno.h>
 #include "nilfs.h"
 #include "bmap.h"
-#include "sb.h"
+#include "btree.h"
+#include "direct.h"
 #include "btnode.h"
 #include "mdt.h"
 #include "dat.h"
@@ -33,7 +21,22 @@
 
 struct inode *nilfs_bmap_get_dat(const struct nilfs_bmap *bmap)
 {
-	return nilfs_dat_inode(NILFS_I_NILFS(bmap->b_inode));
+	struct the_nilfs *nilfs = bmap->b_inode->i_sb->s_fs_info;
+
+	return nilfs->ns_dat;
+}
+
+static int nilfs_bmap_convert_error(struct nilfs_bmap *bmap,
+				     const char *fname, int err)
+{
+	struct inode *inode = bmap->b_inode;
+
+	if (err == -EINVAL) {
+		__nilfs_error(inode->i_sb, fname,
+			      "broken bmap (inode number=%lu)", inode->i_ino);
+		err = -EIO;
+	}
+	return err;
 }
 
 /**
@@ -64,8 +67,10 @@ int nilfs_bmap_lookup_at_level(struct nilfs_bmap *bmap, __u64 key, int level,
 
 	down_read(&bmap->b_sem);
 	ret = bmap->b_ops->bop_lookup(bmap, key, level, ptrp);
-	if (ret < 0)
+	if (ret < 0) {
+		ret = nilfs_bmap_convert_error(bmap, __func__, ret);
 		goto out;
+	}
 	if (NILFS_BMAP_USE_VBN(bmap)) {
 		ret = nilfs_dat_translate(nilfs_bmap_get_dat(bmap), *ptrp,
 					  &blocknr);
@@ -79,14 +84,15 @@ int nilfs_bmap_lookup_at_level(struct nilfs_bmap *bmap, __u64 key, int level,
 }
 
 int nilfs_bmap_lookup_contig(struct nilfs_bmap *bmap, __u64 key, __u64 *ptrp,
-			     unsigned maxblocks)
+			     unsigned int maxblocks)
 {
 	int ret;
 
 	down_read(&bmap->b_sem);
 	ret = bmap->b_ops->bop_lookup_contig(bmap, key, ptrp, maxblocks);
 	up_read(&bmap->b_sem);
-	return ret;
+
+	return nilfs_bmap_convert_error(bmap, __func__, ret);
 }
 
 static int nilfs_bmap_do_insert(struct nilfs_bmap *bmap, __u64 key, __u64 ptr)
@@ -133,16 +139,15 @@ static int nilfs_bmap_do_insert(struct nilfs_bmap *bmap, __u64 key, __u64 ptr)
  *
  * %-EEXIST - A record associated with @key already exist.
  */
-int nilfs_bmap_insert(struct nilfs_bmap *bmap,
-		      unsigned long key,
-		      unsigned long rec)
+int nilfs_bmap_insert(struct nilfs_bmap *bmap, __u64 key, unsigned long rec)
 {
 	int ret;
 
 	down_write(&bmap->b_sem);
 	ret = nilfs_bmap_do_insert(bmap, key, rec);
 	up_write(&bmap->b_sem);
-	return ret;
+
+	return nilfs_bmap_convert_error(bmap, __func__, ret);
 }
 
 static int nilfs_bmap_do_delete(struct nilfs_bmap *bmap, __u64 key)
@@ -171,16 +176,47 @@ static int nilfs_bmap_do_delete(struct nilfs_bmap *bmap, __u64 key)
 	return bmap->b_ops->bop_delete(bmap, key);
 }
 
-int nilfs_bmap_last_key(struct nilfs_bmap *bmap, unsigned long *key)
+/**
+ * nilfs_bmap_seek_key - seek a valid entry and return its key
+ * @bmap: bmap struct
+ * @start: start key number
+ * @keyp: place to store valid key
+ *
+ * Description: nilfs_bmap_seek_key() seeks a valid key on @bmap
+ * starting from @start, and stores it to @keyp if found.
+ *
+ * Return Value: On success, 0 is returned. On error, one of the following
+ * negative error codes is returned.
+ *
+ * %-EIO - I/O error.
+ *
+ * %-ENOMEM - Insufficient amount of memory available.
+ *
+ * %-ENOENT - No valid entry was found
+ */
+int nilfs_bmap_seek_key(struct nilfs_bmap *bmap, __u64 start, __u64 *keyp)
 {
-	__u64 lastkey;
 	int ret;
 
 	down_read(&bmap->b_sem);
-	ret = bmap->b_ops->bop_last_key(bmap, &lastkey);
-	if (!ret)
-		*key = lastkey;
+	ret = bmap->b_ops->bop_seek_key(bmap, start, keyp);
 	up_read(&bmap->b_sem);
+
+	if (ret < 0)
+		ret = nilfs_bmap_convert_error(bmap, __func__, ret);
+	return ret;
+}
+
+int nilfs_bmap_last_key(struct nilfs_bmap *bmap, __u64 *keyp)
+{
+	int ret;
+
+	down_read(&bmap->b_sem);
+	ret = bmap->b_ops->bop_last_key(bmap, keyp);
+	up_read(&bmap->b_sem);
+
+	if (ret < 0)
+		ret = nilfs_bmap_convert_error(bmap, __func__, ret);
 	return ret;
 }
 
@@ -201,17 +237,18 @@ int nilfs_bmap_last_key(struct nilfs_bmap *bmap, unsigned long *key)
  *
  * %-ENOENT - A record associated with @key does not exist.
  */
-int nilfs_bmap_delete(struct nilfs_bmap *bmap, unsigned long key)
+int nilfs_bmap_delete(struct nilfs_bmap *bmap, __u64 key)
 {
 	int ret;
 
 	down_write(&bmap->b_sem);
 	ret = nilfs_bmap_do_delete(bmap, key);
 	up_write(&bmap->b_sem);
-	return ret;
+
+	return nilfs_bmap_convert_error(bmap, __func__, ret);
 }
 
-static int nilfs_bmap_do_truncate(struct nilfs_bmap *bmap, unsigned long key)
+static int nilfs_bmap_do_truncate(struct nilfs_bmap *bmap, __u64 key)
 {
 	__u64 lastkey;
 	int ret;
@@ -252,14 +289,15 @@ static int nilfs_bmap_do_truncate(struct nilfs_bmap *bmap, unsigned long key)
  *
  * %-ENOMEM - Insufficient amount of memory available.
  */
-int nilfs_bmap_truncate(struct nilfs_bmap *bmap, unsigned long key)
+int nilfs_bmap_truncate(struct nilfs_bmap *bmap, __u64 key)
 {
 	int ret;
 
 	down_write(&bmap->b_sem);
 	ret = nilfs_bmap_do_truncate(bmap, key);
 	up_write(&bmap->b_sem);
-	return ret;
+
+	return nilfs_bmap_convert_error(bmap, __func__, ret);
 }
 
 /**
@@ -298,7 +336,8 @@ int nilfs_bmap_propagate(struct nilfs_bmap *bmap, struct buffer_head *bh)
 	down_write(&bmap->b_sem);
 	ret = bmap->b_ops->bop_propagate(bmap, bh);
 	up_write(&bmap->b_sem);
-	return ret;
+
+	return nilfs_bmap_convert_error(bmap, __func__, ret);
 }
 
 /**
@@ -342,7 +381,8 @@ int nilfs_bmap_assign(struct nilfs_bmap *bmap,
 	down_write(&bmap->b_sem);
 	ret = bmap->b_ops->bop_assign(bmap, bh, blocknr, binfo);
 	up_write(&bmap->b_sem);
-	return ret;
+
+	return nilfs_bmap_convert_error(bmap, __func__, ret);
 }
 
 /**
@@ -371,7 +411,8 @@ int nilfs_bmap_mark(struct nilfs_bmap *bmap, __u64 key, int level)
 	down_write(&bmap->b_sem);
 	ret = bmap->b_ops->bop_mark(bmap, key, level);
 	up_write(&bmap->b_sem);
-	return ret;
+
+	return nilfs_bmap_convert_error(bmap, __func__, ret);
 }
 
 /**
@@ -398,35 +439,16 @@ int nilfs_bmap_test_and_clear_dirty(struct nilfs_bmap *bmap)
 /*
  * Internal use only
  */
-
-void nilfs_bmap_add_blocks(const struct nilfs_bmap *bmap, int n)
-{
-	inode_add_bytes(bmap->b_inode, (1 << bmap->b_inode->i_blkbits) * n);
-	if (NILFS_MDT(bmap->b_inode))
-		nilfs_mdt_mark_dirty(bmap->b_inode);
-	else
-		mark_inode_dirty(bmap->b_inode);
-}
-
-void nilfs_bmap_sub_blocks(const struct nilfs_bmap *bmap, int n)
-{
-	inode_sub_bytes(bmap->b_inode, (1 << bmap->b_inode->i_blkbits) * n);
-	if (NILFS_MDT(bmap->b_inode))
-		nilfs_mdt_mark_dirty(bmap->b_inode);
-	else
-		mark_inode_dirty(bmap->b_inode);
-}
-
 __u64 nilfs_bmap_data_get_key(const struct nilfs_bmap *bmap,
 			      const struct buffer_head *bh)
 {
 	struct buffer_head *pbh;
 	__u64 key;
 
-	key = page_index(bh->b_page) << (PAGE_CACHE_SHIFT -
+	key = page_index(bh->b_page) << (PAGE_SHIFT -
 					 bmap->b_inode->i_blkbits);
-	for (pbh = page_buffers(bh->b_page); pbh != bh;
-	     pbh = pbh->b_this_page, key++);
+	for (pbh = page_buffers(bh->b_page); pbh != bh; pbh = pbh->b_this_page)
+		key++;
 
 	return key;
 }
@@ -539,18 +561,20 @@ void nilfs_bmap_init_gc(struct nilfs_bmap *bmap)
 	nilfs_btree_init_gc(bmap);
 }
 
-void nilfs_bmap_init_gcdat(struct nilfs_bmap *gcbmap, struct nilfs_bmap *bmap)
+void nilfs_bmap_save(const struct nilfs_bmap *bmap,
+		     struct nilfs_bmap_store *store)
 {
-	memcpy(gcbmap, bmap, sizeof(union nilfs_bmap_union));
-	init_rwsem(&gcbmap->b_sem);
-	lockdep_set_class(&bmap->b_sem, &nilfs_bmap_dat_lock_key);
-	gcbmap->b_inode = &NILFS_BMAP_I(gcbmap)->vfs_inode;
+	memcpy(store->data, bmap->b_u.u_data, sizeof(store->data));
+	store->last_allocated_key = bmap->b_last_allocated_key;
+	store->last_allocated_ptr = bmap->b_last_allocated_ptr;
+	store->state = bmap->b_state;
 }
 
-void nilfs_bmap_commit_gcdat(struct nilfs_bmap *gcbmap, struct nilfs_bmap *bmap)
+void nilfs_bmap_restore(struct nilfs_bmap *bmap,
+			const struct nilfs_bmap_store *store)
 {
-	memcpy(bmap, gcbmap, sizeof(union nilfs_bmap_union));
-	init_rwsem(&bmap->b_sem);
-	lockdep_set_class(&bmap->b_sem, &nilfs_bmap_dat_lock_key);
-	bmap->b_inode = &NILFS_BMAP_I(bmap)->vfs_inode;
+	memcpy(bmap->b_u.u_data, store->data, sizeof(store->data));
+	bmap->b_last_allocated_key = store->last_allocated_key;
+	bmap->b_last_allocated_ptr = store->last_allocated_ptr;
+	bmap->b_state = store->state;
 }

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/fs/isofs/rock.c
  *
@@ -8,7 +9,6 @@
 
 #include <linux/slab.h>
 #include <linux/pagemap.h>
-#include <linux/smp_lock.h>
 
 #include "isofs.h"
 #include "rock.h"
@@ -204,6 +204,8 @@ int get_rock_ridge_filename(struct iso_directory_record *de,
 	int retnamlen = 0;
 	int truncate = 0;
 	int ret = 0;
+	char *p;
+	int len;
 
 	if (!ISOFS_SB(inode->i_sb)->s_rock)
 		return 0;
@@ -268,12 +270,17 @@ repeat:
 					rr->u.NM.flags);
 				break;
 			}
-			if ((strlen(retname) + rr->len - 5) >= 254) {
+			len = rr->len - 5;
+			if (retnamlen + len >= 254) {
 				truncate = 1;
 				break;
 			}
-			strncat(retname, rr->u.NM.name, rr->len - 5);
-			retnamlen += rr->len - 5;
+			p = memchr(rr->u.NM.name, '\0', len);
+			if (unlikely(p))
+				len = p - rr->u.NM.name;
+			memcpy(retname + retnamlen, rr->u.NM.name, len);
+			retnamlen += len;
+			retname[retnamlen] = '\0';
 			break;
 		case SIG('R', 'E'):
 			kfree(rs.buffer);
@@ -371,15 +378,15 @@ repeat:
 			{
 				int p;
 				for (p = 0; p < rr->u.ER.len_id; p++)
-					printk("%c", rr->u.ER.data[p]);
+					printk(KERN_CONT "%c", rr->u.ER.data[p]);
 			}
-			printk("\n");
+			printk(KERN_CONT "\n");
 			break;
 		case SIG('P', 'X'):
 			inode->i_mode = isonum_733(rr->u.PX.mode);
-			inode->i_nlink = isonum_733(rr->u.PX.n_links);
-			inode->i_uid = isonum_733(rr->u.PX.uid);
-			inode->i_gid = isonum_733(rr->u.PX.gid);
+			set_nlink(inode, isonum_733(rr->u.PX.n_links));
+			i_uid_write(inode, isonum_733(rr->u.PX.uid));
+			i_gid_write(inode, isonum_733(rr->u.PX.gid));
 			break;
 		case SIG('P', 'N'):
 			{
@@ -520,7 +527,7 @@ repeat:
 				goto out;
 			}
 			inode->i_mode = reloc->i_mode;
-			inode->i_nlink = reloc->i_nlink;
+			set_nlink(inode, reloc->i_nlink);
 			inode->i_uid = reloc->i_uid;
 			inode->i_gid = reloc->i_gid;
 			inode->i_rdev = reloc->i_rdev;
@@ -541,8 +548,7 @@ repeat:
 			if (algo == SIG('p', 'z')) {
 				int block_shift =
 					isonum_711(&rr->u.ZF.parms[1]);
-				if (block_shift < PAGE_CACHE_SHIFT
-						|| block_shift > 17) {
+				if (block_shift > 17) {
 					printk(KERN_WARNING "isofs: "
 						"Can't handle ZF block "
 						"size of 2^%d\n",
@@ -688,7 +694,8 @@ static int rock_ridge_symlink_readpage(struct file *file, struct page *page)
 {
 	struct inode *inode = page->mapping->host;
 	struct iso_inode_info *ei = ISOFS_I(inode);
-	char *link = kmap(page);
+	struct isofs_sb_info *sbi = ISOFS_SB(inode->i_sb);
+	char *link = page_address(page);
 	unsigned long bufsize = ISOFS_BUFFER_SIZE(inode);
 	struct buffer_head *bh;
 	char *rpnt = link;
@@ -700,12 +707,11 @@ static int rock_ridge_symlink_readpage(struct file *file, struct page *page)
 	struct rock_state rs;
 	int ret;
 
-	if (!ISOFS_SB(inode->i_sb)->s_rock)
+	if (!sbi->s_rock)
 		goto error;
 
 	init_rock_state(&rs, inode);
 	block = ei->i_iget5_block;
-	lock_kernel();
 	bh = sb_bread(inode->i_sb, block);
 	if (!bh)
 		goto out_noread;
@@ -775,9 +781,7 @@ repeat:
 		goto fail;
 	brelse(bh);
 	*rpnt = '\0';
-	unlock_kernel();
 	SetPageUptodate(page);
-	kunmap(page);
 	unlock_page(page);
 	return 0;
 
@@ -792,10 +796,8 @@ out_bad_span:
 	printk("symlink spans iso9660 blocks\n");
 fail:
 	brelse(bh);
-	unlock_kernel();
 error:
 	SetPageError(page);
-	kunmap(page);
 	unlock_page(page);
 	return -EIO;
 }

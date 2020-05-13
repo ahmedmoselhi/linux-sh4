@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*---------------------------------------------------------------------------+
  |  fpu_aux.c                                                                |
  |                                                                           |
@@ -30,10 +31,10 @@ static void fclex(void)
 }
 
 /* Needs to be externally visible */
-void finit_task(struct task_struct *tsk)
+void fpstate_init_soft(struct swregs_state *soft)
 {
-	struct i387_soft_struct *soft = &tsk->thread.xstate->soft;
 	struct address *oaddr, *iaddr;
+	memset(soft, 0, sizeof(*soft));
 	soft->cwd = 0x037f;
 	soft->swd = 0;
 	soft->ftop = 0;	/* We don't keep top in the status word internally. */
@@ -52,7 +53,7 @@ void finit_task(struct task_struct *tsk)
 
 void finit(void)
 {
-	finit_task(current);
+	fpstate_init_soft(&current->thread.fpu.state.soft);
 }
 
 /*
@@ -167,6 +168,76 @@ void fxch_i(void)
 	tag_word &= ~(3 << (regnr * 2)) & ~(3 << (regnri * 2));
 	tag_word |= (sti_tag << (regnr * 2)) | (st0_tag << (regnri * 2));
 	fpu_tag_word = tag_word;
+}
+
+static void fcmovCC(void)
+{
+	/* fcmovCC st(i) */
+	int i = FPU_rm;
+	FPU_REG *st0_ptr = &st(0);
+	FPU_REG *sti_ptr = &st(i);
+	long tag_word = fpu_tag_word;
+	int regnr = top & 7;
+	int regnri = (top + i) & 7;
+	u_char sti_tag = (tag_word >> (regnri * 2)) & 3;
+
+	if (sti_tag == TAG_Empty) {
+		FPU_stack_underflow();
+		clear_C1();
+		return;
+	}
+	reg_copy(sti_ptr, st0_ptr);
+	tag_word &= ~(3 << (regnr * 2));
+	tag_word |= (sti_tag << (regnr * 2));
+	fpu_tag_word = tag_word;
+}
+
+void fcmovb(void)
+{
+	if (FPU_EFLAGS & X86_EFLAGS_CF)
+		fcmovCC();
+}
+
+void fcmove(void)
+{
+	if (FPU_EFLAGS & X86_EFLAGS_ZF)
+		fcmovCC();
+}
+
+void fcmovbe(void)
+{
+	if (FPU_EFLAGS & (X86_EFLAGS_CF|X86_EFLAGS_ZF))
+		fcmovCC();
+}
+
+void fcmovu(void)
+{
+	if (FPU_EFLAGS & X86_EFLAGS_PF)
+		fcmovCC();
+}
+
+void fcmovnb(void)
+{
+	if (!(FPU_EFLAGS & X86_EFLAGS_CF))
+		fcmovCC();
+}
+
+void fcmovne(void)
+{
+	if (!(FPU_EFLAGS & X86_EFLAGS_ZF))
+		fcmovCC();
+}
+
+void fcmovnbe(void)
+{
+	if (!(FPU_EFLAGS & (X86_EFLAGS_CF|X86_EFLAGS_ZF)))
+		fcmovCC();
+}
+
+void fcmovnu(void)
+{
+	if (!(FPU_EFLAGS & X86_EFLAGS_PF))
+		fcmovCC();
 }
 
 void ffree_(void)

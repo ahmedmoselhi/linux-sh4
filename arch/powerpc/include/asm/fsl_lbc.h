@@ -1,23 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Freescale Local Bus Controller
  *
- * Copyright (c) 2006-2007 Freescale Semiconductor
+ * Copyright © 2006-2007, 2010 Freescale Semiconductor
  *
  * Authors: Nick Spence <nick.spence@freescale.com>,
  *          Scott Wood <scottwood@freescale.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ *          Jack Lan <jack.lan@freescale.com>
  */
 
 #ifndef __ASM_FSL_LBC_H
@@ -26,6 +14,8 @@
 #include <linux/compiler.h>
 #include <linux/types.h>
 #include <linux/io.h>
+#include <linux/device.h>
+#include <linux/spinlock.h>
 
 struct fsl_lbc_bank {
 	__be32 br;             /**< Base Register  */
@@ -92,6 +82,9 @@ struct fsl_lbc_bank {
 #define OR_FCM_TRLX_SHIFT                2
 #define OR_FCM_EHTR             0x00000002
 #define OR_FCM_EHTR_SHIFT                1
+
+#define OR_GPCM_AM		0xFFFF8000
+#define OR_GPCM_AM_SHIFT		15
 };
 
 struct fsl_lbc_regs {
@@ -125,13 +118,23 @@ struct fsl_lbc_regs {
 #define LTESR_ATMW 0x00800000
 #define LTESR_ATMR 0x00400000
 #define LTESR_CS   0x00080000
+#define LTESR_UPM  0x00000002
 #define LTESR_CC   0x00000001
 #define LTESR_NAND_MASK (LTESR_FCT | LTESR_PAR | LTESR_CC)
+#define LTESR_MASK      (LTESR_BM | LTESR_FCT | LTESR_PAR | LTESR_WP \
+			 | LTESR_ATMW | LTESR_ATMR | LTESR_CS | LTESR_UPM \
+			 | LTESR_CC)
+#define LTESR_CLEAR	0xFFFFFFFF
+#define LTECCR_CLEAR	0xFFFFFFFF
+#define LTESR_STATUS	LTESR_MASK
+#define LTEIR_ENABLE	LTESR_MASK
+#define LTEDR_ENABLE	0x00000000
 	__be32 ltedr;           /**< Transfer Error Disable Register */
 	__be32 lteir;           /**< Transfer Error Interrupt Register */
 	__be32 lteatr;          /**< Transfer Error Attributes Register */
 	__be32 ltear;           /**< Transfer Error Address Register */
-	u8 res6[0xC];
+	__be32 lteccr;          /**< Transfer Error ECC Register */
+	u8 res6[0x8];
 	__be32 lbcr;            /**< Configuration Register */
 #define LBCR_LDIS  0x80000000
 #define LBCR_LDIS_SHIFT    31
@@ -144,6 +147,8 @@ struct fsl_lbc_regs {
 #define LBCR_EPAR_SHIFT    16
 #define LBCR_BMT   0x0000FF00
 #define LBCR_BMT_SHIFT      8
+#define LBCR_BMTPS 0x0000000F
+#define LBCR_BMTPS_SHIFT    0
 #define LBCR_INIT  0x00040000
 	__be32 lcrr;            /**< Clock Ratio Register */
 #define LCRR_DBYP    0x80000000
@@ -223,8 +228,6 @@ struct fsl_lbc_regs {
 #define FPAR_LP_CI_SHIFT      0
 	__be32 fbcr;            /**< Flash Byte Count Register */
 #define FBCR_BC      0x00000FFF
-	u8 res11[0x8];
-	u8 res8[0xF00];
 };
 
 /*
@@ -235,6 +238,7 @@ struct fsl_upm {
 	int width;
 };
 
+extern u32 fsl_lbc_addr(phys_addr_t addr_base);
 extern int fsl_lbc_find(phys_addr_t addr_base);
 extern int fsl_upm_find(phys_addr_t addr_base, struct fsl_upm *upm);
 
@@ -265,7 +269,28 @@ static inline void fsl_upm_end_pattern(struct fsl_upm *upm)
 		cpu_relax();
 }
 
+/* overview of the fsl lbc controller */
+
+struct fsl_lbc_ctrl {
+	/* device info */
+	struct device			*dev;
+	struct fsl_lbc_regs __iomem	*regs;
+	int				irq[2];
+	wait_queue_head_t		irq_wait;
+	spinlock_t			lock;
+	void				*nand;
+
+	/* status read from LTESR by irq handler */
+	unsigned int			irq_status;
+
+#ifdef CONFIG_SUSPEND
+	/* save regs when system go to deep-sleep */
+	struct fsl_lbc_regs		*saved_regs;
+#endif
+};
+
 extern int fsl_upm_run_pattern(struct fsl_upm *upm, void __iomem *io_base,
 			       u32 mar);
+extern struct fsl_lbc_ctrl *fsl_lbc_ctrl_dev;
 
 #endif /* __ASM_FSL_LBC_H */

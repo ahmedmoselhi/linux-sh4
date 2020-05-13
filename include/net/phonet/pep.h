@@ -1,23 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * File: pep.h
  *
  * Phonet Pipe End Point sockets definitions
  *
  * Copyright (C) 2008 Nokia Corporation.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
  */
 
 #ifndef NET_PHONET_PEP_H
@@ -28,7 +15,6 @@ struct pep_sock {
 
 	/* XXX: union-ify listening vs connected stuff ? */
 	/* Listening socket stuff: */
-	struct hlist_head	ackq;
 	struct hlist_head	hlist;
 
 	/* Connected socket stuff: */
@@ -44,6 +30,7 @@ struct pep_sock {
 	u8			rx_fc;	/* RX flow control */
 	u8			tx_fc;	/* TX flow control */
 	u8			init_enable;	/* auto-enable at creation */
+	u8			aligned;
 };
 
 static inline struct pep_sock *pep_sk(struct sock *sk)
@@ -63,10 +50,11 @@ struct pnpipehdr {
 		u8		state_after_reset;	/* reset request */
 		u8		error_code;		/* any response */
 		u8		pep_type;		/* status indication */
-		u8		data[1];
+		u8		data0;			/* anything else */
 	};
+	u8			data[];
 };
-#define other_pep_type		data[1]
+#define other_pep_type		data[0]
 
 static inline struct pnpipehdr *pnp_hdr(struct sk_buff *skb)
 {
@@ -76,7 +64,13 @@ static inline struct pnpipehdr *pnp_hdr(struct sk_buff *skb)
 #define MAX_PNPIPE_HEADER (MAX_PHONET_HEADER + 4)
 
 enum {
+	PNS_PIPE_CREATE_REQ = 0x00,
+	PNS_PIPE_CREATE_RESP,
+	PNS_PIPE_REMOVE_REQ,
+	PNS_PIPE_REMOVE_RESP,
+
 	PNS_PIPE_DATA = 0x20,
+	PNS_PIPE_ALIGNED_DATA,
 
 	PNS_PEP_CONNECT_REQ = 0x40,
 	PNS_PEP_CONNECT_RESP,
@@ -138,6 +132,7 @@ enum {
 	PN_PIPE_SB_NEGOTIATED_FC,
 	PN_PIPE_SB_REQUIRED_FC_TX,
 	PN_PIPE_SB_PREFERRED_FC_RX,
+	PN_PIPE_SB_ALIGNED_DATA,
 };
 
 /* Phonet pipe flow control models */
@@ -146,6 +141,7 @@ enum {
 	PN_LEGACY_FLOW_CONTROL,
 	PN_ONE_CREDIT_FLOW_CONTROL,
 	PN_MULTI_CREDIT_FLOW_CONTROL,
+	PN_MAX_FLOW_CONTROL,
 };
 
 #define pn_flow_safe(fc) ((fc) >> 1)

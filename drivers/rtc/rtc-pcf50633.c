@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /* NXP PCF50633 RTC Driver
  *
  * (C) 2006-2008 by Openmoko, Inc.
@@ -6,18 +7,13 @@
  *
  * Broken down from monstrous PCF50633 driver mainly by
  * Harald Welte, Andy Green and Werner Almesberger
- *
- *  This program is free software; you can redistribute  it and/or modify it
- *  under  the terms of  the GNU General  Public License as published by the
- *  Free Software Foundation;  either version 2 of the  License, or (at your
- *  option) any later version.
- *
  */
 
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/device.h>
+#include <linux/slab.h>
 #include <linux/platform_device.h>
 #include <linux/rtc.h>
 #include <linux/bcd.h>
@@ -57,7 +53,7 @@ struct pcf50633_time {
 
 struct pcf50633_rtc {
 	int alarm_enabled;
-	int second_enabled;
+	int alarm_pending;
 
 	struct pcf50633 *pcf;
 	struct rtc_device *rtc_dev;
@@ -104,25 +100,6 @@ pcf50633_rtc_alarm_irq_enable(struct device *dev, unsigned int enabled)
 	return 0;
 }
 
-static int
-pcf50633_rtc_update_irq_enable(struct device *dev, unsigned int enabled)
-{
-	struct pcf50633_rtc *rtc = dev_get_drvdata(dev);
-	int err;
-
-	if (enabled)
-		err = pcf50633_irq_unmask(rtc->pcf, PCF50633_IRQ_SECOND);
-	else
-		err = pcf50633_irq_mask(rtc->pcf, PCF50633_IRQ_SECOND);
-
-	if (err < 0)
-		return err;
-
-	rtc->second_enabled = enabled;
-
-	return 0;
-}
-
 static int pcf50633_rtc_read_time(struct device *dev, struct rtc_time *tm)
 {
 	struct pcf50633_rtc *rtc;
@@ -149,24 +126,20 @@ static int pcf50633_rtc_read_time(struct device *dev, struct rtc_time *tm)
 
 	pcf2rtc_time(tm, &pcf_tm);
 
-	dev_dbg(dev, "RTC_TIME: %u.%u.%u %u:%u:%u\n",
-		tm->tm_mday, tm->tm_mon, tm->tm_year,
-		tm->tm_hour, tm->tm_min, tm->tm_sec);
+	dev_dbg(dev, "RTC_TIME: %ptRr\n", tm);
 
-	return rtc_valid_tm(tm);
+	return 0;
 }
 
 static int pcf50633_rtc_set_time(struct device *dev, struct rtc_time *tm)
 {
 	struct pcf50633_rtc *rtc;
 	struct pcf50633_time pcf_tm;
-	int second_masked, alarm_masked, ret = 0;
+	int alarm_masked, ret = 0;
 
 	rtc = dev_get_drvdata(dev);
 
-	dev_dbg(dev, "RTC_TIME: %u.%u.%u %u:%u:%u\n",
-		tm->tm_mday, tm->tm_mon, tm->tm_year,
-		tm->tm_hour, tm->tm_min, tm->tm_sec);
+	dev_dbg(dev, "RTC_TIME: %ptRr\n", tm);
 
 	rtc2pcf_time(&pcf_tm, tm);
 
@@ -179,11 +152,8 @@ static int pcf50633_rtc_set_time(struct device *dev, struct rtc_time *tm)
 		pcf_tm.time[PCF50633_TI_SEC]);
 
 
-	second_masked = pcf50633_irq_mask_get(rtc->pcf, PCF50633_IRQ_SECOND);
 	alarm_masked = pcf50633_irq_mask_get(rtc->pcf, PCF50633_IRQ_ALARM);
 
-	if (!second_masked)
-		pcf50633_irq_mask(rtc->pcf, PCF50633_IRQ_SECOND);
 	if (!alarm_masked)
 		pcf50633_irq_mask(rtc->pcf, PCF50633_IRQ_ALARM);
 
@@ -192,8 +162,6 @@ static int pcf50633_rtc_set_time(struct device *dev, struct rtc_time *tm)
 					     PCF50633_TI_EXTENT,
 					     &pcf_tm.time[0]);
 
-	if (!second_masked)
-		pcf50633_irq_unmask(rtc->pcf, PCF50633_IRQ_SECOND);
 	if (!alarm_masked)
 		pcf50633_irq_unmask(rtc->pcf, PCF50633_IRQ_ALARM);
 
@@ -209,6 +177,7 @@ static int pcf50633_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 	rtc = dev_get_drvdata(dev);
 
 	alrm->enabled = rtc->alarm_enabled;
+	alrm->pending = rtc->alarm_pending;
 
 	ret = pcf50633_read_block(rtc->pcf, PCF50633_REG_RTCSCA,
 				PCF50633_TI_EXTENT, &pcf_tm.time[0]);
@@ -244,6 +213,8 @@ static int pcf50633_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 	/* Returns 0 on success */
 	ret = pcf50633_write_block(rtc->pcf, PCF50633_REG_RTCSCA,
 				PCF50633_TI_EXTENT, &pcf_tm.time[0]);
+	if (!alrm->enabled)
+		rtc->alarm_pending = 0;
 
 	if (!alarm_masked || alrm->enabled)
 		pcf50633_irq_unmask(rtc->pcf, PCF50633_IRQ_ALARM);
@@ -252,70 +223,49 @@ static int pcf50633_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 	return ret;
 }
 
-static struct rtc_class_ops pcf50633_rtc_ops = {
+static const struct rtc_class_ops pcf50633_rtc_ops = {
 	.read_time		= pcf50633_rtc_read_time,
 	.set_time		= pcf50633_rtc_set_time,
 	.read_alarm		= pcf50633_rtc_read_alarm,
 	.set_alarm		= pcf50633_rtc_set_alarm,
-	.alarm_irq_enable 	= pcf50633_rtc_alarm_irq_enable,
-	.update_irq_enable 	= pcf50633_rtc_update_irq_enable,
+	.alarm_irq_enable	= pcf50633_rtc_alarm_irq_enable,
 };
 
 static void pcf50633_rtc_irq(int irq, void *data)
 {
 	struct pcf50633_rtc *rtc = data;
 
-	switch (irq) {
-	case PCF50633_IRQ_ALARM:
-		rtc_update_irq(rtc->rtc_dev, 1, RTC_AF | RTC_IRQF);
-		break;
-	case PCF50633_IRQ_SECOND:
-		rtc_update_irq(rtc->rtc_dev, 1, RTC_UF | RTC_IRQF);
-		break;
-	}
+	rtc_update_irq(rtc->rtc_dev, 1, RTC_AF | RTC_IRQF);
+	rtc->alarm_pending = 1;
 }
 
-static int __devinit pcf50633_rtc_probe(struct platform_device *pdev)
+static int pcf50633_rtc_probe(struct platform_device *pdev)
 {
-	struct pcf50633_subdev_pdata *pdata;
 	struct pcf50633_rtc *rtc;
 
-
-	rtc = kzalloc(sizeof(*rtc), GFP_KERNEL);
+	rtc = devm_kzalloc(&pdev->dev, sizeof(*rtc), GFP_KERNEL);
 	if (!rtc)
 		return -ENOMEM;
 
-	pdata = pdev->dev.platform_data;
-	rtc->pcf = pdata->pcf;
+	rtc->pcf = dev_to_pcf50633(pdev->dev.parent);
 	platform_set_drvdata(pdev, rtc);
-	rtc->rtc_dev = rtc_device_register("pcf50633-rtc", &pdev->dev,
+	rtc->rtc_dev = devm_rtc_device_register(&pdev->dev, "pcf50633-rtc",
 				&pcf50633_rtc_ops, THIS_MODULE);
 
-	if (IS_ERR(rtc->rtc_dev)) {
-		int ret =  PTR_ERR(rtc->rtc_dev);
-		kfree(rtc);
-		return ret;
-	}
+	if (IS_ERR(rtc->rtc_dev))
+		return PTR_ERR(rtc->rtc_dev);
 
 	pcf50633_register_irq(rtc->pcf, PCF50633_IRQ_ALARM,
 					pcf50633_rtc_irq, rtc);
-	pcf50633_register_irq(rtc->pcf, PCF50633_IRQ_SECOND,
-					pcf50633_rtc_irq, rtc);
-
 	return 0;
 }
 
-static int __devexit pcf50633_rtc_remove(struct platform_device *pdev)
+static int pcf50633_rtc_remove(struct platform_device *pdev)
 {
 	struct pcf50633_rtc *rtc;
 
 	rtc = platform_get_drvdata(pdev);
-
 	pcf50633_free_irq(rtc->pcf, PCF50633_IRQ_ALARM);
-	pcf50633_free_irq(rtc->pcf, PCF50633_IRQ_SECOND);
-
-	rtc_device_unregister(rtc->rtc_dev);
-	kfree(rtc);
 
 	return 0;
 }
@@ -325,20 +275,10 @@ static struct platform_driver pcf50633_rtc_driver = {
 		.name = "pcf50633-rtc",
 	},
 	.probe = pcf50633_rtc_probe,
-	.remove = __devexit_p(pcf50633_rtc_remove),
+	.remove = pcf50633_rtc_remove,
 };
 
-static int __init pcf50633_rtc_init(void)
-{
-	return platform_driver_register(&pcf50633_rtc_driver);
-}
-module_init(pcf50633_rtc_init);
-
-static void __exit pcf50633_rtc_exit(void)
-{
-	platform_driver_unregister(&pcf50633_rtc_driver);
-}
-module_exit(pcf50633_rtc_exit);
+module_platform_driver(pcf50633_rtc_driver);
 
 MODULE_DESCRIPTION("PCF50633 RTC driver");
 MODULE_AUTHOR("Balaji Rao <balajirrao@openmoko.org>");

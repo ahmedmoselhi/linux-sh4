@@ -1,5 +1,16 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * Because linux/module.h has tracepoints in the header, and ftrace.h
+ * used to include this file, define_trace.h includes linux/module.h
+ * But we do not want the module.h to override the TRACE_SYSTEM macro
+ * variable that define_trace.h is processing, so we only set it
+ * when module events are being processed, which would happen when
+ * CREATE_TRACE_POINTS is defined.
+ */
+#ifdef CREATE_TRACE_POINTS
 #undef TRACE_SYSTEM
 #define TRACE_SYSTEM module
+#endif
 
 #if !defined(_TRACE_MODULE_H) || defined(TRACE_HEADER_MULTI_READ)
 #define _TRACE_MODULE_H
@@ -12,8 +23,10 @@ struct module;
 
 #define show_module_flags(flags) __print_flags(flags, "",	\
 	{ (1UL << TAINT_PROPRIETARY_MODULE),	"P" },		\
+	{ (1UL << TAINT_OOT_MODULE),		"O" },		\
 	{ (1UL << TAINT_FORCED_MODULE),		"F" },		\
-	{ (1UL << TAINT_CRAP),			"C" })
+	{ (1UL << TAINT_CRAP),			"C" },		\
+	{ (1UL << TAINT_UNSIGNED_MODULE),	"E" })
 
 TRACE_EVENT(module_load,
 
@@ -51,33 +64,14 @@ TRACE_EVENT(module_free,
 	TP_printk("%s", __get_str(name))
 );
 
-TRACE_EVENT(module_get,
+#ifdef CONFIG_MODULE_UNLOAD
+/* trace_module_get/put are only used if CONFIG_MODULE_UNLOAD is defined */
 
-	TP_PROTO(struct module *mod, unsigned long ip, int refcnt),
+DECLARE_EVENT_CLASS(module_refcnt,
 
-	TP_ARGS(mod, ip, refcnt),
+	TP_PROTO(struct module *mod, unsigned long ip),
 
-	TP_STRUCT__entry(
-		__field(	unsigned long,	ip		)
-		__field(	int,		refcnt		)
-		__string(	name,		mod->name	)
-	),
-
-	TP_fast_assign(
-		__entry->ip	= ip;
-		__entry->refcnt	= refcnt;
-		__assign_str(name, mod->name);
-	),
-
-	TP_printk("%s call_site=%pf refcnt=%d",
-		  __get_str(name), (void *)__entry->ip, __entry->refcnt)
-);
-
-TRACE_EVENT(module_put,
-
-	TP_PROTO(struct module *mod, unsigned long ip, int refcnt),
-
-	TP_ARGS(mod, ip, refcnt),
+	TP_ARGS(mod, ip),
 
 	TP_STRUCT__entry(
 		__field(	unsigned long,	ip		)
@@ -87,13 +81,28 @@ TRACE_EVENT(module_put,
 
 	TP_fast_assign(
 		__entry->ip	= ip;
-		__entry->refcnt	= refcnt;
+		__entry->refcnt	= atomic_read(&mod->refcnt);
 		__assign_str(name, mod->name);
 	),
 
-	TP_printk("%s call_site=%pf refcnt=%d",
+	TP_printk("%s call_site=%ps refcnt=%d",
 		  __get_str(name), (void *)__entry->ip, __entry->refcnt)
 );
+
+DEFINE_EVENT(module_refcnt, module_get,
+
+	TP_PROTO(struct module *mod, unsigned long ip),
+
+	TP_ARGS(mod, ip)
+);
+
+DEFINE_EVENT(module_refcnt, module_put,
+
+	TP_PROTO(struct module *mod, unsigned long ip),
+
+	TP_ARGS(mod, ip)
+);
+#endif /* CONFIG_MODULE_UNLOAD */
 
 TRACE_EVENT(module_request,
 
@@ -102,18 +111,18 @@ TRACE_EVENT(module_request,
 	TP_ARGS(name, wait, ip),
 
 	TP_STRUCT__entry(
-		__field(	bool,		wait		)
 		__field(	unsigned long,	ip		)
+		__field(	bool,		wait		)
 		__string(	name,		name		)
 	),
 
 	TP_fast_assign(
-		__entry->wait	= wait;
 		__entry->ip	= ip;
+		__entry->wait	= wait;
 		__assign_str(name, name);
 	),
 
-	TP_printk("%s wait=%d call_site=%pf",
+	TP_printk("%s wait=%d call_site=%ps",
 		  __get_str(name), (int)__entry->wait, (void *)__entry->ip)
 );
 
@@ -123,4 +132,3 @@ TRACE_EVENT(module_request,
 
 /* This part must be outside protection */
 #include <trace/define_trace.h>
-

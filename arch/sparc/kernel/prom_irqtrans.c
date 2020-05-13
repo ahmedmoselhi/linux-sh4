@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/kernel.h>
 #include <linux/string.h>
 #include <linux/init.h>
@@ -192,7 +193,7 @@ static int sabre_device_needs_wsync(struct device_node *dp)
 	 *    the DMA synchronization handling
 	 */
 	while (parent) {
-		if (!strcmp(parent->type, "pci"))
+		if (of_node_is_type(parent, "pci"))
 			break;
 		parent = parent->parent;
 	}
@@ -227,7 +228,7 @@ static unsigned int sabre_irq_build(struct device_node *dp,
 	unsigned long imap, iclr;
 	unsigned long imap_off, iclr_off;
 	int inofixup = 0;
-	int virt_irq;
+	int irq;
 
 	ino &= 0x3f;
 	if (ino < SABRE_ONBOARD_IRQ_BASE) {
@@ -247,7 +248,7 @@ static unsigned int sabre_irq_build(struct device_node *dp,
 	if ((ino & 0x20) == 0)
 		inofixup = ino & 0x03;
 
-	virt_irq = build_irq(inofixup, iclr, imap);
+	irq = build_irq(inofixup, iclr, imap);
 
 	/* If the parent device is a PCI<->PCI bridge other than
 	 * APB, we have to install a pre-handler to ensure that
@@ -256,13 +257,13 @@ static unsigned int sabre_irq_build(struct device_node *dp,
 	 */
 	regs = of_get_property(dp, "reg", NULL);
 	if (regs && sabre_device_needs_wsync(dp)) {
-		irq_install_pre_handler(virt_irq,
+		irq_install_pre_handler(irq,
 					sabre_wsync_handler,
 					(void *) (long) regs->phys_hi,
 					(void *) irq_data);
 	}
 
-	return virt_irq;
+	return irq;
 }
 
 static void __init sabre_irq_trans_init(struct device_node *dp)
@@ -382,7 +383,7 @@ static unsigned int schizo_irq_build(struct device_node *dp,
 	unsigned long pbm_regs = irq_data->pbm_regs;
 	unsigned long imap, iclr;
 	int ign_fixup;
-	int virt_irq;
+	int irq;
 	int is_tomatillo;
 
 	ino &= 0x3f;
@@ -409,17 +410,17 @@ static unsigned int schizo_irq_build(struct device_node *dp,
 			ign_fixup = (1 << 6);
 	}
 
-	virt_irq = build_irq(ign_fixup, iclr, imap);
+	irq = build_irq(ign_fixup, iclr, imap);
 
 	if (is_tomatillo) {
-		irq_install_pre_handler(virt_irq,
+		irq_install_pre_handler(irq,
 					tomatillo_wsync_handler,
 					((irq_data->chip_version <= 4) ?
 					 (void *) 1 : (void *) 0),
 					(void *) irq_data->sync_reg);
 	}
 
-	return virt_irq;
+	return irq;
 }
 
 static void __init __schizo_irq_trans_init(struct device_node *dp,
@@ -694,7 +695,7 @@ static unsigned int sbus_of_build_irq(struct device_node *dp,
 		case 3:
 			iclr = reg_base + SYSIO_ICLR_SLOT3;
 			break;
-		};
+		}
 
 		iclr += ((unsigned long)sbus_level - 1UL) * 8UL;
 	}
@@ -719,16 +720,16 @@ static unsigned int central_build_irq(struct device_node *dp,
 				      void *_data)
 {
 	struct device_node *central_dp = _data;
-	struct of_device *central_op = of_find_device_by_node(central_dp);
+	struct platform_device *central_op = of_find_device_by_node(central_dp);
 	struct resource *res;
 	unsigned long imap, iclr;
 	u32 tmp;
 
-	if (!strcmp(dp->name, "eeprom")) {
+	if (of_node_name_eq(dp, "eeprom")) {
 		res = &central_op->resource[5];
-	} else if (!strcmp(dp->name, "zs")) {
+	} else if (of_node_name_eq(dp, "zs")) {
 		res = &central_op->resource[4];
-	} else if (!strcmp(dp->name, "clock-board")) {
+	} else if (of_node_name_eq(dp, "clock-board")) {
 		res = &central_op->resource[3];
 	} else {
 		return ino;
@@ -823,19 +824,19 @@ void __init irq_trans_init(struct device_node *dp)
 	}
 #endif
 #ifdef CONFIG_SBUS
-	if (!strcmp(dp->name, "sbus") ||
-	    !strcmp(dp->name, "sbi")) {
+	if (of_node_name_eq(dp, "sbus") ||
+	    of_node_name_eq(dp, "sbi")) {
 		sbus_irq_trans_init(dp);
 		return;
 	}
 #endif
-	if (!strcmp(dp->name, "fhc") &&
-	    !strcmp(dp->parent->name, "central")) {
+	if (of_node_name_eq(dp, "fhc") &&
+	    of_node_name_eq(dp->parent, "central")) {
 		central_irq_trans_init(dp);
 		return;
 	}
-	if (!strcmp(dp->name, "virtual-devices") ||
-	    !strcmp(dp->name, "niu")) {
+	if (of_node_name_eq(dp, "virtual-devices") ||
+	    of_node_name_eq(dp, "niu")) {
 		sun4v_vdev_irq_trans_init(dp);
 		return;
 	}

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/arch/arm/mach-pxa/trizeps4.c
  *
@@ -6,17 +7,14 @@
  *  Author:	Jürgen Schindele
  *  Created:	20 02, 2006
  *  Copyright:	Jürgen Schindele
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2 as
- *  published by the Free Software Foundation.
  */
 
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/platform_device.h>
-#include <linux/sysdev.h>
 #include <linux/interrupt.h>
+#include <linux/leds.h>
+#include <linux/export.h>
 #include <linux/sched.h>
 #include <linux/bitops.h>
 #include <linux/fb.h>
@@ -26,28 +24,29 @@
 #include <linux/dm9000.h>
 #include <linux/mtd/physmap.h>
 #include <linux/mtd/partitions.h>
+#include <linux/regulator/machine.h>
+#include <linux/platform_data/i2c-pxa.h>
 
 #include <asm/types.h>
 #include <asm/setup.h>
 #include <asm/memory.h>
 #include <asm/mach-types.h>
 #include <asm/irq.h>
-#include <asm/sizes.h>
+#include <linux/sizes.h>
 
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
 #include <asm/mach/irq.h>
 #include <asm/mach/flash.h>
 
-#include <mach/pxa27x.h>
-#include <mach/pxa2xx_spi.h>
+#include "pxa27x.h"
 #include <mach/trizeps4.h>
 #include <mach/audio.h>
-#include <mach/pxafb.h>
-#include <mach/mmc.h>
-#include <mach/irda.h>
-#include <mach/ohci.h>
-#include <plat/i2c.h>
+#include <linux/platform_data/video-pxafb.h>
+#include <linux/platform_data/mmc-pxamci.h>
+#include <linux/platform_data/irda-pxaficp.h>
+#include <linux/platform_data/usb-ohci-pxa27x.h>
+#include <mach/smemc.h>
 
 #include "generic.h"
 #include "devices.h"
@@ -72,27 +71,14 @@ static unsigned long trizeps4_pin_config[] __initdata = {
 	GPIO79_nCS_3,		/* Logic CS */
 	GPIO0_GPIO | WAKEUP_ON_EDGE_RISE,	/* Logic irq */
 
+	/* AC97 */
+	GPIO28_AC97_BITCLK,
+	GPIO29_AC97_SDATA_IN_0,
+	GPIO30_AC97_SDATA_OUT,
+	GPIO31_AC97_SYNC,
+
 	/* LCD - 16bpp Active TFT */
-	GPIO58_LCD_LDD_0,
-	GPIO59_LCD_LDD_1,
-	GPIO60_LCD_LDD_2,
-	GPIO61_LCD_LDD_3,
-	GPIO62_LCD_LDD_4,
-	GPIO63_LCD_LDD_5,
-	GPIO64_LCD_LDD_6,
-	GPIO65_LCD_LDD_7,
-	GPIO66_LCD_LDD_8,
-	GPIO67_LCD_LDD_9,
-	GPIO68_LCD_LDD_10,
-	GPIO69_LCD_LDD_11,
-	GPIO70_LCD_LDD_12,
-	GPIO71_LCD_LDD_13,
-	GPIO72_LCD_LDD_14,
-	GPIO73_LCD_LDD_15,
-	GPIO74_LCD_FCLK,
-	GPIO75_LCD_LCLK,
-	GPIO76_LCD_PCLK,
-	GPIO77_LCD_BIAS,
+	GPIOxx_LCD_TFT_16BPP,
 
 	/* UART */
 	GPIO9_FFUART_CTS,
@@ -345,8 +331,7 @@ static int trizeps4_mci_init(struct device *dev, irq_handler_t mci_detect_int,
 	int err;
 
 	err = request_irq(TRIZEPS4_MMC_IRQ, mci_detect_int,
-		IRQF_DISABLED | IRQF_TRIGGER_RISING | IRQF_SAMPLE_RANDOM,
-		"MMC card detect", data);
+			  IRQF_TRIGGER_RISING, "MMC card detect", data);
 	if (err) {
 		printk(KERN_ERR "trizeps4_mci_init: MMC/SD: can't request"
 						"MMC card detect IRQ\n");
@@ -362,14 +347,11 @@ static void trizeps4_mci_exit(struct device *dev, void *data)
 
 static struct pxamci_platform_data trizeps4_mci_platform_data = {
 	.ocr_mask	= MMC_VDD_32_33|MMC_VDD_33_34,
-	.detect_delay	= 1,
+	.detect_delay_ms= 10,
 	.init 		= trizeps4_mci_init,
 	.exit		= trizeps4_mci_exit,
 	.get_ro		= NULL,	/* write-protection not supported */
 	.setpower 	= NULL,	/* power-switching not supported */
-	.gpio_card_detect = -1,
-	.gpio_card_ro	= -1,
-	.gpio_power	= -1,
 };
 
 /****************************************************************************
@@ -524,10 +506,14 @@ static void __init trizeps4_init(void)
 					ARRAY_SIZE(trizeps4_devices));
 	}
 
+	pxa_set_ffuart_info(NULL);
+	pxa_set_btuart_info(NULL);
+	pxa_set_stuart_info(NULL);
+
 	if (0)	/* dont know how to determine LCD */
-		set_pxa_fb_info(&sharp_lcd);
+		pxa_set_fb_info(NULL, &sharp_lcd);
 	else
-		set_pxa_fb_info(&toshiba_lcd);
+		pxa_set_fb_info(NULL, &toshiba_lcd);
 
 	pxa_set_mci_info(&trizeps4_mci_platform_data);
 #ifndef STATUS_LEDS_ON_STUART_PINS
@@ -539,23 +525,21 @@ static void __init trizeps4_init(void)
 	i2c_register_board_info(0, trizeps4_i2c_devices,
 					ARRAY_SIZE(trizeps4_i2c_devices));
 
-#ifdef CONFIG_IDE_PXA_CF
-	/* if boot direct from compact flash dont disable power */
-	trizeps_conxs_bcr = 0x0009;
-#else
 	/* this is the reset value */
 	trizeps_conxs_bcr = 0x00A0;
-#endif
+
 	BCR_writew(trizeps_conxs_bcr);
 	board_backlight_power(1);
+
+	regulator_has_full_constraints();
 }
 
 static void __init trizeps4_map_io(void)
 {
-	pxa_map_io();
+	pxa27x_map_io();
 	iotable_init(trizeps4_io_desc, ARRAY_SIZE(trizeps4_io_desc));
 
-	if ((MSC0 & 0x8) && (BOOT_DEF & 0x1)) {
+	if ((__raw_readl(MSC0) & 0x8) && (__raw_readl(BOOT_DEF) & 0x1)) {
 		/* if flash is 16 bit wide its a Trizeps4 WL */
 		__machine_arch_type = MACH_TYPE_TRIZEPS4WL;
 		trizeps4_flash_data[0].width = 2;
@@ -568,22 +552,24 @@ static void __init trizeps4_map_io(void)
 
 MACHINE_START(TRIZEPS4, "Keith und Koep Trizeps IV module")
 	/* MAINTAINER("Jürgen Schindele") */
-	.phys_io	= 0x40000000,
-	.io_pg_offst	= (io_p2v(0x40000000) >> 18) & 0xfffc,
-	.boot_params	= TRIZEPS4_SDRAM_BASE + 0x100,
+	.atag_offset	= 0x100,
 	.init_machine	= trizeps4_init,
 	.map_io		= trizeps4_map_io,
+	.nr_irqs	= PXA_NR_IRQS,
 	.init_irq	= pxa27x_init_irq,
-	.timer		= &pxa_timer,
+	.handle_irq	= pxa27x_handle_irq,
+	.init_time	= pxa_timer_init,
+	.restart	= pxa_restart,
 MACHINE_END
 
 MACHINE_START(TRIZEPS4WL, "Keith und Koep Trizeps IV-WL module")
 	/* MAINTAINER("Jürgen Schindele") */
-	.phys_io	= 0x40000000,
-	.io_pg_offst	= (io_p2v(0x40000000) >> 18) & 0xfffc,
-	.boot_params	= TRIZEPS4_SDRAM_BASE + 0x100,
+	.atag_offset	= 0x100,
 	.init_machine	= trizeps4_init,
 	.map_io		= trizeps4_map_io,
+	.nr_irqs	= PXA_NR_IRQS,
 	.init_irq	= pxa27x_init_irq,
-	.timer		= &pxa_timer,
+	.handle_irq	= pxa27x_handle_irq,
+	.init_time	= pxa_timer_init,
+	.restart	= pxa_restart,
 MACHINE_END

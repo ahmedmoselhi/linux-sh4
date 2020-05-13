@@ -1,21 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  i2c-algo-pca.c i2c driver algorithms for PCA9564 adapters
  *    Copyright (C) 2004 Arcom Control Systems
  *    Copyright (C) 2008 Pengutronix
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <linux/kernel.h>
@@ -23,7 +10,6 @@
 #include <linux/moduleparam.h>
 #include <linux/delay.h>
 #include <linux/jiffies.h>
-#include <linux/init.h>
 #include <linux/errno.h>
 #include <linux/i2c.h>
 #include <linux/i2c-algo-pca.h>
@@ -45,14 +31,19 @@ static int i2c_debug;
 #define pca_set_con(adap, val) pca_outw(adap, I2C_PCA_CON, val)
 #define pca_get_con(adap) pca_inw(adap, I2C_PCA_CON)
 #define pca_wait(adap) adap->wait_for_completion(adap->data)
-#define pca_reset(adap) adap->reset_chip(adap->data)
 
-static void pca9665_reset(void *pd)
+static void pca_reset(struct i2c_algo_pca_data *adap)
 {
-	struct i2c_algo_pca_data *adap = pd;
-	pca_outw(adap, I2C_PCA_INDPTR, I2C_PCA_IPRESET);
-	pca_outw(adap, I2C_PCA_IND, 0xA5);
-	pca_outw(adap, I2C_PCA_IND, 0x5A);
+	if (adap->chip == I2C_PCA_CHIP_9665) {
+		/* Ignore the reset function from the module,
+		 * we can use the parallel bus reset.
+		 */
+		pca_outw(adap, I2C_PCA_INDPTR, I2C_PCA_IPRESET);
+		pca_outw(adap, I2C_PCA_IND, 0xA5);
+		pca_outw(adap, I2C_PCA_IND, 0x5A);
+	} else {
+		adap->reset_chip(adap->data);
+	}
 }
 
 /*
@@ -109,14 +100,11 @@ static void pca_stop(struct i2c_algo_pca_data *adap)
  * returns after the address has been sent
  */
 static int pca_address(struct i2c_algo_pca_data *adap,
-			struct i2c_msg *msg)
+		       struct i2c_msg *msg)
 {
 	int sta = pca_get_con(adap);
-	int addr;
+	int addr = i2c_8bit_addr_from_msg(msg);
 
-	addr = ( (0x7f & msg->addr) << 1 );
-	if (msg->flags & I2C_M_RD )
-		addr |= 1;
 	DEB2("=== SLAVE ADDRESS %#04x+%c=%#04x\n",
 	     msg->addr, msg->flags & I2C_M_RD ? 'R' : 'W', addr);
 
@@ -134,7 +122,7 @@ static int pca_address(struct i2c_algo_pca_data *adap,
  * Returns after the byte has been transmitted
  */
 static int pca_tx_byte(struct i2c_algo_pca_data *adap,
-			__u8 b)
+		       __u8 b)
 {
 	int sta = pca_get_con(adap);
 	DEB2("=== WRITE %#04x\n", b);
@@ -164,13 +152,13 @@ static void pca_rx_byte(struct i2c_algo_pca_data *adap,
  * Returns after next byte has arrived.
  */
 static int pca_rx_ack(struct i2c_algo_pca_data *adap,
-		       int ack)
+		      int ack)
 {
 	int sta = pca_get_con(adap);
 
 	sta &= ~(I2C_PCA_CON_STO|I2C_PCA_CON_STA|I2C_PCA_CON_SI|I2C_PCA_CON_AA);
 
-	if ( ack )
+	if (ack)
 		sta |= I2C_PCA_CON_AA;
 
 	pca_set_con(adap, sta);
@@ -178,12 +166,12 @@ static int pca_rx_ack(struct i2c_algo_pca_data *adap,
 }
 
 static int pca_xfer(struct i2c_adapter *i2c_adap,
-                    struct i2c_msg *msgs,
-                    int num)
+		    struct i2c_msg *msgs,
+		    int num)
 {
-        struct i2c_algo_pca_data *adap = i2c_adap->algo_data;
-        struct i2c_msg *msg = NULL;
-        int curmsg;
+	struct i2c_algo_pca_data *adap = i2c_adap->algo_data;
+	struct i2c_msg *msg = NULL;
+	int curmsg;
 	int numbytes = 0;
 	int state;
 	int ret;
@@ -196,27 +184,27 @@ static int pca_xfer(struct i2c_adapter *i2c_adap,
 		} else {
 			dev_dbg(&i2c_adap->dev, "bus is not idle. status is "
 				"%#04x\n", state);
-			return -EAGAIN;
+			return -EBUSY;
 		}
 	}
 
 	DEB1("{{{ XFER %d messages\n", num);
 
-	if (i2c_debug>=2) {
+	if (i2c_debug >= 2) {
 		for (curmsg = 0; curmsg < num; curmsg++) {
 			int addr, i;
 			msg = &msgs[curmsg];
 
 			addr = (0x7f & msg->addr) ;
 
-			if (msg->flags & I2C_M_RD )
+			if (msg->flags & I2C_M_RD)
 				printk(KERN_INFO "    [%02d] RD %d bytes from %#02x [%#02x, ...]\n",
-				       curmsg, msg->len, addr, (addr<<1) | 1);
+				       curmsg, msg->len, addr, (addr << 1) | 1);
 			else {
 				printk(KERN_INFO "    [%02d] WR %d bytes to %#02x [%#02x%s",
-				       curmsg, msg->len, addr, addr<<1,
+				       curmsg, msg->len, addr, addr << 1,
 				       msg->len == 0 ? "" : ", ");
-				for(i=0; i < msg->len; i++)
+				for (i = 0; i < msg->len; i++)
 					printk("%#04x%s", msg->buf[i], i == msg->len - 1 ? "" : ", ");
 				printk("]\n");
 			}
@@ -224,7 +212,7 @@ static int pca_xfer(struct i2c_adapter *i2c_adap,
 	}
 
 	curmsg = 0;
-	ret = -EREMOTEIO;
+	ret = -EIO;
 	while (curmsg < num) {
 		state = pca_status(adap);
 
@@ -259,6 +247,7 @@ static int pca_xfer(struct i2c_adapter *i2c_adap,
 		case 0x20: /* SLA+W has been transmitted; NOT ACK has been received */
 			DEB2("NOT ACK received after SLA+W\n");
 			pca_stop(adap);
+			ret = -ENXIO;
 			goto out;
 
 		case 0x40: /* SLA+R has been transmitted; ACK has been received */
@@ -283,6 +272,7 @@ static int pca_xfer(struct i2c_adapter *i2c_adap,
 		case 0x48: /* SLA+R has been transmitted; NOT ACK has been received */
 			DEB2("NOT ACK received after SLA+R\n");
 			pca_stop(adap);
+			ret = -ENXIO;
 			goto out;
 
 		case 0x30: /* Data byte in I2CDAT has been transmitted; NOT ACK has been received */
@@ -305,7 +295,7 @@ static int pca_xfer(struct i2c_adapter *i2c_adap,
 			goto out;
 
 		case 0x58: /* Data byte has been received; NOT ACK has been returned */
-			if ( numbytes == msg->len - 1 ) {
+			if (numbytes == msg->len - 1) {
 				pca_rx_byte(adap, &msg->buf[numbytes], 0);
 				curmsg++; numbytes = 0;
 				if (curmsg == num)
@@ -343,7 +333,7 @@ static int pca_xfer(struct i2c_adapter *i2c_adap,
 
 	ret = curmsg;
  out:
-	DEB1("}}} transfered %d/%d messages. "
+	DEB1("}}} transferred %d/%d messages. "
 	     "status is %#04x. control is %#04x\n",
 	     curmsg, num, pca_status(adap),
 	     pca_get_con(adap));
@@ -352,7 +342,7 @@ static int pca_xfer(struct i2c_adapter *i2c_adap,
 
 static u32 pca_func(struct i2c_adapter *adap)
 {
-        return I2C_FUNC_I2C | I2C_FUNC_SMBUS_EMUL;
+	return I2C_FUNC_I2C | I2C_FUNC_SMBUS_EMUL;
 }
 
 static const struct i2c_algorithm pca_algo = {
@@ -375,11 +365,12 @@ static unsigned int pca_probe_chip(struct i2c_adapter *adap)
 	pca_outw(pca_data, I2C_PCA_INDPTR, I2C_PCA_IADR);
 	if (pca_inw(pca_data, I2C_PCA_IND) == 0xAA) {
 		printk(KERN_INFO "%s: PCA9665 detected.\n", adap->name);
-		return I2C_PCA_CHIP_9665;
+		pca_data->chip = I2C_PCA_CHIP_9665;
 	} else {
 		printk(KERN_INFO "%s: PCA9564 detected.\n", adap->name);
-		return I2C_PCA_CHIP_9564;
+		pca_data->chip = I2C_PCA_CHIP_9564;
 	}
+	return pca_data->chip;
 }
 
 static int pca_init(struct i2c_adapter *adap)
@@ -453,13 +444,6 @@ static int pca_init(struct i2c_adapter *adap)
 		 */
 		int raise_fall_time;
 
-		struct i2c_algo_pca_data *pca_data = adap->algo_data;
-
-		/* Ignore the reset function from the module,
-		 * we can use the parallel bus reset
-		 */
-		pca_data->reset_chip = pca9665_reset;
-
 		if (pca_data->i2c_clock > 1265800) {
 			printk(KERN_WARNING "%s: I2C clock speed too high."
 				" Using 1265.8kHz.\n", adap->name);
@@ -475,17 +459,17 @@ static int pca_init(struct i2c_adapter *adap)
 		/* To avoid integer overflow, use clock/100 for calculations */
 		clock = pca_clock(pca_data) / 100;
 
-		if (pca_data->i2c_clock > 10000) {
+		if (pca_data->i2c_clock > I2C_MAX_FAST_MODE_PLUS_FREQ) {
 			mode = I2C_PCA_MODE_TURBO;
 			min_tlow = 14;
 			min_thi  = 5;
 			raise_fall_time = 22; /* Raise 11e-8s, Fall 11e-8s */
-		} else if (pca_data->i2c_clock > 4000) {
+		} else if (pca_data->i2c_clock > I2C_MAX_FAST_MODE_FREQ) {
 			mode = I2C_PCA_MODE_FASTP;
 			min_tlow = 17;
 			min_thi  = 9;
 			raise_fall_time = 22; /* Raise 11e-8s, Fall 11e-8s */
-		} else if (pca_data->i2c_clock > 1000) {
+		} else if (pca_data->i2c_clock > I2C_MAX_STANDARD_MODE_FREQ) {
 			mode = I2C_PCA_MODE_FAST;
 			min_tlow = 44;
 			min_thi  = 20;
@@ -525,7 +509,7 @@ static int pca_init(struct i2c_adapter *adap)
 
 		pca_set_con(pca_data, I2C_PCA_CON_ENSIO);
 	}
-	udelay(500); /* 500 us for oscilator to stabilise */
+	udelay(500); /* 500 us for oscillator to stabilise */
 
 	return 0;
 }

@@ -33,6 +33,7 @@
 #include <linux/percpu.h>
 #include <linux/seq_file.h>
 #include <linux/proc_fs.h>
+#include <linux/export.h>
 
 #include "rds.h"
 
@@ -57,8 +58,8 @@ static const char *const rds_stat_names[] = {
 	"recv_ping",
 	"send_queue_empty",
 	"send_queue_full",
-	"send_sem_contention",
-	"send_sem_queue_raced",
+	"send_lock_contention",
+	"send_lock_queue_raced",
 	"send_immediate_retry",
 	"send_delayed_retry",
 	"send_drop_acked",
@@ -75,6 +76,9 @@ static const char *const rds_stat_names[] = {
 	"cong_update_received",
 	"cong_send_error",
 	"cong_send_blocked",
+	"recv_bytes_added_to_sock",
+	"recv_bytes_freed_fromsock",
+	"send_stuck_rm",
 };
 
 void rds_stats_info_copy(struct rds_info_iterator *iter,
@@ -86,6 +90,7 @@ void rds_stats_info_copy(struct rds_info_iterator *iter,
 	for (i = 0; i < nr; i++) {
 		BUG_ON(strlen(names[i]) >= sizeof(ctr.name));
 		strncpy(ctr.name, names[i], sizeof(ctr.name) - 1);
+		ctr.name[sizeof(ctr.name) - 1] = '\0';
 		ctr.value = values[i];
 
 		rds_info_copy(iter, &ctr, sizeof(ctr));
@@ -143,7 +148,7 @@ void rds_stats_exit(void)
 	rds_info_deregister_func(RDS_INFO_COUNTERS, rds_stats_info);
 }
 
-int __init rds_stats_init(void)
+int rds_stats_init(void)
 {
 	rds_info_register_func(RDS_INFO_COUNTERS, rds_stats_info);
 	return 0;

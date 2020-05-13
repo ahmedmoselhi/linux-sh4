@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_SMP_H
 #define __ASM_SMP_H
 
@@ -38,8 +39,6 @@ struct cpuinfo_alpha {
 } __attribute__((aligned(64)));
 
 extern struct cpuinfo_alpha cpu_data[NR_CPUS];
-
-#define PROC_CHANGE_PENALTY     20
 
 #define hard_smp_processor_id()	__hard_smp_processor_id()
 #define raw_smp_processor_id()	(current_thread_info()->cpu)

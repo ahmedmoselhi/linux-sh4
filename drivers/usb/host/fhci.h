@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Freescale QUICC Engine USB Host Controller Driver
  *
@@ -8,11 +9,6 @@
  *               Peter Barada <peterb@logicpd.com>
  * Copyright (c) MontaVista Software, Inc. 2008.
  *               Anton Vorontsov <avorontsov@ru.mvista.com>
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  */
 
 #ifndef __FHCI_H
@@ -20,13 +16,15 @@
 
 #include <linux/kernel.h>
 #include <linux/types.h>
+#include <linux/bug.h>
 #include <linux/spinlock.h>
 #include <linux/interrupt.h>
 #include <linux/kfifo.h>
 #include <linux/io.h>
 #include <linux/usb.h>
-#include <asm/qe.h>
-#include "../core/hcd.h"
+#include <linux/usb/hcd.h>
+#include <soc/fsl/qe/qe.h>
+#include <soc/fsl/qe/immap_qe.h>
 
 #define USB_CLOCK	48000000
 
@@ -81,7 +79,7 @@
 #define USB_TD_RX_ER_NONOCT	0x40000000 /* Tx Non Octet Aligned Packet */
 #define USB_TD_RX_ER_BITSTUFF	0x20000000 /* Frame Aborted-Received pkt */
 #define USB_TD_RX_ER_CRC	0x10000000 /* CRC error */
-#define USB_TD_RX_ER_OVERUN	0x08000000 /* Over - run occured */
+#define USB_TD_RX_ER_OVERUN	0x08000000 /* Over - run occurred */
 #define USB_TD_RX_ER_PID	0x04000000 /* wrong PID received */
 #define USB_TD_RX_DATA_UNDERUN	0x02000000 /* shorter than expected */
 #define USB_TD_RX_DATA_OVERUN	0x01000000 /* longer than expected */
@@ -172,25 +170,6 @@
 #define USB_E_TXB_MASK		0x0002
 #define USB_E_RXB_MASK		0x0001
 
-/* Freescale USB Host controller registers */
-struct fhci_regs {
-	u8 usb_mod;		/* mode register */
-	u8 usb_addr;		/* address register */
-	u8 usb_comm;		/* command register */
-	u8 reserved1[1];
-	__be16 usb_ep[4];	/* endpoint register */
-	u8 reserved2[4];
-	__be16 usb_event;	/* event register */
-	u8 reserved3[2];
-	__be16 usb_mask;	/* mask register */
-	u8 reserved4[1];
-	u8 usb_status;		/* status register */
-	__be16 usb_sof_tmr;	/* Start Of Frame timer */
-	u8 reserved5[2];
-	__be16 usb_frame_num;	/* frame number register */
-	u8 reserved6[1];
-};
-
 /* Freescale USB HOST */
 struct fhci_pram {
 	__be16 ep_ptr[4];	/* Endpoint porter reg */
@@ -266,7 +245,7 @@ struct fhci_hcd {
 	int gpios[NUM_GPIOS];
 	bool alow_gpios[NUM_GPIOS];
 
-	struct fhci_regs __iomem *regs;	/* I/O memory used to communicate */
+	struct qe_usb_ctlr __iomem *regs; /* I/O memory used to communicate */
 	struct fhci_pram __iomem *pram;	/* Parameter RAM */
 	struct gtm_timer *timer;
 
@@ -283,8 +262,6 @@ struct fhci_hcd {
 #ifdef CONFIG_FHCI_DEBUG
 	int usb_irq_stat[13];
 	struct dentry *dfs_root;
-	struct dentry *dfs_regs;
-	struct dentry *dfs_irq_stat;
 #endif
 };
 
@@ -355,14 +332,14 @@ struct ed {
 
 	/* read only parameters, should be cleared upon initialization */
 	u8 toggle_carry;	/* toggle carry from the last TD submitted */
-	u32 last_iso;		/* time stamp of last queued ISO transfer */
+	u16 next_iso;		/* time stamp of next queued ISO transfer */
 	struct td *td_head;	/* a pointer to the current TD handled */
 };
 
 struct td {
 	void *data;		 /* a pointer to the data buffer */
 	unsigned int len;	 /* length of the data to be submitted */
-	unsigned int actual_len; /* actual bytes transfered on this td */
+	unsigned int actual_len; /* actual bytes transferred on this td */
 	enum fhci_ta_type type;	 /* transaction type */
 	u8 toggle;		 /* toggle for next trans. within this TD */
 	u16 iso_index;		 /* ISO transaction index */
@@ -423,9 +400,9 @@ struct endpoint {
 	struct usb_td __iomem *td_base; /* first TD in the ring */
 	struct usb_td __iomem *conf_td; /* next TD for confirm after transac */
 	struct usb_td __iomem *empty_td;/* next TD for new transaction req. */
-	struct kfifo *empty_frame_Q;  /* Empty frames list to use */
-	struct kfifo *conf_frame_Q;   /* frames passed to TDs,waiting for tx */
-	struct kfifo *dummy_packets_Q;/* dummy packets for the CRC overun */
+	struct kfifo empty_frame_Q;  /* Empty frames list to use */
+	struct kfifo conf_frame_Q;   /* frames passed to TDs,waiting for tx */
+	struct kfifo dummy_packets_Q;/* dummy packets for the CRC overun */
 
 	bool already_pushed_dummy_bd;
 };
@@ -493,9 +470,9 @@ static inline struct usb_hcd *fhci_to_hcd(struct fhci_hcd *fhci)
 }
 
 /* fifo of pointers */
-static inline struct kfifo *cq_new(int size)
+static inline int cq_new(struct kfifo *fifo, int size)
 {
-	return kfifo_alloc(size * sizeof(void *), GFP_KERNEL, NULL);
+	return kfifo_alloc(fifo, size * sizeof(void *), GFP_KERNEL);
 }
 
 static inline void cq_delete(struct kfifo *kfifo)
@@ -505,19 +482,23 @@ static inline void cq_delete(struct kfifo *kfifo)
 
 static inline unsigned int cq_howmany(struct kfifo *kfifo)
 {
-	return __kfifo_len(kfifo) / sizeof(void *);
+	return kfifo_len(kfifo) / sizeof(void *);
 }
 
 static inline int cq_put(struct kfifo *kfifo, void *p)
 {
-	return __kfifo_put(kfifo, (void *)&p, sizeof(p));
+	return kfifo_in(kfifo, (void *)&p, sizeof(p));
 }
 
 static inline void *cq_get(struct kfifo *kfifo)
 {
-	void *p = NULL;
+	unsigned int sz;
+	void *p;
 
-	__kfifo_get(kfifo, (void *)&p, sizeof(p));
+	sz = kfifo_out(kfifo, (void *)&p, sizeof(p));
+	if (sz != sizeof(p))
+		return NULL;
+
 	return p;
 }
 

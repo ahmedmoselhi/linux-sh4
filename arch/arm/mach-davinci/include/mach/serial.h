@@ -11,9 +11,10 @@
 #ifndef __ASM_ARCH_SERIAL_H
 #define __ASM_ARCH_SERIAL_H
 
+#include <asm/memory.h>
+
 #include <mach/hardware.h>
 
-#define DAVINCI_MAX_NR_UARTS	3
 #define DAVINCI_UART0_BASE	(IO_PHYS + 0x20000)
 #define DAVINCI_UART1_BASE	(IO_PHYS + 0x20400)
 #define DAVINCI_UART2_BASE	(IO_PHYS + 0x20800)
@@ -27,11 +28,10 @@
 #define UART_DM646X_SCR			0x10
 #define UART_DM646X_SCR_TX_WATERMARK	0x08
 
-struct davinci_uart_config {
-	/* Bit field of UARTs present; bit 0 --> UART1 */
-	unsigned int enabled_uarts;
-};
+#ifndef __ASSEMBLY__
+#include <linux/platform_device.h>
 
-extern int davinci_serial_init(struct davinci_uart_config *);
+extern int davinci_serial_init(struct platform_device *);
+#endif
 
 #endif /* __ASM_ARCH_SERIAL_H */

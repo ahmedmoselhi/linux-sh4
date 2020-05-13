@@ -30,9 +30,9 @@
 #include <linux/irq.h>
 #include <linux/gpio.h>
 
-#include <mach/pxa25x.h>
-#include <mach/gumstix.h>
-#include <mach/pxafb.h>
+#include "pxa25x.h"
+#include "gumstix.h"
+#include <linux/platform_data/video-pxafb.h>
 
 #include "generic.h"
 
@@ -128,8 +128,8 @@ static int am200_init_gpio_regs(struct metronomefb_par *par)
 	return 0;
 
 err_req_gpio:
-	while (i > 0)
-		gpio_free(gpios[i--]);
+	while (--i >= 0)
+		gpio_free(gpios[i]);
 
 	return err;
 }
@@ -138,7 +138,7 @@ static void am200_cleanup(struct metronomefb_par *par)
 {
 	int i;
 
-	free_irq(IRQ_GPIO(RDY_GPIO_PIN), par);
+	free_irq(PXA_GPIO_TO_IRQ(RDY_GPIO_PIN), par);
 
 	for (i = 0; i < ARRAY_SIZE(gpios); i++)
 		gpio_free(gpios[i]);
@@ -194,7 +194,7 @@ static struct notifier_block am200_fb_notif = {
 };
 
 /* this gets called as part of our init. these steps must be done now so
- * that we can use set_pxa_fb_info */
+ * that we can use pxa_set_fb_info */
 static void __init am200_presetup_fb(void)
 {
 	int fw;
@@ -249,7 +249,7 @@ static void __init am200_presetup_fb(void)
 	/* we divide since we told the LCD controller we're 16bpp */
 	am200_fb_info.modes->xres /= 2;
 
-	set_pxa_fb_info(&am200_fb_info);
+	pxa_set_fb_info(NULL, &am200_fb_info);
 
 }
 
@@ -292,9 +292,8 @@ static int am200_setup_irq(struct fb_info *info)
 {
 	int ret;
 
-	ret = request_irq(IRQ_GPIO(RDY_GPIO_PIN), am200_handle_irq,
-				IRQF_DISABLED|IRQF_TRIGGER_FALLING,
-				"AM200", info->par);
+	ret = request_irq(PXA_GPIO_TO_IRQ(RDY_GPIO_PIN), am200_handle_irq,
+				IRQF_TRIGGER_FALLING, "AM200", info->par);
 	if (ret)
 		dev_err(&am200_device->dev, "request_irq failed: %d\n", ret);
 
@@ -348,8 +347,17 @@ int __init am200_init(void)
 {
 	int ret;
 
-	/* before anything else, we request notification for any fb
-	 * creation events */
+	/*
+	 * Before anything else, we request notification for any fb
+	 * creation events.
+	 *
+	 * FIXME: This is terrible and needs to be nuked. The notifier is used
+	 * to get at the fb base address from the boot splash fb driver, which
+	 * is then passed to metronomefb. Instaed of metronomfb or this board
+	 * support file here figuring this out on their own.
+	 *
+	 * See also the #ifdef in fbmem.c.
+	 */
 	fb_register_client(&am200_fb_notif);
 
 	pxa2xx_mfp_config(ARRAY_AND_SIZE(am200_pin_config));

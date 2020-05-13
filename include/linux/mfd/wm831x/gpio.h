@@ -1,15 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * include/linux/mfd/wm831x/gpio.h -- GPIO for WM831x
  *
  * Copyright 2009 Wolfson Microelectronics PLC.
  *
  * Author: Mark Brown <broonie@opensource.wolfsonmicro.com>
- *
- *  This program is free software; you can redistribute  it and/or modify it
- *  under  the terms of  the GNU General  Public License as published by the
- *  Free Software Foundation;  either version 2 of the  License, or (at your
- *  option) any later version.
- *
  */
 
 #ifndef __MFD_WM831X_GPIO_H__
@@ -41,6 +36,10 @@
 #define WM831X_GPN_OD_MASK                      0x0200  /* GPN_OD */
 #define WM831X_GPN_OD_SHIFT                          9  /* GPN_OD */
 #define WM831X_GPN_OD_WIDTH                          1  /* GPN_OD */
+#define WM831X_GPN_ENA                          0x0080  /* GPN_ENA */
+#define WM831X_GPN_ENA_MASK                     0x0080  /* GPN_ENA */
+#define WM831X_GPN_ENA_SHIFT                         7  /* GPN_ENA */
+#define WM831X_GPN_ENA_WIDTH                         1  /* GPN_ENA */
 #define WM831X_GPN_TRI                          0x0080  /* GPN_TRI */
 #define WM831X_GPN_TRI_MASK                     0x0080  /* GPN_TRI */
 #define WM831X_GPN_TRI_SHIFT                         7  /* GPN_TRI */

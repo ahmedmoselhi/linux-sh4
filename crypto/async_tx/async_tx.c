@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * core routines for the asynchronous memory transfer/transform api
  *
@@ -8,22 +9,9 @@
  *	with architecture considerations by:
  *	Neil Brown <neilb@suse.de>
  *	Jeff Garzik <jeff@garzik.org>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
- *
  */
 #include <linux/rculist.h>
+#include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/async_tx.h>
 
@@ -81,18 +69,13 @@ async_tx_channel_switch(struct dma_async_tx_descriptor *depend_tx,
 	struct dma_device *device = chan->device;
 	struct dma_async_tx_descriptor *intr_tx = (void *) ~0;
 
-	#ifdef CONFIG_ASYNC_TX_DISABLE_CHANNEL_SWITCH
-	BUG();
-	#endif
-
 	/* first check to see if we can still append to depend_tx */
-	spin_lock_bh(&depend_tx->lock);
-	if (depend_tx->parent && depend_tx->chan == tx->chan) {
-		tx->parent = depend_tx;
-		depend_tx->next = tx;
+	txd_lock(depend_tx);
+	if (txd_parent(depend_tx) && depend_tx->chan == tx->chan) {
+		txd_chain(depend_tx, tx);
 		intr_tx = NULL;
 	}
-	spin_unlock_bh(&depend_tx->lock);
+	txd_unlock(depend_tx);
 
 	/* attached dependency, flush the parent channel */
 	if (!intr_tx) {
@@ -111,31 +94,29 @@ async_tx_channel_switch(struct dma_async_tx_descriptor *depend_tx,
 	if (intr_tx) {
 		intr_tx->callback = NULL;
 		intr_tx->callback_param = NULL;
-		tx->parent = intr_tx;
-		/* safe to set ->next outside the lock since we know we are
+		/* safe to chain outside the lock since we know we are
 		 * not submitted yet
 		 */
-		intr_tx->next = tx;
+		txd_chain(intr_tx, tx);
 
 		/* check if we need to append */
-		spin_lock_bh(&depend_tx->lock);
-		if (depend_tx->parent) {
-			intr_tx->parent = depend_tx;
-			depend_tx->next = intr_tx;
+		txd_lock(depend_tx);
+		if (txd_parent(depend_tx)) {
+			txd_chain(depend_tx, intr_tx);
 			async_tx_ack(intr_tx);
 			intr_tx = NULL;
 		}
-		spin_unlock_bh(&depend_tx->lock);
+		txd_unlock(depend_tx);
 
 		if (intr_tx) {
-			intr_tx->parent = NULL;
+			txd_clear_parent(intr_tx);
 			intr_tx->tx_submit(intr_tx);
 			async_tx_ack(intr_tx);
 		}
 		device->device_issue_pending(chan);
 	} else {
-		if (dma_wait_for_async_tx(depend_tx) == DMA_ERROR)
-			panic("%s: DMA_ERROR waiting for depend_tx\n",
+		if (dma_wait_for_async_tx(depend_tx) != DMA_COMPLETE)
+			panic("%s: DMA error waiting for depend_tx\n",
 			      __func__);
 		tx->tx_submit(tx);
 	}
@@ -176,21 +157,20 @@ async_tx_submit(struct dma_chan *chan, struct dma_async_tx_descriptor *tx,
 		 * 2/ dependencies are 1:1 i.e. two transactions can
 		 * not depend on the same parent
 		 */
-		BUG_ON(async_tx_test_ack(depend_tx) || depend_tx->next ||
-		       tx->parent);
+		BUG_ON(async_tx_test_ack(depend_tx) || txd_next(depend_tx) ||
+		       txd_parent(tx));
 
 		/* the lock prevents async_tx_run_dependencies from missing
 		 * the setting of ->next when ->parent != NULL
 		 */
-		spin_lock_bh(&depend_tx->lock);
-		if (depend_tx->parent) {
+		txd_lock(depend_tx);
+		if (txd_parent(depend_tx)) {
 			/* we have a parent so we can not submit directly
 			 * if we are staying on the same channel: append
 			 * else: channel switch
 			 */
 			if (depend_tx->chan == chan) {
-				tx->parent = depend_tx;
-				depend_tx->next = tx;
+				txd_chain(depend_tx, tx);
 				s = ASYNC_TX_SUBMITTED;
 			} else
 				s = ASYNC_TX_CHANNEL_SWITCH;
@@ -203,7 +183,7 @@ async_tx_submit(struct dma_chan *chan, struct dma_async_tx_descriptor *tx,
 			else
 				s = ASYNC_TX_CHANNEL_SWITCH;
 		}
-		spin_unlock_bh(&depend_tx->lock);
+		txd_unlock(depend_tx);
 
 		switch (s) {
 		case ASYNC_TX_SUBMITTED:
@@ -212,12 +192,12 @@ async_tx_submit(struct dma_chan *chan, struct dma_async_tx_descriptor *tx,
 			async_tx_channel_switch(depend_tx, tx);
 			break;
 		case ASYNC_TX_DIRECT_SUBMIT:
-			tx->parent = NULL;
+			txd_clear_parent(tx);
 			tx->tx_submit(tx);
 			break;
 		}
 	} else {
-		tx->parent = NULL;
+		txd_clear_parent(tx);
 		tx->tx_submit(tx);
 	}
 
@@ -287,8 +267,9 @@ void async_tx_quiesce(struct dma_async_tx_descriptor **tx)
 		 * we are referring to the correct operation
 		 */
 		BUG_ON(async_tx_test_ack(*tx));
-		if (dma_wait_for_async_tx(*tx) == DMA_ERROR)
-			panic("DMA_ERROR waiting for transaction\n");
+		if (dma_wait_for_async_tx(*tx) != DMA_COMPLETE)
+			panic("%s: DMA error waiting for transaction\n",
+			      __func__);
 		async_tx_ack(*tx);
 		*tx = NULL;
 	}

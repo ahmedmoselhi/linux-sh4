@@ -1,19 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (C) 2006, 2007 Eugene Konev <ejka@openwrt.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  *
  * Parts of the VLYNQ specification can be found here:
  * http://www.ti.com/litv/pdf/sprue36a
@@ -30,6 +17,8 @@
 #include <linux/interrupt.h>
 #include <linux/delay.h>
 #include <linux/io.h>
+#include <linux/slab.h>
+#include <linux/irq.h>
 
 #include <linux/vlynq.h>
 
@@ -133,40 +122,40 @@ static void vlynq_reset(struct vlynq_device *dev)
 	msleep(5);
 }
 
-static void vlynq_irq_unmask(unsigned int irq)
+static void vlynq_irq_unmask(struct irq_data *d)
 {
-	u32 val;
-	struct vlynq_device *dev = get_irq_chip_data(irq);
+	struct vlynq_device *dev = irq_data_get_irq_chip_data(d);
 	int virq;
+	u32 val;
 
 	BUG_ON(!dev);
-	virq = irq - dev->irq_start;
+	virq = d->irq - dev->irq_start;
 	val = readl(&dev->remote->int_device[virq >> 2]);
 	val |= (VINT_ENABLE | virq) << VINT_OFFSET(virq);
 	writel(val, &dev->remote->int_device[virq >> 2]);
 }
 
-static void vlynq_irq_mask(unsigned int irq)
+static void vlynq_irq_mask(struct irq_data *d)
 {
-	u32 val;
-	struct vlynq_device *dev = get_irq_chip_data(irq);
+	struct vlynq_device *dev = irq_data_get_irq_chip_data(d);
 	int virq;
+	u32 val;
 
 	BUG_ON(!dev);
-	virq = irq - dev->irq_start;
+	virq = d->irq - dev->irq_start;
 	val = readl(&dev->remote->int_device[virq >> 2]);
 	val &= ~(VINT_ENABLE << VINT_OFFSET(virq));
 	writel(val, &dev->remote->int_device[virq >> 2]);
 }
 
-static int vlynq_irq_type(unsigned int irq, unsigned int flow_type)
+static int vlynq_irq_type(struct irq_data *d, unsigned int flow_type)
 {
-	u32 val;
-	struct vlynq_device *dev = get_irq_chip_data(irq);
+	struct vlynq_device *dev = irq_data_get_irq_chip_data(d);
 	int virq;
+	u32 val;
 
 	BUG_ON(!dev);
-	virq = irq - dev->irq_start;
+	virq = d->irq - dev->irq_start;
 	val = readl(&dev->remote->int_device[virq >> 2]);
 	switch (flow_type & IRQ_TYPE_SENSE_MASK) {
 	case IRQ_TYPE_EDGE_RISING:
@@ -190,10 +179,9 @@ static int vlynq_irq_type(unsigned int irq, unsigned int flow_type)
 	return 0;
 }
 
-static void vlynq_local_ack(unsigned int irq)
+static void vlynq_local_ack(struct irq_data *d)
 {
-	struct vlynq_device *dev = get_irq_chip_data(irq);
-
+	struct vlynq_device *dev = irq_data_get_irq_chip_data(d);
 	u32 status = readl(&dev->local->status);
 
 	pr_debug("%s: local status: 0x%08x\n",
@@ -201,10 +189,9 @@ static void vlynq_local_ack(unsigned int irq)
 	writel(status, &dev->local->status);
 }
 
-static void vlynq_remote_ack(unsigned int irq)
+static void vlynq_remote_ack(struct irq_data *d)
 {
-	struct vlynq_device *dev = get_irq_chip_data(irq);
-
+	struct vlynq_device *dev = irq_data_get_irq_chip_data(d);
 	u32 status = readl(&dev->remote->status);
 
 	pr_debug("%s: remote status: 0x%08x\n",
@@ -236,23 +223,23 @@ static irqreturn_t vlynq_irq(int irq, void *dev_id)
 
 static struct irq_chip vlynq_irq_chip = {
 	.name = "vlynq",
-	.unmask = vlynq_irq_unmask,
-	.mask = vlynq_irq_mask,
-	.set_type = vlynq_irq_type,
+	.irq_unmask = vlynq_irq_unmask,
+	.irq_mask = vlynq_irq_mask,
+	.irq_set_type = vlynq_irq_type,
 };
 
 static struct irq_chip vlynq_local_chip = {
 	.name = "vlynq local error",
-	.unmask = vlynq_irq_unmask,
-	.mask = vlynq_irq_mask,
-	.ack = vlynq_local_ack,
+	.irq_unmask = vlynq_irq_unmask,
+	.irq_mask = vlynq_irq_mask,
+	.irq_ack = vlynq_local_ack,
 };
 
 static struct irq_chip vlynq_remote_chip = {
 	.name = "vlynq local error",
-	.unmask = vlynq_irq_unmask,
-	.mask = vlynq_irq_mask,
-	.ack = vlynq_remote_ack,
+	.irq_unmask = vlynq_irq_unmask,
+	.irq_mask = vlynq_irq_mask,
+	.irq_ack = vlynq_remote_ack,
 };
 
 static int vlynq_setup_irq(struct vlynq_device *dev)
@@ -289,17 +276,17 @@ static int vlynq_setup_irq(struct vlynq_device *dev)
 	for (i = dev->irq_start; i <= dev->irq_end; i++) {
 		virq = i - dev->irq_start;
 		if (virq == dev->local_irq) {
-			set_irq_chip_and_handler(i, &vlynq_local_chip,
+			irq_set_chip_and_handler(i, &vlynq_local_chip,
 						 handle_level_irq);
-			set_irq_chip_data(i, dev);
+			irq_set_chip_data(i, dev);
 		} else if (virq == dev->remote_irq) {
-			set_irq_chip_and_handler(i, &vlynq_remote_chip,
+			irq_set_chip_and_handler(i, &vlynq_remote_chip,
 						 handle_level_irq);
-			set_irq_chip_data(i, dev);
+			irq_set_chip_data(i, dev);
 		} else {
-			set_irq_chip_and_handler(i, &vlynq_irq_chip,
+			irq_set_chip_and_handler(i, &vlynq_irq_chip,
 						 handle_simple_irq);
-			set_irq_chip_data(i, dev);
+			irq_set_chip_data(i, dev);
 			writel(0, &dev->remote->int_device[virq >> 2]);
 		}
 	}
@@ -762,7 +749,8 @@ static int vlynq_remove(struct platform_device *pdev)
 
 	device_unregister(&dev->dev);
 	iounmap(dev->local);
-	release_mem_region(dev->regs_start, dev->regs_end - dev->regs_start);
+	release_mem_region(dev->regs_start,
+			   dev->regs_end - dev->regs_start + 1);
 
 	kfree(dev);
 
@@ -772,7 +760,7 @@ static int vlynq_remove(struct platform_device *pdev)
 static struct platform_driver vlynq_platform_driver = {
 	.driver.name = "vlynq",
 	.probe = vlynq_probe,
-	.remove = __devexit_p(vlynq_remove),
+	.remove = vlynq_remove,
 };
 
 struct bus_type vlynq_bus_type = {
@@ -783,7 +771,7 @@ struct bus_type vlynq_bus_type = {
 };
 EXPORT_SYMBOL(vlynq_bus_type);
 
-static int __devinit vlynq_init(void)
+static int vlynq_init(void)
 {
 	int res = 0;
 
@@ -803,7 +791,7 @@ fail_bus:
 	return res;
 }
 
-static void __devexit vlynq_exit(void)
+static void vlynq_exit(void)
 {
 	platform_driver_unregister(&vlynq_platform_driver);
 	bus_unregister(&vlynq_bus_type);

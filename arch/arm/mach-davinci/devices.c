@@ -1,38 +1,47 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * mach-davinci/devices.c
  *
  * DaVinci platform device setup/initialization
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
-#include <linux/module.h>
-#include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/platform_device.h>
+#include <linux/platform_data/i2c-davinci.h>
+#include <linux/platform_data/mmc-davinci.h>
+#include <linux/platform_data/edma.h>
 #include <linux/dma-mapping.h>
 #include <linux/io.h>
-
-#include <asm/mach/map.h>
+#include <linux/reboot.h>
 
 #include <mach/hardware.h>
-#include <mach/i2c.h>
-#include <mach/irqs.h>
 #include <mach/cputype.h>
 #include <mach/mux.h>
-#include <mach/edma.h>
-#include <mach/mmc.h>
-#include <mach/time.h>
+
+#include "davinci.h"
+#include "irqs.h"
 
 #define DAVINCI_I2C_BASE	     0x01C21000
+#define DAVINCI_ATA_BASE	     0x01C66000
 #define DAVINCI_MMCSD0_BASE	     0x01E10000
 #define DM355_MMCSD0_BASE	     0x01E11000
 #define DM355_MMCSD1_BASE	     0x01E00000
 #define DM365_MMCSD0_BASE	     0x01D11000
 #define DM365_MMCSD1_BASE	     0x01D00000
+
+void __iomem  *davinci_sysmod_base;
+
+void davinci_map_sysmod(void)
+{
+	davinci_sysmod_base = ioremap(DAVINCI_SYSTEM_MODULE_BASE,
+					      0x800);
+	/*
+	 * Throw a bug since a lot of board initialization code depends
+	 * on system module availability. ioremap() failing this early
+	 * need careful looking into anyway.
+	 */
+	BUG_ON(!davinci_sysmod_base);
+}
 
 static struct resource i2c_resources[] = {
 	{
@@ -41,7 +50,7 @@ static struct resource i2c_resources[] = {
 		.flags		= IORESOURCE_MEM,
 	},
 	{
-		.start		= IRQ_I2C,
+		.start		= DAVINCI_INTC_IRQ(IRQ_I2C),
 		.flags		= IORESOURCE_IRQ,
 	},
 };
@@ -62,7 +71,50 @@ void __init davinci_init_i2c(struct davinci_i2c_platform_data *pdata)
 	(void) platform_device_register(&davinci_i2c_device);
 }
 
-#if	defined(CONFIG_MMC_DAVINCI) || defined(CONFIG_MMC_DAVINCI_MODULE)
+static struct resource ide_resources[] = {
+	{
+		.start		= DAVINCI_ATA_BASE,
+		.end		= DAVINCI_ATA_BASE + 0x7ff,
+		.flags		= IORESOURCE_MEM,
+	},
+	{
+		.start		= DAVINCI_INTC_IRQ(IRQ_IDE),
+		.end		= DAVINCI_INTC_IRQ(IRQ_IDE),
+		.flags		= IORESOURCE_IRQ,
+	},
+};
+
+static u64 ide_dma_mask = DMA_BIT_MASK(32);
+
+static struct platform_device ide_device = {
+	.name           = "palm_bk3710",
+	.id             = -1,
+	.resource       = ide_resources,
+	.num_resources  = ARRAY_SIZE(ide_resources),
+	.dev = {
+		.dma_mask		= &ide_dma_mask,
+		.coherent_dma_mask      = DMA_BIT_MASK(32),
+	},
+};
+
+void __init davinci_init_ide(void)
+{
+	if (cpu_is_davinci_dm644x()) {
+		davinci_cfg_reg(DM644X_HPIEN_DISABLE);
+		davinci_cfg_reg(DM644X_ATAEN);
+		davinci_cfg_reg(DM644X_HDIREN);
+	} else if (cpu_is_davinci_dm646x()) {
+		/* IRQ_DM646X_IDE is the same as IRQ_IDE */
+		davinci_cfg_reg(DM646X_ATAEN);
+	} else {
+		WARN_ON(1);
+		return;
+	}
+
+	platform_device_register(&ide_device);
+}
+
+#if IS_ENABLED(CONFIG_MMC_DAVINCI)
 
 static u64 mmcsd0_dma_mask = DMA_BIT_MASK(32);
 
@@ -75,25 +127,17 @@ static struct resource mmcsd0_resources[] = {
 	},
 	/* IRQs:  MMC/SD, then SDIO */
 	{
-		.start = IRQ_MMCINT,
+		.start = DAVINCI_INTC_IRQ(IRQ_MMCINT),
 		.flags = IORESOURCE_IRQ,
 	}, {
 		/* different on dm355 */
-		.start = IRQ_SDIOINT,
+		.start = DAVINCI_INTC_IRQ(IRQ_SDIOINT),
 		.flags = IORESOURCE_IRQ,
-	},
-	/* DMA channels: RX, then TX */
-	{
-		.start = EDMA_CTLR_CHAN(0, DAVINCI_DMA_MMCRXEVT),
-		.flags = IORESOURCE_DMA,
-	}, {
-		.start = EDMA_CTLR_CHAN(0, DAVINCI_DMA_MMCTXEVT),
-		.flags = IORESOURCE_DMA,
 	},
 };
 
 static struct platform_device davinci_mmcsd0_device = {
-	.name = "davinci_mmc",
+	.name = "dm6441-mmc",
 	.id = 0,
 	.dev = {
 		.dma_mask = &mmcsd0_dma_mask,
@@ -113,24 +157,16 @@ static struct resource mmcsd1_resources[] = {
 	},
 	/* IRQs:  MMC/SD, then SDIO */
 	{
-		.start = IRQ_DM355_MMCINT1,
+		.start = DAVINCI_INTC_IRQ(IRQ_DM355_MMCINT1),
 		.flags = IORESOURCE_IRQ,
 	}, {
-		.start = IRQ_DM355_SDIOINT1,
+		.start = DAVINCI_INTC_IRQ(IRQ_DM355_SDIOINT1),
 		.flags = IORESOURCE_IRQ,
-	},
-	/* DMA channels: RX, then TX */
-	{
-		.start = EDMA_CTLR_CHAN(0, 30),	/* rx */
-		.flags = IORESOURCE_DMA,
-	}, {
-		.start = EDMA_CTLR_CHAN(0, 31),	/* tx */
-		.flags = IORESOURCE_DMA,
 	},
 };
 
 static struct platform_device davinci_mmcsd1_device = {
-	.name = "davinci_mmc",
+	.name = "dm6441-mmc",
 	.id = 1,
 	.dev = {
 		.dma_mask = &mmcsd1_dma_mask,
@@ -167,17 +203,19 @@ void __init davinci_setup_mmc(int module, struct davinci_mmc_config *config)
 			davinci_cfg_reg(DM355_SD1_DATA2);
 			davinci_cfg_reg(DM355_SD1_DATA3);
 		} else if (cpu_is_davinci_dm365()) {
-			void __iomem *pupdctl1 =
-				IO_ADDRESS(DAVINCI_SYSTEM_MODULE_BASE + 0x7c);
-
 			/* Configure pull down control */
-			__raw_writel((__raw_readl(pupdctl1) & ~0x400),
-					pupdctl1);
+			unsigned v;
+
+			v = __raw_readl(DAVINCI_SYSMOD_VIRT(SYSMOD_PUPDCTL1));
+			__raw_writel(v & ~0xfc0,
+					DAVINCI_SYSMOD_VIRT(SYSMOD_PUPDCTL1));
 
 			mmcsd1_resources[0].start = DM365_MMCSD1_BASE;
 			mmcsd1_resources[0].end = DM365_MMCSD1_BASE +
 							SZ_4K - 1;
-			mmcsd0_resources[2].start = IRQ_DM365_SDIOINT1;
+			mmcsd1_resources[2].start = DAVINCI_INTC_IRQ(
+							IRQ_DM365_SDIOINT1);
+			davinci_mmcsd1_device.name = "da830-mmc";
 		} else
 			break;
 
@@ -187,7 +225,8 @@ void __init davinci_setup_mmc(int module, struct davinci_mmc_config *config)
 		if (cpu_is_davinci_dm355()) {
 			mmcsd0_resources[0].start = DM355_MMCSD0_BASE;
 			mmcsd0_resources[0].end = DM355_MMCSD0_BASE + SZ_4K - 1;
-			mmcsd0_resources[2].start = IRQ_DM355_SDIOINT0;
+			mmcsd0_resources[2].start = DAVINCI_INTC_IRQ(
+							IRQ_DM355_SDIOINT0);
 
 			/* expose all 6 MMC0 signals:  CLK, CMD, DATA[0..3] */
 			davinci_cfg_reg(DM355_MMCSD0);
@@ -198,14 +237,14 @@ void __init davinci_setup_mmc(int module, struct davinci_mmc_config *config)
 			mmcsd0_resources[0].start = DM365_MMCSD0_BASE;
 			mmcsd0_resources[0].end = DM365_MMCSD0_BASE +
 							SZ_4K - 1;
-			mmcsd0_resources[2].start = IRQ_DM365_SDIOINT0;
+			mmcsd0_resources[2].start = DAVINCI_INTC_IRQ(
+							IRQ_DM365_SDIOINT0);
+			davinci_mmcsd0_device.name = "da830-mmc";
 		} else if (cpu_is_davinci_dm644x()) {
 			/* REVISIT: should this be in board-init code? */
-			void __iomem *base =
-				IO_ADDRESS(DAVINCI_SYSTEM_MODULE_BASE);
-
 			/* Power-on 3.3V IO cells */
-			__raw_writel(0, base + DM64XX_VDD3P3V_PWDN);
+			__raw_writel(0,
+				DAVINCI_SYSMOD_VIRT(SYSMOD_VDD3P3VPWDN));
 			/*Set up the pull regiter for MMC */
 			davinci_cfg_reg(DM644X_MSTK);
 		}
@@ -239,43 +278,27 @@ static struct resource wdt_resources[] = {
 	},
 };
 
-struct platform_device davinci_wdt_device = {
-	.name		= "watchdog",
+static struct platform_device davinci_wdt_device = {
+	.name		= "davinci-wdt",
 	.id		= -1,
 	.num_resources	= ARRAY_SIZE(wdt_resources),
 	.resource	= wdt_resources,
 };
 
-static void davinci_init_wdt(void)
+int davinci_init_wdt(void)
 {
-	platform_device_register(&davinci_wdt_device);
+	return platform_device_register(&davinci_wdt_device);
 }
 
-/*-------------------------------------------------------------------------*/
-
-struct davinci_timer_instance davinci_timer_instance[2] = {
-	{
-		.base		= IO_ADDRESS(DAVINCI_TIMER0_BASE),
-		.bottom_irq	= IRQ_TINT0_TINT12,
-		.top_irq	= IRQ_TINT0_TINT34,
-	},
-	{
-		.base		= IO_ADDRESS(DAVINCI_TIMER1_BASE),
-		.bottom_irq	= IRQ_TINT1_TINT12,
-		.top_irq	= IRQ_TINT1_TINT34,
-	},
+static struct platform_device davinci_gpio_device = {
+	.name	= "davinci_gpio",
+	.id	= -1,
 };
 
-/*-------------------------------------------------------------------------*/
-
-static int __init davinci_init_devices(void)
+int davinci_gpio_register(struct resource *res, int size, void *pdata)
 {
-	/* please keep these calls, and their implementations above,
-	 * in alphabetical order so they're easier to sort through.
-	 */
-	davinci_init_wdt();
-
-	return 0;
+	davinci_gpio_device.resource = res;
+	davinci_gpio_device.num_resources = size;
+	davinci_gpio_device.dev.platform_data = pdata;
+	return platform_device_register(&davinci_gpio_device);
 }
-arch_initcall(davinci_init_devices);
-

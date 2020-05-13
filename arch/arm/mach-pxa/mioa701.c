@@ -1,60 +1,50 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Handles the Mitac Mio A701 Board
  *
  * Copyright (C) 2008 Robert Jarzmik
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *
  */
 
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/platform_device.h>
-#include <linux/sysdev.h>
+#include <linux/syscore_ops.h>
 #include <linux/input.h>
 #include <linux/delay.h>
 #include <linux/gpio_keys.h>
+#include <linux/pwm.h>
 #include <linux/pwm_backlight.h>
 #include <linux/rtc.h>
 #include <linux/leds.h>
 #include <linux/gpio.h>
+#include <linux/gpio/machine.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/pda_power.h>
 #include <linux/power_supply.h>
-#include <linux/wm97xx_batt.h>
+#include <linux/wm97xx.h>
 #include <linux/mtd/physmap.h>
-#include <linux/usb/gpio_vbus.h>
+#include <linux/reboot.h>
+#include <linux/regulator/fixed.h>
 #include <linux/regulator/max1586.h>
+#include <linux/slab.h>
+#include <linux/platform_data/i2c-pxa.h>
 
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 
-#include <mach/pxa27x.h>
-#include <mach/regs-rtc.h>
-#include <mach/pxa27x_keypad.h>
-#include <mach/pxafb.h>
-#include <mach/mmc.h>
-#include <mach/udc.h>
-#include <mach/pxa27x-udc.h>
-#include <plat/i2c.h>
-#include <mach/camera.h>
+#include "pxa27x.h"
+#include "regs-rtc.h"
+#include <linux/platform_data/keypad-pxa27x.h>
+#include <linux/platform_data/video-pxafb.h>
+#include <linux/platform_data/mmc-pxamci.h>
+#include "udc.h"
+#include "pxa27x-udc.h"
+#include <linux/platform_data/media/camera-pxa.h>
 #include <mach/audio.h>
-#include <media/soc_camera.h>
+#include <mach/smemc.h>
 
-#include <mach/mioa701.h>
+#include "mioa701.h"
 
 #include "generic.h"
 #include "devices.h"
@@ -86,25 +76,7 @@ static unsigned long mioa701_pin_config[] = {
 	MIO_CFG_OUT(GPIO22_USB_ENABLE, AF0, DRIVE_LOW),
 
 	/* LCD */
-	GPIO58_LCD_LDD_0,
-	GPIO59_LCD_LDD_1,
-	GPIO60_LCD_LDD_2,
-	GPIO61_LCD_LDD_3,
-	GPIO62_LCD_LDD_4,
-	GPIO63_LCD_LDD_5,
-	GPIO64_LCD_LDD_6,
-	GPIO65_LCD_LDD_7,
-	GPIO66_LCD_LDD_8,
-	GPIO67_LCD_LDD_9,
-	GPIO68_LCD_LDD_10,
-	GPIO69_LCD_LDD_11,
-	GPIO70_LCD_LDD_12,
-	GPIO71_LCD_LDD_13,
-	GPIO72_LCD_LDD_14,
-	GPIO73_LCD_LDD_15,
-	GPIO74_LCD_FCLK,
-	GPIO75_LCD_LCLK,
-	GPIO76_LCD_PCLK,
+	GPIOxx_LCD_TFT_16BPP,
 
 	/* QCI */
 	GPIO12_CIF_DD_7,
@@ -119,6 +91,7 @@ static unsigned long mioa701_pin_config[] = {
 	GPIO82_CIF_DD_5,
 	GPIO84_CIF_FV,
 	GPIO85_CIF_LV,
+	MIO_CFG_OUT(GPIO56_MT9M111_nOE, AF0, DRIVE_LOW),
 
 	/* Bluetooth */
 	MIO_CFG_IN(GPIO14_BT_nACTIVITY, AF0),
@@ -155,6 +128,10 @@ static unsigned long mioa701_pin_config[] = {
 	GPIO41_FFUART_RTS,
 
 	/* Sound */
+	GPIO28_AC97_BITCLK,
+	GPIO29_AC97_SDATA_IN_0,
+	GPIO30_AC97_SDATA_OUT,
+	GPIO31_AC97_SYNC,
 	GPIO89_AC97_SYSCLK,
 	MIO_CFG_IN(GPIO12_HPJACK_INSERT, AF0),
 
@@ -190,56 +167,15 @@ static unsigned long mioa701_pin_config[] = {
 	MFP_CFG_OUT(GPIO116, AF0, DRIVE_HIGH),
 };
 
-#define MIO_GPIO_IN(num, _desc) \
-	{ .gpio = (num), .dir = 0, .desc = (_desc) }
-#define MIO_GPIO_OUT(num, _init, _desc) \
-	{ .gpio = (num), .dir = 1, .init = (_init), .desc = (_desc) }
-struct gpio_ress {
-	unsigned gpio : 8;
-	unsigned dir : 1;
-	unsigned init : 1;
-	char *desc;
+static struct pwm_lookup mioa701_pwm_lookup[] = {
+	PWM_LOOKUP("pxa27x-pwm.0", 0, "pwm-backlight", NULL, 4000 * 1024,
+		   PWM_POLARITY_NORMAL),
 };
-
-static int mio_gpio_request(struct gpio_ress *gpios, int size)
-{
-	int i, rc = 0;
-	int gpio;
-	int dir;
-
-	for (i = 0; (!rc) && (i < size); i++) {
-		gpio = gpios[i].gpio;
-		dir = gpios[i].dir;
-		rc = gpio_request(gpio, gpios[i].desc);
-		if (rc) {
-			printk(KERN_ERR "Error requesting GPIO %d(%s) : %d\n",
-			       gpio, gpios[i].desc, rc);
-			continue;
-		}
-		if (dir)
-			gpio_direction_output(gpio, gpios[i].init);
-		else
-			gpio_direction_input(gpio);
-	}
-	while ((rc) && (--i >= 0))
-		gpio_free(gpios[i].gpio);
-	return rc;
-}
-
-static void mio_gpio_free(struct gpio_ress *gpios, int size)
-{
-	int i;
-
-	for (i = 0; i < size; i++)
-		gpio_free(gpios[i].gpio);
-}
 
 /* LCD Screen and Backlight */
 static struct platform_pwm_backlight_data mioa701_backlight_data = {
-	.pwm_id		= 0,
 	.max_brightness	= 100,
 	.dft_brightness	= 50,
-	.pwm_period_ns	= 4000 * 1024,	/* Fl = 250kHz */
 };
 
 /*
@@ -277,7 +213,7 @@ static struct pxafb_mach_info mioa701_pxafb_info = {
 /*
  * Keyboard configuration
  */
-static unsigned int mioa701_matrix_keys[] = {
+static const unsigned int mioa701_matrix_keys[] = {
 	KEY(0, 0, KEY_UP),
 	KEY(0, 1, KEY_RIGHT),
 	KEY(0, 2, KEY_MEDIA),
@@ -288,11 +224,16 @@ static unsigned int mioa701_matrix_keys[] = {
 	KEY(2, 1, KEY_PHONE),	/* Phone Green key */
 	KEY(2, 2, KEY_CAMERA)	/* Camera key */
 };
+
+static struct matrix_keymap_data mioa701_matrix_keymap_data = {
+	.keymap			= mioa701_matrix_keys,
+	.keymap_size		= ARRAY_SIZE(mioa701_matrix_keys),
+};
+
 static struct pxa27x_keypad_platform_data mioa701_keypad_info = {
 	.matrix_key_rows = 3,
 	.matrix_key_cols = 3,
-	.matrix_key_map = mioa701_matrix_keys,
-	.matrix_key_map_size = ARRAY_SIZE(mioa701_matrix_keys),
+	.matrix_keymap_data = &mioa701_matrix_keymap_data,
 };
 
 /*
@@ -359,16 +300,16 @@ irqreturn_t gsm_on_irq(int irq, void *p)
 	return IRQ_HANDLED;
 }
 
-struct gpio_ress gsm_gpios[] = {
-	MIO_GPIO_IN(GPIO25_GSM_MOD_ON_STATE, "GSM state"),
-	MIO_GPIO_IN(GPIO113_GSM_EVENT, "GSM event"),
+static struct gpio gsm_gpios[] = {
+	{ GPIO25_GSM_MOD_ON_STATE, GPIOF_IN, "GSM state" },
+	{ GPIO113_GSM_EVENT, GPIOF_IN, "GSM event" },
 };
 
 static int __init gsm_init(void)
 {
 	int rc;
 
-	rc = mio_gpio_request(ARRAY_AND_SIZE(gsm_gpios));
+	rc = gpio_request_array(ARRAY_AND_SIZE(gsm_gpios));
 	if (rc)
 		goto err_gpio;
 	rc = request_irq(gpio_to_irq(GPIO25_GSM_MOD_ON_STATE), gsm_on_irq,
@@ -382,7 +323,7 @@ static int __init gsm_init(void)
 
 err_irq:
 	printk(KERN_ERR "Mioa701: Can't request GSM_ON irq\n");
-	mio_gpio_free(ARRAY_AND_SIZE(gsm_gpios));
+	gpio_free_array(ARRAY_AND_SIZE(gsm_gpios));
 err_gpio:
 	printk(KERN_ERR "Mioa701: gsm not available\n");
 	return rc;
@@ -391,7 +332,7 @@ err_gpio:
 static void gsm_exit(void)
 {
 	free_irq(gpio_to_irq(GPIO25_GSM_MOD_ON_STATE), NULL);
-	mio_gpio_free(ARRAY_AND_SIZE(gsm_gpios));
+	gpio_free_array(ARRAY_AND_SIZE(gsm_gpios));
 }
 
 /*
@@ -425,10 +366,13 @@ static struct pxa2xx_udc_mach_info mioa701_udc_info = {
 	.gpio_pullup	  = GPIO22_USB_ENABLE,
 };
 
-struct gpio_vbus_mach_info gpio_vbus_data = {
-	.gpio_vbus = GPIO13_nUSB_DETECT,
-	.gpio_vbus_inverted = 1,
-	.gpio_pullup = -1,
+static struct gpiod_lookup_table gpio_vbus_gpiod_table = {
+	.dev_id = "gpio-vbus",
+	.table = {
+		GPIO_LOOKUP("gpio-pxa", GPIO13_nUSB_DETECT,
+			    "vbus", GPIO_ACTIVE_LOW),
+		{ },
+	},
 };
 
 /*
@@ -439,38 +383,47 @@ struct gpio_vbus_mach_info gpio_vbus_data = {
  * to give the card a chance to fully insert/eject.
  */
 static struct pxamci_platform_data mioa701_mci_info = {
+	.detect_delay_ms	= 250,
 	.ocr_mask 		= MMC_VDD_32_33 | MMC_VDD_33_34,
-	.gpio_card_detect	= GPIO15_SDIO_INSERT,
-	.gpio_card_ro		= GPIO78_SDIO_RO,
-	.gpio_power		= GPIO91_SDIO_EN,
+};
+
+static struct gpiod_lookup_table mioa701_mci_gpio_table = {
+	.dev_id = "pxa2xx-mci.0",
+	.table = {
+		/* Card detect on GPIO 15 */
+		GPIO_LOOKUP("gpio-pxa", GPIO15_SDIO_INSERT,
+			    "cd", GPIO_ACTIVE_LOW),
+		/* Write protect on GPIO 78 */
+		GPIO_LOOKUP("gpio-pxa", GPIO78_SDIO_RO,
+			    "wp", GPIO_ACTIVE_LOW),
+		/* Power on GPIO 91 */
+		GPIO_LOOKUP("gpio-pxa", GPIO91_SDIO_EN,
+			    "power", GPIO_ACTIVE_HIGH),
+		{ },
+	},
 };
 
 /* FlashRAM */
-static struct resource strataflash_resource = {
+static struct resource docg3_resource = {
 	.start = PXA_CS0_PHYS,
-	.end   = PXA_CS0_PHYS + SZ_64M - 1,
+	.end   = PXA_CS0_PHYS + SZ_8K - 1,
 	.flags = IORESOURCE_MEM,
 };
 
-static struct physmap_flash_data strataflash_data = {
-	.width = 2,
-	/* .set_vpp = mioa701_set_vpp, */
-};
-
-static struct platform_device strataflash = {
-	.name	       = "physmap-flash",
+static struct platform_device docg3 = {
+	.name	       = "docg3",
 	.id	       = -1,
-	.resource      = &strataflash_resource,
+	.resource      = &docg3_resource,
 	.num_resources = 1,
 	.dev = {
-		.platform_data = &strataflash_data,
+		.platform_data = NULL,
 	},
 };
 
 /*
  * Suspend/Resume bootstrap management
  *
- * MIO A701 reboot sequence is highly ROM dependant. From the one dissassembled,
+ * MIO A701 reboot sequence is highly ROM dependent. From the one dissassembled,
  * this sequence is as follows :
  *   - disables interrupts
  *   - initialize SDRAM (self refresh RAM into active RAM)
@@ -500,7 +453,7 @@ static void install_bootstrap(void)
 }
 
 
-static int mioa701_sys_suspend(struct sys_device *sysdev, pm_message_t state)
+static int mioa701_sys_suspend(void)
 {
 	int i = 0, is_bt_on;
 	u32 *mem_resume_vector	= phys_to_virt(RESUME_VECTOR_ADDR);
@@ -526,7 +479,7 @@ static int mioa701_sys_suspend(struct sys_device *sysdev, pm_message_t state)
 	return 0;
 }
 
-static int mioa701_sys_resume(struct sys_device *sysdev)
+static void mioa701_sys_resume(void)
 {
 	int i = 0;
 	u32 *mem_resume_vector	= phys_to_virt(RESUME_VECTOR_ADDR);
@@ -539,43 +492,18 @@ static int mioa701_sys_resume(struct sys_device *sysdev)
 	*mem_resume_enabler = save_buffer[i++];
 	*mem_resume_bt	    = save_buffer[i++];
 	*mem_resume_unknown = save_buffer[i++];
-
-	return 0;
 }
 
-static struct sysdev_class mioa701_sysclass = {
-	.name = "mioa701",
-};
-
-static struct sys_device sysdev_bootstrap = {
-	.cls		= &mioa701_sysclass,
-};
-
-static struct sysdev_driver driver_bootstrap = {
-	.suspend	= &mioa701_sys_suspend,
-	.resume		= &mioa701_sys_resume,
+static struct syscore_ops mioa701_syscore_ops = {
+	.suspend	= mioa701_sys_suspend,
+	.resume		= mioa701_sys_resume,
 };
 
 static int __init bootstrap_init(void)
 {
-	int rc;
 	int save_size = mioa701_bootstrap_lg + (sizeof(u32) * 3);
 
-	rc = sysdev_class_register(&mioa701_sysclass);
-	if (rc) {
-		printk(KERN_ERR "Failed registering mioa701 sys class\n");
-		return -ENODEV;
-	}
-	rc = sysdev_register(&sysdev_bootstrap);
-	if (rc) {
-		printk(KERN_ERR "Failed registering mioa701 sys device\n");
-		return -ENODEV;
-	}
-	rc = sysdev_driver_register(&mioa701_sysclass, &driver_bootstrap);
-	if (rc) {
-		printk(KERN_ERR "Failed registering PMU sys driver\n");
-		return -ENODEV;
-	}
+	register_syscore_ops(&mioa701_syscore_ops);
 
 	save_buffer = kmalloc(save_size, GFP_KERNEL);
 	if (!save_buffer)
@@ -588,9 +516,7 @@ static int __init bootstrap_init(void)
 static void bootstrap_exit(void)
 {
 	kfree(save_buffer);
-	sysdev_driver_unregister(&mioa701_sysclass, &driver_bootstrap);
-	sysdev_unregister(&sysdev_bootstrap);
-	sysdev_class_unregister(&mioa701_sysclass);
+	unregister_syscore_ops(&mioa701_syscore_ops);
 
 	printk(KERN_CRIT "Unregistering mioa701 suspend will hang next"
 	       "resume !!!\n");
@@ -624,15 +550,15 @@ static struct pda_power_pdata power_pdata = {
 static struct resource power_resources[] = {
 	[0] = {
 		.name	= "ac",
-		.start	= gpio_to_irq(GPIO96_AC_DETECT),
-		.end	= gpio_to_irq(GPIO96_AC_DETECT),
+		.start	= PXA_GPIO_TO_IRQ(GPIO96_AC_DETECT),
+		.end	= PXA_GPIO_TO_IRQ(GPIO96_AC_DETECT),
 		.flags	= IORESOURCE_IRQ | IORESOURCE_IRQ_HIGHEDGE |
 		IORESOURCE_IRQ_LOWEDGE,
 	},
 	[1] = {
 		.name	= "usb",
-		.start	= gpio_to_irq(GPIO13_nUSB_DETECT),
-		.end	= gpio_to_irq(GPIO13_nUSB_DETECT),
+		.start	= PXA_GPIO_TO_IRQ(GPIO13_nUSB_DETECT),
+		.end	= PXA_GPIO_TO_IRQ(GPIO13_nUSB_DETECT),
 		.flags	= IORESOURCE_IRQ | IORESOURCE_IRQ_HIGHEDGE |
 		IORESOURCE_IRQ_LOWEDGE,
 	},
@@ -648,7 +574,7 @@ static struct platform_device power_dev = {
 	},
 };
 
-static struct wm97xx_batt_info mioa701_battery_data = {
+static struct wm97xx_batt_pdata mioa701_battery_data = {
 	.batt_aux	= WM97XX_AUX_ID1,
 	.temp_aux	= -1,
 	.charge_gpio	= -1,
@@ -660,13 +586,15 @@ static struct wm97xx_batt_info mioa701_battery_data = {
 	.batt_name	= "mioa701_battery",
 };
 
+static struct wm97xx_pdata mioa701_wm97xx_pdata = {
+	.batt_pdata	= &mioa701_battery_data,
+};
+
 /*
  * Voltage regulation
  */
 static struct regulator_consumer_supply max1586_consumers[] = {
-	{
-		.supply = "vcc_core",
-	}
+	REGULATOR_SUPPLY("vcc_core", NULL),
 };
 
 static struct regulator_init_data max1586_v3_info = {
@@ -699,6 +627,8 @@ struct pxacamera_platform_data mioa701_pxacamera_platform_data = {
 	.flags  = PXA_CAMERA_MASTER | PXA_CAMERA_DATAWIDTH_8 |
 		PXA_CAMERA_PCLK_EN | PXA_CAMERA_MCLK_EN,
 	.mclk_10khz = 5000,
+	.sensor_i2c_adapter_id = 0,
+	.sensor_i2c_address = 0x5d,
 };
 
 static struct i2c_board_info __initdata mioa701_pi2c_devices[] = {
@@ -709,17 +639,10 @@ static struct i2c_board_info __initdata mioa701_pi2c_devices[] = {
 };
 
 /* Board I2C devices. */
-static struct i2c_board_info __initdata mioa701_i2c_devices[] = {
+static struct i2c_board_info mioa701_i2c_devices[] = {
 	{
 		I2C_BOARD_INFO("mt9m111", 0x5d),
 	},
-};
-
-static struct soc_camera_link iclink = {
-	.bus_id		= 0, /* Match id in pxa27x_device_camera in device.c */
-	.board_info	= &mioa701_i2c_devices[0],
-	.i2c_adapter_id	= 0,
-	.module_name	= "mt9m111",
 };
 
 struct i2c_pxa_platform_data i2c_pdata = {
@@ -728,6 +651,7 @@ struct i2c_pxa_platform_data i2c_pdata = {
 
 static pxa2xx_audio_ops_t mioa701_ac97_info = {
 	.reset_gpio = 95,
+	.codec_pdata = { &mioa701_wm97xx_pdata, },
 };
 
 /*
@@ -754,8 +678,7 @@ MIO_SIMPLE_DEV(mioa701_led,	  "leds-gpio",	    &gpio_led_info)
 MIO_SIMPLE_DEV(pxa2xx_pcm,	  "pxa2xx-pcm",	    NULL)
 MIO_SIMPLE_DEV(mioa701_sound,	  "mioa701-wm9713", NULL)
 MIO_SIMPLE_DEV(mioa701_board,	  "mioa701-board",  NULL)
-MIO_SIMPLE_DEV(gpio_vbus,	  "gpio-vbus",      &gpio_vbus_data);
-MIO_SIMPLE_DEV(mioa701_camera,	  "soc-camera-pdrv",&iclink);
+MIO_SIMPLE_DEV(gpio_vbus,	  "gpio-vbus",      NULL);
 
 static struct platform_device *devices[] __initdata = {
 	&mioa701_gpio_keys,
@@ -764,9 +687,8 @@ static struct platform_device *devices[] __initdata = {
 	&pxa2xx_pcm,
 	&mioa701_sound,
 	&power_dev,
-	&strataflash,
+	&docg3,
 	&gpio_vbus,
-	&mioa701_camera,
 	&mioa701_board,
 };
 
@@ -775,47 +697,74 @@ static void mioa701_machine_exit(void);
 static void mioa701_poweroff(void)
 {
 	mioa701_machine_exit();
-	arm_machine_restart('s', NULL);
+	pxa_restart(REBOOT_SOFT, NULL);
 }
 
-static void mioa701_restart(char c, const char *cmd)
+static void mioa701_restart(enum reboot_mode c, const char *cmd)
 {
 	mioa701_machine_exit();
-	arm_machine_restart('s', cmd);
+	pxa_restart(REBOOT_SOFT, cmd);
 }
 
-static struct gpio_ress global_gpios[] = {
-	MIO_GPIO_OUT(GPIO9_CHARGE_EN, 1, "Charger enable"),
-	MIO_GPIO_OUT(GPIO18_POWEROFF, 0, "Power Off"),
-	MIO_GPIO_OUT(GPIO87_LCD_POWER, 0, "LCD Power"),
+static struct gpio global_gpios[] = {
+	{ GPIO9_CHARGE_EN, GPIOF_OUT_INIT_HIGH, "Charger enable" },
+	{ GPIO18_POWEROFF, GPIOF_OUT_INIT_LOW, "Power Off" },
+	{ GPIO87_LCD_POWER, GPIOF_OUT_INIT_LOW, "LCD Power" },
+	{ GPIO56_MT9M111_nOE, GPIOF_OUT_INIT_LOW, "Camera nOE" },
+};
+
+static struct regulator_consumer_supply fixed_5v0_consumers[] = {
+	REGULATOR_SUPPLY("power", "pwm-backlight"),
 };
 
 static void __init mioa701_machine_init(void)
 {
+	int rc;
+
 	PSLR  = 0xff100000; /* SYSDEL=125ms, PWRDEL=125ms, PSLR_SL_ROD=1 */
 	PCFR = PCFR_DC_EN | PCFR_GPR_EN | PCFR_OPDE;
 	RTTR = 32768 - 1; /* Reset crazy WinCE value */
 	UP2OCR = UP2OCR_HXOE;
 
+	/*
+	 * Set up the flash memory : DiskOnChip G3 on first static memory bank
+	 */
+	__raw_writel(0x7ff02dd8, MSC0);
+	__raw_writel(0x0001c391, MCMEM0);
+	__raw_writel(0x0001c391, MCATT0);
+	__raw_writel(0x0001c391, MCIO0);
+
+
 	pxa2xx_mfp_config(ARRAY_AND_SIZE(mioa701_pin_config));
-	mio_gpio_request(ARRAY_AND_SIZE(global_gpios));
+	pxa_set_ffuart_info(NULL);
+	pxa_set_btuart_info(NULL);
+	pxa_set_stuart_info(NULL);
+	rc = gpio_request_array(ARRAY_AND_SIZE(global_gpios));
+	if (rc)
+		pr_err("MioA701: Failed to request GPIOs: %d", rc);
 	bootstrap_init();
-	set_pxa_fb_info(&mioa701_pxafb_info);
-	mioa701_mci_info.detect_delay = msecs_to_jiffies(250);
+	pxa_set_fb_info(NULL, &mioa701_pxafb_info);
+	gpiod_add_lookup_table(&mioa701_mci_gpio_table);
 	pxa_set_mci_info(&mioa701_mci_info);
 	pxa_set_keypad_info(&mioa701_keypad_info);
-	wm97xx_bat_set_pdata(&mioa701_battery_data);
 	pxa_set_udc_info(&mioa701_udc_info);
 	pxa_set_ac97_info(&mioa701_ac97_info);
 	pm_power_off = mioa701_poweroff;
-	arm_pm_restart = mioa701_restart;
+	pwm_add_table(mioa701_pwm_lookup, ARRAY_SIZE(mioa701_pwm_lookup));
+	gpiod_add_lookup_table(&gpio_vbus_gpiod_table);
 	platform_add_devices(devices, ARRAY_SIZE(devices));
 	gsm_init();
 
+	i2c_register_board_info(0, ARRAY_AND_SIZE(mioa701_i2c_devices));
 	i2c_register_board_info(1, ARRAY_AND_SIZE(mioa701_pi2c_devices));
 	pxa_set_i2c_info(&i2c_pdata);
 	pxa27x_set_i2c_power_info(NULL);
 	pxa_set_camera_info(&mioa701_pxacamera_platform_data);
+
+	regulator_register_always_on(0, "fixed-5.0V", fixed_5v0_consumers,
+				     ARRAY_SIZE(fixed_5v0_consumers),
+				     5000000);
+	regulator_has_full_constraints();
 }
 
 static void mioa701_machine_exit(void)
@@ -825,11 +774,12 @@ static void mioa701_machine_exit(void)
 }
 
 MACHINE_START(MIOA701, "MIO A701")
-	.phys_io	= 0x40000000,
-	.io_pg_offst	= (io_p2v(0x40000000) >> 18) & 0xfffc,
-	.boot_params	= 0xa0000100,
-	.map_io		= &pxa_map_io,
+	.atag_offset	= 0x100,
+	.map_io		= &pxa27x_map_io,
+	.nr_irqs	= PXA_NR_IRQS,
 	.init_irq	= &pxa27x_init_irq,
+	.handle_irq	= &pxa27x_handle_irq,
 	.init_machine	= mioa701_machine_init,
-	.timer		= &pxa_timer,
+	.init_time	= pxa_timer_init,
+	.restart	= mioa701_restart,
 MACHINE_END

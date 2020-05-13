@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * NetLabel CIPSO/IPv4 Support
  *
@@ -5,27 +6,11 @@
  * NetLabel system manages static and dynamic label mappings for network
  * protocols such as CIPSO and RIPSO.
  *
- * Author: Paul Moore <paul.moore@hp.com>
- *
+ * Author: Paul Moore <paul@paul-moore.com>
  */
 
 /*
  * (c) Copyright Hewlett-Packard Development Company, L.P., 2006
- *
- * This program is free software;  you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY;  without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See
- * the GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program;  if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
- *
  */
 
 #include <linux/types.h>
@@ -33,12 +18,13 @@
 #include <linux/string.h>
 #include <linux/skbuff.h>
 #include <linux/audit.h>
+#include <linux/slab.h>
 #include <net/sock.h>
 #include <net/netlink.h>
 #include <net/genetlink.h>
 #include <net/netlabel.h>
 #include <net/cipso_ipv4.h>
-#include <asm/atomic.h>
+#include <linux/atomic.h>
 
 #include "netlabel_user.h"
 #include "netlabel_cipso_v4.h"
@@ -59,14 +45,7 @@ struct netlbl_domhsh_walk_arg {
 };
 
 /* NetLabel Generic NETLINK CIPSOv4 family */
-static struct genl_family netlbl_cipsov4_gnl_family = {
-	.id = GENL_ID_GENERATE,
-	.hdrsize = 0,
-	.name = NETLBL_NLTYPE_CIPSOV4_NAME,
-	.version = NETLBL_PROTO_VERSION,
-	.maxattr = NLBL_CIPSOV4_A_MAX,
-};
-
+static struct genl_family netlbl_cipsov4_gnl_family;
 /* NetLabel Netlink attribute policy */
 static const struct nla_policy netlbl_cipsov4_genl_policy[NLBL_CIPSOV4_A_MAX + 1] = {
 	[NLBL_CIPSOV4_A_DOI] = { .type = NLA_U32 },
@@ -106,9 +85,10 @@ static int netlbl_cipsov4_add_common(struct genl_info *info,
 
 	doi_def->doi = nla_get_u32(info->attrs[NLBL_CIPSOV4_A_DOI]);
 
-	if (nla_validate_nested(info->attrs[NLBL_CIPSOV4_A_TAGLST],
-				NLBL_CIPSOV4_A_MAX,
-				netlbl_cipsov4_genl_policy) != 0)
+	if (nla_validate_nested_deprecated(info->attrs[NLBL_CIPSOV4_A_TAGLST],
+					   NLBL_CIPSOV4_A_MAX,
+					   netlbl_cipsov4_genl_policy,
+					   NULL) != 0)
 		return -EINVAL;
 
 	nla_for_each_nested(nla, info->attrs[NLBL_CIPSOV4_A_TAGLST], nla_rem)
@@ -153,9 +133,10 @@ static int netlbl_cipsov4_add_std(struct genl_info *info,
 	    !info->attrs[NLBL_CIPSOV4_A_MLSLVLLST])
 		return -EINVAL;
 
-	if (nla_validate_nested(info->attrs[NLBL_CIPSOV4_A_MLSLVLLST],
-				NLBL_CIPSOV4_A_MAX,
-				netlbl_cipsov4_genl_policy) != 0)
+	if (nla_validate_nested_deprecated(info->attrs[NLBL_CIPSOV4_A_MLSLVLLST],
+					   NLBL_CIPSOV4_A_MAX,
+					   netlbl_cipsov4_genl_policy,
+					   NULL) != 0)
 		return -EINVAL;
 
 	doi_def = kmalloc(sizeof(*doi_def), GFP_KERNEL);
@@ -177,10 +158,11 @@ static int netlbl_cipsov4_add_std(struct genl_info *info,
 			    info->attrs[NLBL_CIPSOV4_A_MLSLVLLST],
 			    nla_a_rem)
 		if (nla_type(nla_a) == NLBL_CIPSOV4_A_MLSLVL) {
-			if (nla_validate_nested(nla_a,
-					    NLBL_CIPSOV4_A_MAX,
-					    netlbl_cipsov4_genl_policy) != 0)
-					goto add_std_failure;
+			if (nla_validate_nested_deprecated(nla_a,
+							   NLBL_CIPSOV4_A_MAX,
+							   netlbl_cipsov4_genl_policy,
+							   NULL) != 0)
+				goto add_std_failure;
 			nla_for_each_nested(nla_b, nla_a, nla_b_rem)
 				switch (nla_type(nla_b)) {
 				case NLBL_CIPSOV4_A_MLSLVLLOC:
@@ -241,18 +223,20 @@ static int netlbl_cipsov4_add_std(struct genl_info *info,
 		}
 
 	if (info->attrs[NLBL_CIPSOV4_A_MLSCATLST]) {
-		if (nla_validate_nested(info->attrs[NLBL_CIPSOV4_A_MLSCATLST],
-					NLBL_CIPSOV4_A_MAX,
-					netlbl_cipsov4_genl_policy) != 0)
+		if (nla_validate_nested_deprecated(info->attrs[NLBL_CIPSOV4_A_MLSCATLST],
+						   NLBL_CIPSOV4_A_MAX,
+						   netlbl_cipsov4_genl_policy,
+						   NULL) != 0)
 			goto add_std_failure;
 
 		nla_for_each_nested(nla_a,
 				    info->attrs[NLBL_CIPSOV4_A_MLSCATLST],
 				    nla_a_rem)
 			if (nla_type(nla_a) == NLBL_CIPSOV4_A_MLSCAT) {
-				if (nla_validate_nested(nla_a,
-					      NLBL_CIPSOV4_A_MAX,
-					      netlbl_cipsov4_genl_policy) != 0)
+				if (nla_validate_nested_deprecated(nla_a,
+								   NLBL_CIPSOV4_A_MAX,
+								   netlbl_cipsov4_genl_policy,
+								   NULL) != 0)
 					goto add_std_failure;
 				nla_for_each_nested(nla_b, nla_a, nla_b_rem)
 					switch (nla_type(nla_b)) {
@@ -324,8 +308,7 @@ static int netlbl_cipsov4_add_std(struct genl_info *info,
 	return 0;
 
 add_std_failure:
-	if (doi_def)
-		cipso_v4_doi_free(doi_def);
+	cipso_v4_doi_free(doi_def);
 	return ret_val;
 }
 
@@ -421,7 +404,6 @@ static int netlbl_cipsov4_add(struct sk_buff *skb, struct genl_info *info)
 
 {
 	int ret_val = -EINVAL;
-	const char *type_str = "(unknown)";
 	struct netlbl_audit audit_info;
 
 	if (!info->attrs[NLBL_CIPSOV4_A_DOI] ||
@@ -431,15 +413,12 @@ static int netlbl_cipsov4_add(struct sk_buff *skb, struct genl_info *info)
 	netlbl_netlink_auditinfo(skb, &audit_info);
 	switch (nla_get_u32(info->attrs[NLBL_CIPSOV4_A_MTYPE])) {
 	case CIPSO_V4_MAP_TRANS:
-		type_str = "trans";
 		ret_val = netlbl_cipsov4_add_std(info, &audit_info);
 		break;
 	case CIPSO_V4_MAP_PASS:
-		type_str = "pass";
 		ret_val = netlbl_cipsov4_add_pass(info, &audit_info);
 		break;
 	case CIPSO_V4_MAP_LOCAL:
-		type_str = "local";
 		ret_val = netlbl_cipsov4_add_local(info, &audit_info);
 		break;
 	}
@@ -509,7 +488,7 @@ list_start:
 	if (ret_val != 0)
 		goto list_failure_lock;
 
-	nla_a = nla_nest_start(ans_skb, NLBL_CIPSOV4_A_TAGLST);
+	nla_a = nla_nest_start_noflag(ans_skb, NLBL_CIPSOV4_A_TAGLST);
 	if (nla_a == NULL) {
 		ret_val = -ENOMEM;
 		goto list_failure_lock;
@@ -528,7 +507,8 @@ list_start:
 
 	switch (doi_def->type) {
 	case CIPSO_V4_MAP_TRANS:
-		nla_a = nla_nest_start(ans_skb, NLBL_CIPSOV4_A_MLSLVLLST);
+		nla_a = nla_nest_start_noflag(ans_skb,
+					      NLBL_CIPSOV4_A_MLSLVLLST);
 		if (nla_a == NULL) {
 			ret_val = -ENOMEM;
 			goto list_failure_lock;
@@ -540,7 +520,8 @@ list_start:
 			    CIPSO_V4_INV_LVL)
 				continue;
 
-			nla_b = nla_nest_start(ans_skb, NLBL_CIPSOV4_A_MLSLVL);
+			nla_b = nla_nest_start_noflag(ans_skb,
+						      NLBL_CIPSOV4_A_MLSLVL);
 			if (nla_b == NULL) {
 				ret_val = -ENOMEM;
 				goto list_retry;
@@ -559,7 +540,8 @@ list_start:
 		}
 		nla_nest_end(ans_skb, nla_a);
 
-		nla_a = nla_nest_start(ans_skb, NLBL_CIPSOV4_A_MLSCATLST);
+		nla_a = nla_nest_start_noflag(ans_skb,
+					      NLBL_CIPSOV4_A_MLSCATLST);
 		if (nla_a == NULL) {
 			ret_val = -ENOMEM;
 			goto list_retry;
@@ -571,7 +553,8 @@ list_start:
 			    CIPSO_V4_INV_CAT)
 				continue;
 
-			nla_b = nla_nest_start(ans_skb, NLBL_CIPSOV4_A_MLSCAT);
+			nla_b = nla_nest_start_noflag(ans_skb,
+						      NLBL_CIPSOV4_A_MLSCAT);
 			if (nla_b == NULL) {
 				ret_val = -ENOMEM;
 				goto list_retry;
@@ -630,7 +613,7 @@ static int netlbl_cipsov4_listall_cb(struct cipso_v4_doi *doi_def, void *arg)
 	struct netlbl_cipsov4_doiwalk_arg *cb_arg = arg;
 	void *data;
 
-	data = genlmsg_put(cb_arg->skb, NETLINK_CB(cb_arg->nl_cb->skb).pid,
+	data = genlmsg_put(cb_arg->skb, NETLINK_CB(cb_arg->nl_cb->skb).portid,
 			   cb_arg->seq, &netlbl_cipsov4_gnl_family,
 			   NLM_F_MULTI, NLBL_CIPSOV4_C_LISTALL);
 	if (data == NULL)
@@ -645,7 +628,8 @@ static int netlbl_cipsov4_listall_cb(struct cipso_v4_doi *doi_def, void *arg)
 	if (ret_val != 0)
 		goto listall_cb_failure;
 
-	return genlmsg_end(cb_arg->skb, data);
+	genlmsg_end(cb_arg->skb, data);
+	return 0;
 
 listall_cb_failure:
 	genlmsg_cancel(cb_arg->skb, data);
@@ -694,8 +678,8 @@ static int netlbl_cipsov4_remove_cb(struct netlbl_dom_map *entry, void *arg)
 {
 	struct netlbl_domhsh_walk_arg *cb_arg = arg;
 
-	if (entry->type == NETLBL_NLTYPE_CIPSOV4 &&
-	    entry->type_def.cipsov4->doi == cb_arg->doi)
+	if (entry->def.type == NETLBL_NLTYPE_CIPSOV4 &&
+	    entry->def.cipso->doi == cb_arg->doi)
 		return netlbl_domhsh_remove_entry(entry, cb_arg->audit_info);
 
 	return 0;
@@ -740,35 +724,46 @@ static int netlbl_cipsov4_remove(struct sk_buff *skb, struct genl_info *info)
  * NetLabel Generic NETLINK Command Definitions
  */
 
-static struct genl_ops netlbl_cipsov4_ops[] = {
+static const struct genl_ops netlbl_cipsov4_ops[] = {
 	{
 	.cmd = NLBL_CIPSOV4_C_ADD,
+	.validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
 	.flags = GENL_ADMIN_PERM,
-	.policy = netlbl_cipsov4_genl_policy,
 	.doit = netlbl_cipsov4_add,
 	.dumpit = NULL,
 	},
 	{
 	.cmd = NLBL_CIPSOV4_C_REMOVE,
+	.validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
 	.flags = GENL_ADMIN_PERM,
-	.policy = netlbl_cipsov4_genl_policy,
 	.doit = netlbl_cipsov4_remove,
 	.dumpit = NULL,
 	},
 	{
 	.cmd = NLBL_CIPSOV4_C_LIST,
+	.validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
 	.flags = 0,
-	.policy = netlbl_cipsov4_genl_policy,
 	.doit = netlbl_cipsov4_list,
 	.dumpit = NULL,
 	},
 	{
 	.cmd = NLBL_CIPSOV4_C_LISTALL,
+	.validate = GENL_DONT_VALIDATE_STRICT | GENL_DONT_VALIDATE_DUMP,
 	.flags = 0,
-	.policy = netlbl_cipsov4_genl_policy,
 	.doit = NULL,
 	.dumpit = netlbl_cipsov4_listall,
 	},
+};
+
+static struct genl_family netlbl_cipsov4_gnl_family __ro_after_init = {
+	.hdrsize = 0,
+	.name = NETLBL_NLTYPE_CIPSOV4_NAME,
+	.version = NETLBL_PROTO_VERSION,
+	.maxattr = NLBL_CIPSOV4_A_MAX,
+	.policy = netlbl_cipsov4_genl_policy,
+	.module = THIS_MODULE,
+	.ops = netlbl_cipsov4_ops,
+	.n_ops = ARRAY_SIZE(netlbl_cipsov4_ops),
 };
 
 /*
@@ -785,6 +780,5 @@ static struct genl_ops netlbl_cipsov4_ops[] = {
  */
 int __init netlbl_cipsov4_genl_init(void)
 {
-	return genl_register_family_with_ops(&netlbl_cipsov4_gnl_family,
-		netlbl_cipsov4_ops, ARRAY_SIZE(netlbl_cipsov4_ops));
+	return genl_register_family(&netlbl_cipsov4_gnl_family);
 }

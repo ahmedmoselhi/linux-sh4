@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *	linux/arch/alpha/kernel/err_ev6.c
  *
@@ -6,7 +7,6 @@
  *	Error handling code supporting Alpha systems
  */
 
-#include <linux/init.h>
 #include <linux/sched.h>
 
 #include <asm/io.h>
@@ -90,11 +90,13 @@ static int
 ev6_parse_cbox(u64 c_addr, u64 c1_syn, u64 c2_syn, 
 	       u64 c_stat, u64 c_sts, int print)
 {
-	char *sourcename[] = { "UNKNOWN", "UNKNOWN", "UNKNOWN",
-			       "MEMORY", "BCACHE", "DCACHE", 
-			       "BCACHE PROBE", "BCACHE PROBE" };
-	char *streamname[] = { "D", "I" };
-	char *bitsname[] = { "SINGLE", "DOUBLE" };
+	static const char * const sourcename[] = {
+		"UNKNOWN", "UNKNOWN", "UNKNOWN",
+		"MEMORY", "BCACHE", "DCACHE",
+		"BCACHE PROBE", "BCACHE PROBE"
+	};
+	static const char * const streamname[] = { "D", "I" };
+	static const char * const bitsname[] = { "SINGLE", "DOUBLE" };
 	int status = MCHK_DISPOSITION_REPORT;
 	int source = -1, stream = -1, bits = -1;
 

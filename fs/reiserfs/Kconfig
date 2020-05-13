@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0-only
 config REISERFS_FS
 	tristate "Reiserfs support"
 	select CRC32
@@ -10,7 +11,8 @@ config REISERFS_FS
 
 	  In general, ReiserFS is as fast as ext2, but is very efficient with
 	  large directories and small files.  Additional patches are needed
-	  for NFS and quotas, please see <http://www.namesys.com/> for links.
+	  for NFS and quotas, please see 
+	  <https://reiser4.wiki.kernel.org/index.php/Main_Page> for links.
 
 	  It is more easily extended to have features currently found in
 	  database and keyword search systems than block allocation based file
@@ -18,7 +20,8 @@ config REISERFS_FS
 	  plugins consistent with our motto ``It takes more than a license to
 	  make source code open.''
 
-	  Read <http://www.namesys.com/> to learn more about reiserfs.
+	  Read <https://reiser4.wiki.kernel.org/index.php/Main_Page> 
+	  to learn more about reiserfs.
 
 	  Sponsored by Threshold Networks, Emusic.com, and Bigstorage.com.
 
@@ -55,8 +58,7 @@ config REISERFS_FS_XATTR
 	depends on REISERFS_FS
 	help
 	  Extended attributes are name:value pairs associated with inodes by
-	  the kernel or by users (see the attr(5) manual page, or visit
-	  <http://acl.bestbits.at/> for details).
+	  the kernel or by users (see the attr(5) manual page for details).
 
 	  If unsure, say N.
 
@@ -67,9 +69,6 @@ config REISERFS_FS_POSIX_ACL
 	help
 	  Posix Access Control Lists (ACLs) support permissions for users and
 	  groups beyond the owner/group/world scheme.
-
-	  To learn more about Access Control Lists, visit the Posix ACLs for
-	  Linux website <http://acl.bestbits.at/>.
 
 	  If you don't know what Access Control Lists are, say N
 

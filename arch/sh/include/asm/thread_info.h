@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_SH_THREAD_INFO_H
 #define __ASM_SH_THREAD_INFO_H
 
@@ -10,28 +11,34 @@
  *  - Incorporating suggestions made by Linus Torvalds and Dave Miller
  */
 #ifdef __KERNEL__
+
 #include <asm/page.h>
+
+/*
+ * Page fault error code bits
+ */
+#define FAULT_CODE_WRITE	(1 << 0)	/* write access */
+#define FAULT_CODE_INITIAL	(1 << 1)	/* initial page write */
+#define FAULT_CODE_ITLB		(1 << 2)	/* ITLB miss */
+#define FAULT_CODE_PROT		(1 << 3)	/* protection fault */
+#define FAULT_CODE_USER		(1 << 4)	/* user-mode access */
 
 #ifndef __ASSEMBLY__
 #include <asm/processor.h>
 
 struct thread_info {
 	struct task_struct	*task;		/* main task structure */
-	struct exec_domain	*exec_domain;	/* execution domain */
 	unsigned long		flags;		/* low level flags */
 	__u32			status;		/* thread synchronous flags */
 	__u32			cpu;
 	int			preempt_count; /* 0 => preemptable, <0 => BUG */
 	mm_segment_t		addr_limit;	/* thread address space */
-	struct restart_block	restart_block;
 	unsigned long		previous_sp;	/* sp of previous stack in case
 						   of nested IRQ stacks */
 	__u8			supervisor_stack[0];
 };
 
 #endif
-
-#define PREEMPT_ACTIVE		0x10000000
 
 #if defined(CONFIG_4KSTACKS)
 #define THREAD_SHIFT	12
@@ -49,29 +56,15 @@ struct thread_info {
 #define INIT_THREAD_INFO(tsk)			\
 {						\
 	.task		= &tsk,			\
-	.exec_domain	= &default_exec_domain,	\
 	.flags		= 0,			\
 	.status		= 0,			\
 	.cpu		= 0,			\
 	.preempt_count	= INIT_PREEMPT_COUNT,	\
 	.addr_limit	= KERNEL_DS,		\
-	.restart_block	= {			\
-		.fn = do_no_restart_syscall,	\
-	},					\
 }
-
-#define init_thread_info	(init_thread_union.thread_info)
-#define init_stack		(init_thread_union.stack)
 
 /* how to get the current stack pointer from C */
 register unsigned long current_stack_pointer asm("r15") __used;
-#ifdef CONFIG_FRAME_POINTER
-#define current_frame_pointer ({ unsigned long __r14; \
-	asm("mov r14,%0" : "=r"(__r14)); \
-	__r14; })
-#else
-#define current_frame_pointer 0
-#endif
 
 /* how to get the thread information struct from C */
 static inline struct thread_info *current_thread_info(void)
@@ -95,65 +88,44 @@ static inline struct thread_info *current_thread_info(void)
 	return ti;
 }
 
-/* thread information allocation */
-#if THREAD_SHIFT >= PAGE_SHIFT
-
 #define THREAD_SIZE_ORDER	(THREAD_SHIFT - PAGE_SHIFT)
 
-#else /* THREAD_SHIFT < PAGE_SHIFT */
-
-#define __HAVE_ARCH_THREAD_INFO_ALLOCATOR
-
-extern struct thread_info *alloc_thread_info(struct task_struct *tsk);
-extern void free_thread_info(struct thread_info *ti);
-
-#endif /* THREAD_SHIFT < PAGE_SHIFT */
+extern void arch_task_cache_init(void);
+extern int arch_dup_task_struct(struct task_struct *dst, struct task_struct *src);
+extern void arch_release_task_struct(struct task_struct *tsk);
+extern void init_thread_xstate(void);
 
 #endif /* __ASSEMBLY__ */
 
 /*
- * thread information flags
- * - these are process state flags that various assembly files may need to access
- * - pending work-to-be-done flags are in LSW
- * - other flags in MSW
+ * Thread information flags
+ *
+ * - Limited to 24 bits, upper byte used for fault code encoding.
+ *
+ * - _TIF_ALLWORK_MASK and _TIF_WORK_MASK need to fit within 2 bytes, or
+ *   we blow the tst immediate size constraints and need to fix up
+ *   arch/sh/kernel/entry-common.S.
  */
 #define TIF_SYSCALL_TRACE	0	/* syscall trace active */
 #define TIF_SIGPENDING		1	/* signal pending */
 #define TIF_NEED_RESCHED	2	/* rescheduling necessary */
-#define TIF_RESTORE_SIGMASK	3	/* restore signal mask in do_signal() */
 #define TIF_SINGLESTEP		4	/* singlestepping active */
 #define TIF_SYSCALL_AUDIT	5	/* syscall auditing active */
 #define TIF_SECCOMP		6	/* secure computing */
 #define TIF_NOTIFY_RESUME	7	/* callback before returning to user */
 #define TIF_SYSCALL_TRACEPOINT	8	/* for ftrace syscall instrumentation */
-#define TIF_USEDFPU		16	/* FPU was used by this task this quantum (SMP) */
 #define TIF_POLLING_NRFLAG	17	/* true if poll_idle() is polling TIF_NEED_RESCHED */
-#define TIF_MEMDIE		18
-#define TIF_FREEZE		19	/* Freezing for suspend */
-#define TIF_UAC_NOPRINT		20	/* PR_UNALIGN_NOPRINT (1) */
-#define TIF_UAC_SIGBUS		21	/* PR_UNALIGN_SIGBUS (2) */
-
+#define TIF_MEMDIE		18	/* is terminating due to OOM killer */
 
 #define _TIF_SYSCALL_TRACE	(1 << TIF_SYSCALL_TRACE)
 #define _TIF_SIGPENDING		(1 << TIF_SIGPENDING)
 #define _TIF_NEED_RESCHED	(1 << TIF_NEED_RESCHED)
-#define _TIF_RESTORE_SIGMASK	(1 << TIF_RESTORE_SIGMASK)
 #define _TIF_SINGLESTEP		(1 << TIF_SINGLESTEP)
 #define _TIF_SYSCALL_AUDIT	(1 << TIF_SYSCALL_AUDIT)
 #define _TIF_SECCOMP		(1 << TIF_SECCOMP)
 #define _TIF_NOTIFY_RESUME	(1 << TIF_NOTIFY_RESUME)
 #define _TIF_SYSCALL_TRACEPOINT	(1 << TIF_SYSCALL_TRACEPOINT)
-#define _TIF_USEDFPU		(1 << TIF_USEDFPU)
 #define _TIF_POLLING_NRFLAG	(1 << TIF_POLLING_NRFLAG)
-#define _TIF_FREEZE		(1 << TIF_FREEZE)
-#define _TIF_UAC_NOPRINT	(1 << TIF_UAC_NOPRINT)
-#define _TIF_UAC_SIGBUS		(1 << TIF_UAC_SIGBUS)
-
-/*
- * _TIF_ALLWORK_MASK and _TIF_WORK_MASK need to fit within 2 bytes, or we
- * blow the tst immediate size constraints and need to fix up
- * arch/sh/kernel/entry-common.S.
- */
 
 /* work to do in syscall trace */
 #define _TIF_WORK_SYSCALL_MASK	(_TIF_SYSCALL_TRACE | _TIF_SINGLESTEP | \
@@ -163,31 +135,12 @@ extern void free_thread_info(struct thread_info *ti);
 /* work to do on any return to u-space */
 #define _TIF_ALLWORK_MASK	(_TIF_SYSCALL_TRACE | _TIF_SIGPENDING      | \
 				 _TIF_NEED_RESCHED  | _TIF_SYSCALL_AUDIT   | \
-				 _TIF_SINGLESTEP    | _TIF_RESTORE_SIGMASK | \
-				 _TIF_NOTIFY_RESUME | _TIF_SYSCALL_TRACEPOINT)
+				 _TIF_SINGLESTEP    | _TIF_NOTIFY_RESUME   | \
+				 _TIF_SYSCALL_TRACEPOINT)
 
 /* work to do on interrupt/exception return */
 #define _TIF_WORK_MASK		(_TIF_ALLWORK_MASK & ~(_TIF_SYSCALL_TRACE | \
 				 _TIF_SYSCALL_AUDIT | _TIF_SINGLESTEP))
-
-/* PR_[GS]ET_UNALIGN prctls */
-#define SH_UAC_SHIFT		TIF_UAC_NOPRINT
-#define SH_UAC_MASK		(_TIF_UAC_SIGBUS | _TIF_UAC_NOPRINT)
-
-#define SET_UNALIGN_CTL(task,value)	\
-({	\
-	task_thread_info(task)->flags =	\
-	((task_thread_info(task)->flags & ~SH_UAC_MASK)	\
-				| (((value) << SH_UAC_SHIFT) & SH_UAC_MASK));\
-	0;	\
-})
-
-#define GET_UNALIGN_CTL(task,addr)	\
-({	\
-	put_user((task_thread_info(task)->flags & SH_UAC_MASK) \
-	>> SH_UAC_SHIFT,	\
-	(int __user *) (addr));	\
-})
 
 /*
  * Thread-synchronous status.
@@ -196,7 +149,29 @@ extern void free_thread_info(struct thread_info *ti);
  * ever touches our thread-synchronous status, so we don't
  * have to worry about atomic accesses.
  */
-#define TS_USEDFPU		0x0001	/* FPU used by this task this quantum */
+#define TS_USEDFPU		0x0002	/* FPU used by this task this quantum */
+
+#ifndef __ASSEMBLY__
+
+#define TI_FLAG_FAULT_CODE_SHIFT	24
+
+/*
+ * Additional thread flag encoding
+ */
+static inline void set_thread_fault_code(unsigned int val)
+{
+	struct thread_info *ti = current_thread_info();
+	ti->flags = (ti->flags & (~0 >> (32 - TI_FLAG_FAULT_CODE_SHIFT)))
+		| (val << TI_FLAG_FAULT_CODE_SHIFT);
+}
+
+static inline unsigned int get_thread_fault_code(void)
+{
+	struct thread_info *ti = current_thread_info();
+	return ti->flags >> TI_FLAG_FAULT_CODE_SHIFT;
+}
+
+#endif	/* !__ASSEMBLY__ */
 
 #endif /* __KERNEL__ */
 

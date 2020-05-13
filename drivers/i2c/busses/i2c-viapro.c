@@ -1,22 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
     Copyright (c) 1998 - 2002  Frodo Looijaard <frodol@dds.nl>,
     Philip Edelbrock <phil@netroedge.com>, Kyösti Mälkki <kmalkki@cc.hut.fi>,
     Mark D. Studebaker <mdsxyz123@yahoo.com>
-    Copyright (C) 2005 - 2008  Jean Delvare <khali@linux-fr.org>
+    Copyright (C) 2005 - 2008  Jean Delvare <jdelvare@suse.de>
 
-    This program is free software; you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation; either version 2 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 */
 
 /*
@@ -51,7 +39,7 @@
 #include <linux/i2c.h>
 #include <linux/init.h>
 #include <linux/acpi.h>
-#include <asm/io.h>
+#include <linux/io.h>
 
 static struct pci_dev *vt596_pdev;
 
@@ -91,14 +79,14 @@ static unsigned short SMBHSTCFG = 0xD2;
 
 /* If force is set to anything different from 0, we forcibly enable the
    VT596. DANGEROUS! */
-static int force;
+static bool force;
 module_param(force, bool, 0);
 MODULE_PARM_DESC(force, "Forcibly enable the SMBus. DANGEROUS!");
 
 /* If force_addr is set to anything different from 0, we forcibly enable
    the VT596 at the given address. VERY DANGEROUS! */
 static u16 force_addr;
-module_param(force_addr, ushort, 0);
+module_param_hw(force_addr, ushort, ioport, 0);
 MODULE_PARM_DESC(force_addr,
 		 "Forcibly enable the SMBus at the given address. "
 		 "EXTREMELY DANGEROUS!");
@@ -165,10 +153,10 @@ static int vt596_transaction(u8 size)
 	do {
 		msleep(1);
 		temp = inb_p(SMBHSTSTS);
-	} while ((temp & 0x01) && (timeout++ < MAX_TIMEOUT));
+	} while ((temp & 0x01) && (++timeout < MAX_TIMEOUT));
 
 	/* If the SMBus is still busy, we give up */
-	if (timeout >= MAX_TIMEOUT) {
+	if (timeout == MAX_TIMEOUT) {
 		result = -ETIMEDOUT;
 		dev_err(&vt596_adapter.dev, "SMBus timeout!\n");
 	}
@@ -185,14 +173,8 @@ static int vt596_transaction(u8 size)
 	}
 
 	if (temp & 0x04) {
-		int read = inb_p(SMBHSTADD) & 0x01;
 		result = -ENXIO;
-		/* The quick and receive byte commands are used to probe
-		   for chips, so errors are expected, and we don't want
-		   to frighten the user. */
-		if (!((size == VT596_QUICK && !read) ||
-		      (size == VT596_BYTE && read)))
-			dev_err(&vt596_adapter.dev, "Transaction error!\n");
+		dev_dbg(&vt596_adapter.dev, "No response\n");
 	}
 
 	/* Resetting status register */
@@ -326,8 +308,8 @@ static struct i2c_adapter vt596_adapter = {
 	.algo		= &smbus_algorithm,
 };
 
-static int __devinit vt596_probe(struct pci_dev *pdev,
-				 const struct pci_device_id *id)
+static int vt596_probe(struct pci_dev *pdev,
+		       const struct pci_device_id *id)
 {
 	unsigned char temp;
 	int error;
@@ -407,6 +389,7 @@ found:
 	case PCI_DEVICE_ID_VIA_CX700:
 	case PCI_DEVICE_ID_VIA_VX800:
 	case PCI_DEVICE_ID_VIA_VX855:
+	case PCI_DEVICE_ID_VIA_VX900:
 	case PCI_DEVICE_ID_VIA_8251:
 	case PCI_DEVICE_ID_VIA_8237:
 	case PCI_DEVICE_ID_VIA_8237A:
@@ -447,7 +430,7 @@ release_region:
 	return error;
 }
 
-static struct pci_device_id vt596_ids[] = {
+static const struct pci_device_id vt596_ids[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_VIA, PCI_DEVICE_ID_VIA_82C596_3),
 	  .driver_data = SMBBA1 },
 	{ PCI_DEVICE(PCI_VENDOR_ID_VIA, PCI_DEVICE_ID_VIA_82C596B_3),
@@ -475,6 +458,8 @@ static struct pci_device_id vt596_ids[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_VIA, PCI_DEVICE_ID_VIA_VX800),
 	  .driver_data = SMBBA3 },
 	{ PCI_DEVICE(PCI_VENDOR_ID_VIA, PCI_DEVICE_ID_VIA_VX855),
+	  .driver_data = SMBBA3 },
+	{ PCI_DEVICE(PCI_VENDOR_ID_VIA, PCI_DEVICE_ID_VIA_VX900),
 	  .driver_data = SMBBA3 },
 	{ 0, }
 };
@@ -506,7 +491,7 @@ static void __exit i2c_vt596_exit(void)
 
 MODULE_AUTHOR("Kyosti Malkki <kmalkki@cc.hut.fi>, "
 	      "Mark D. Studebaker <mdsxyz123@yahoo.com> and "
-	      "Jean Delvare <khali@linux-fr.org>");
+	      "Jean Delvare <jdelvare@suse.de>");
 MODULE_DESCRIPTION("vt82c596 SMBus driver");
 MODULE_LICENSE("GPL");
 

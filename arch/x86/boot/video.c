@@ -1,11 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* -*- linux-c -*- ------------------------------------------------------- *
  *
  *   Copyright (C) 1991, 1992 Linus Torvalds
  *   Copyright 2007 rPath, Inc. - All Rights Reserved
  *   Copyright 2009 Intel Corporation; author H. Peter Anvin
- *
- *   This file is part of the Linux kernel, and is made available under
- *   the terms of the GNU General Public License version 2.
  *
  * ----------------------------------------------------------------------- */
 
@@ -13,9 +11,13 @@
  * Select video mode
  */
 
+#include <uapi/asm/boot.h>
+
 #include "boot.h"
 #include "video.h"
 #include "vesa.h"
+
+static u16 video_segment;
 
 static void store_cursor_position(void)
 {
@@ -27,6 +29,12 @@ static void store_cursor_position(void)
 
 	boot_params.screen_info.orig_x = oreg.dl;
 	boot_params.screen_info.orig_y = oreg.dh;
+
+	if (oreg.ch & 0x20)
+		boot_params.screen_info.flags |= VIDEO_FLAGS_NOCURSOR;
+
+	if ((oreg.ch & 0x1f) > (oreg.cl & 0x1f))
+		boot_params.screen_info.flags |= VIDEO_FLAGS_NOCURSOR;
 }
 
 static void store_video_mode(void)
@@ -105,7 +113,7 @@ static unsigned int get_entry(void)
 		} else if ((key >= '0' && key <= '9') ||
 			   (key >= 'A' && key <= 'Z') ||
 			   (key >= 'a' && key <= 'z')) {
-			if (len < sizeof entry_buf) {
+			if (len < sizeof(entry_buf)) {
 				entry_buf[len++] = key;
 				putchar(key);
 			}
@@ -292,11 +300,18 @@ static void restore_screen(void)
 	}
 
 	/* Restore cursor position */
+	if (saved.curx >= xs)
+		saved.curx = xs-1;
+	if (saved.cury >= ys)
+		saved.cury = ys-1;
+
 	initregs(&ireg);
 	ireg.ah = 0x02;		/* Set cursor position */
 	ireg.dh = saved.cury;
 	ireg.dl = saved.curx;
 	intcall(0x10, &ireg, NULL);
+
+	store_cursor_position();
 }
 
 void set_video(void)

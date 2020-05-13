@@ -1,19 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *   Copyright (C) International Business Machines Corp., 2000-2005
- *
- *   This program is free software;  you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY;  without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See
- *   the GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program;  if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 /*
  *	jfs_xtree.c: extent allocation descriptor B+-tree manager
@@ -64,22 +51,23 @@
 
 /* get page buffer for specified block address */
 /* ToDo: Replace this ugly macro with a function */
-#define XT_GETPAGE(IP, BN, MP, SIZE, P, RC)\
-{\
-	BT_GETPAGE(IP, BN, MP, xtpage_t, SIZE, P, RC, i_xtroot)\
-	if (!(RC))\
-	{\
-		if ((le16_to_cpu((P)->header.nextindex) < XTENTRYSTART) ||\
-		    (le16_to_cpu((P)->header.nextindex) > le16_to_cpu((P)->header.maxentry)) ||\
-		    (le16_to_cpu((P)->header.maxentry) > (((BN)==0)?XTROOTMAXSLOT:PSIZE>>L2XTSLOTSIZE)))\
-		{\
-			jfs_error((IP)->i_sb, "XT_GETPAGE: xtree page corrupt");\
-			BT_PUTPAGE(MP);\
-			MP = NULL;\
-			RC = -EIO;\
-		}\
-	}\
-}
+#define XT_GETPAGE(IP, BN, MP, SIZE, P, RC)				\
+do {									\
+	BT_GETPAGE(IP, BN, MP, xtpage_t, SIZE, P, RC, i_xtroot);	\
+	if (!(RC)) {							\
+		if ((le16_to_cpu((P)->header.nextindex) < XTENTRYSTART) || \
+		    (le16_to_cpu((P)->header.nextindex) >		\
+		     le16_to_cpu((P)->header.maxentry)) ||		\
+		    (le16_to_cpu((P)->header.maxentry) >		\
+		     (((BN) == 0) ? XTROOTMAXSLOT : PSIZE >> L2XTSLOTSIZE))) { \
+			jfs_error((IP)->i_sb,				\
+				  "XT_GETPAGE: xtree page corrupt\n");	\
+			BT_PUTPAGE(MP);					\
+			MP = NULL;					\
+			RC = -EIO;					\
+		}							\
+	}								\
+} while (0)
 
 /* for consistency */
 #define XT_PUTPAGE(MP) BT_PUTPAGE(MP)
@@ -499,7 +487,7 @@ static int xtSearch(struct inode *ip, s64 xoff,	s64 *nextp,
 
 		/* push (bn, index) of the parent page/entry */
 		if (BT_STACK_FULL(btstack)) {
-			jfs_error(ip->i_sb, "stack overrun in xtSearch!");
+			jfs_error(ip->i_sb, "stack overrun!\n");
 			XT_PUTPAGE(mp);
 			return -EIO;
 		}
@@ -585,10 +573,10 @@ int xtInsert(tid_t tid,		/* transaction id */
 			hint = addressXAD(xad) + lengthXAD(xad) - 1;
 		} else
 			hint = 0;
-		if ((rc = vfs_dq_alloc_block(ip, xlen)))
+		if ((rc = dquot_alloc_block(ip, xlen)))
 			goto out;
 		if ((rc = dbAlloc(ip, hint, (s64) xlen, &xaddr))) {
-			vfs_dq_free_block(ip, xlen);
+			dquot_free_block(ip, xlen);
 			goto out;
 		}
 	}
@@ -617,7 +605,7 @@ int xtInsert(tid_t tid,		/* transaction id */
 			/* undo data extent allocation */
 			if (*xaddrp == 0) {
 				dbFree(ip, xaddr, (s64) xlen);
-				vfs_dq_free_block(ip, xlen);
+				dquot_free_block(ip, xlen);
 			}
 			return rc;
 		}
@@ -985,10 +973,9 @@ xtSplitPage(tid_t tid, struct inode *ip,
 	rbn = addressPXD(pxd);
 
 	/* Allocate blocks to quota. */
-	if (vfs_dq_alloc_block(ip, lengthPXD(pxd))) {
-		rc = -EDQUOT;
+	rc = dquot_alloc_block(ip, lengthPXD(pxd));
+	if (rc)
 		goto clean_up;
-	}
 
 	quota_allocation += lengthPXD(pxd);
 
@@ -1195,7 +1182,7 @@ xtSplitPage(tid_t tid, struct inode *ip,
 
 	/* Rollback quota allocation. */
 	if (quota_allocation)
-		vfs_dq_free_block(ip, quota_allocation);
+		dquot_free_block(ip, quota_allocation);
 
 	return (rc);
 }
@@ -1235,6 +1222,7 @@ xtSplitRoot(tid_t tid,
 	struct pxdlist *pxdlist;
 	struct tlock *tlck;
 	struct xtlock *xtlck;
+	int rc;
 
 	sp = &JFS_IP(ip)->i_xtroot;
 
@@ -1252,9 +1240,10 @@ xtSplitRoot(tid_t tid,
 		return -EIO;
 
 	/* Allocate blocks to quota. */
-	if (vfs_dq_alloc_block(ip, lengthPXD(pxd))) {
+	rc = dquot_alloc_block(ip, lengthPXD(pxd));
+	if (rc) {
 		release_metapage(rmp);
-		return -EDQUOT;
+		return rc;
 	}
 
 	jfs_info("xtSplitRoot: ip:0x%p rmp:0x%p", ip, rmp);
@@ -1384,7 +1373,7 @@ int xtExtend(tid_t tid,		/* transaction id */
 
 	if (cmp != 0) {
 		XT_PUTPAGE(mp);
-		jfs_error(ip->i_sb, "xtExtend: xtSearch did not find extent");
+		jfs_error(ip->i_sb, "xtSearch did not find extent\n");
 		return -EIO;
 	}
 
@@ -1392,7 +1381,7 @@ int xtExtend(tid_t tid,		/* transaction id */
 	xad = &p->xad[index];
 	if ((offsetXAD(xad) + lengthXAD(xad)) != xoff) {
 		XT_PUTPAGE(mp);
-		jfs_error(ip->i_sb, "xtExtend: extension is not contiguous");
+		jfs_error(ip->i_sb, "extension is not contiguous\n");
 		return -EIO;
 	}
 
@@ -1551,7 +1540,7 @@ printf("xtTailgate: nxoff:0x%lx nxlen:0x%x nxaddr:0x%lx\n",
 
 	if (cmp != 0) {
 		XT_PUTPAGE(mp);
-		jfs_error(ip->i_sb, "xtTailgate: couldn't find extent");
+		jfs_error(ip->i_sb, "couldn't find extent\n");
 		return -EIO;
 	}
 
@@ -1559,8 +1548,7 @@ printf("xtTailgate: nxoff:0x%lx nxlen:0x%x nxaddr:0x%lx\n",
 	nextindex = le16_to_cpu(p->header.nextindex);
 	if (index != nextindex - 1) {
 		XT_PUTPAGE(mp);
-		jfs_error(ip->i_sb,
-			  "xtTailgate: the entry found is not the last entry");
+		jfs_error(ip->i_sb, "the entry found is not the last entry\n");
 		return -EIO;
 	}
 
@@ -1733,7 +1721,7 @@ int xtUpdate(tid_t tid, struct inode *ip, xad_t * nxad)
 
 	if (cmp != 0) {
 		XT_PUTPAGE(mp);
-		jfs_error(ip->i_sb, "xtUpdate: Could not find extent");
+		jfs_error(ip->i_sb, "Could not find extent\n");
 		return -EIO;
 	}
 
@@ -1757,7 +1745,7 @@ int xtUpdate(tid_t tid, struct inode *ip, xad_t * nxad)
 	    (nxoff + nxlen > xoff + xlen)) {
 		XT_PUTPAGE(mp);
 		jfs_error(ip->i_sb,
-			  "xtUpdate: nXAD in not completely contained within XAD");
+			  "nXAD in not completely contained within XAD\n");
 		return -EIO;
 	}
 
@@ -1906,7 +1894,7 @@ int xtUpdate(tid_t tid, struct inode *ip, xad_t * nxad)
 
 	if (xoff >= nxoff) {
 		XT_PUTPAGE(mp);
-		jfs_error(ip->i_sb, "xtUpdate: xoff >= nxoff");
+		jfs_error(ip->i_sb, "xoff >= nxoff\n");
 		return -EIO;
 	}
 /* #endif _JFS_WIP_COALESCE */
@@ -2047,14 +2035,13 @@ int xtUpdate(tid_t tid, struct inode *ip, xad_t * nxad)
 
 		if (cmp != 0) {
 			XT_PUTPAGE(mp);
-			jfs_error(ip->i_sb, "xtUpdate: xtSearch failed");
+			jfs_error(ip->i_sb, "xtSearch failed\n");
 			return -EIO;
 		}
 
 		if (index0 != index) {
 			XT_PUTPAGE(mp);
-			jfs_error(ip->i_sb,
-				  "xtUpdate: unexpected value of index");
+			jfs_error(ip->i_sb, "unexpected value of index\n");
 			return -EIO;
 		}
 	}
@@ -3649,7 +3636,7 @@ s64 xtTruncate(tid_t tid, struct inode *ip, s64 newsize, int flag)
       getChild:
 	/* save current parent entry for the child page */
 	if (BT_STACK_FULL(&btstack)) {
-		jfs_error(ip->i_sb, "stack overrun in xtTruncate!");
+		jfs_error(ip->i_sb, "stack overrun!\n");
 		XT_PUTPAGE(mp);
 		return -EIO;
 	}
@@ -3680,7 +3667,7 @@ s64 xtTruncate(tid_t tid, struct inode *ip, s64 newsize, int flag)
 		ip->i_size = newsize;
 
 	/* update quota allocation to reflect freed blocks */
-	vfs_dq_free_block(ip, nfreed);
+	dquot_free_block(ip, nfreed);
 
 	/*
 	 * free tlock of invalidated pages
@@ -3750,8 +3737,7 @@ s64 xtTruncate_pmap(tid_t tid, struct inode *ip, s64 committed_size)
 
 		if (cmp != 0) {
 			XT_PUTPAGE(mp);
-			jfs_error(ip->i_sb,
-				  "xtTruncate_pmap: did not find extent");
+			jfs_error(ip->i_sb, "did not find extent\n");
 			return -EIO;
 		}
 	} else {
@@ -3850,7 +3836,7 @@ s64 xtTruncate_pmap(tid_t tid, struct inode *ip, s64 committed_size)
       getChild:
 	/* save current parent entry for the child page */
 	if (BT_STACK_FULL(&btstack)) {
-		jfs_error(ip->i_sb, "stack overrun in xtTruncate_pmap!");
+		jfs_error(ip->i_sb, "stack overrun!\n");
 		XT_PUTPAGE(mp);
 		return -EIO;
 	}
@@ -3875,7 +3861,7 @@ s64 xtTruncate_pmap(tid_t tid, struct inode *ip, s64 committed_size)
 }
 
 #ifdef CONFIG_JFS_STATISTICS
-static int jfs_xtstat_proc_show(struct seq_file *m, void *v)
+int jfs_xtstat_proc_show(struct seq_file *m, void *v)
 {
 	seq_printf(m,
 		       "JFS Xtree statistics\n"
@@ -3888,17 +3874,4 @@ static int jfs_xtstat_proc_show(struct seq_file *m, void *v)
 		       xtStat.split);
 	return 0;
 }
-
-static int jfs_xtstat_proc_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, jfs_xtstat_proc_show, NULL);
-}
-
-const struct file_operations jfs_xtstat_proc_fops = {
-	.owner		= THIS_MODULE,
-	.open		= jfs_xtstat_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
 #endif

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * linux/arch/sh/boards/sh03/setup.c
  *
@@ -19,14 +20,6 @@
 static void __init init_sh03_IRQ(void)
 {
 	plat_irq_setup_pins(IRQ_MODE_IRQ);
-}
-
-/* arch/sh/boards/sh03/rtc.c */
-void sh03_time_init(void);
-
-static void __init sh03_setup(char **cmdline_p)
-{
-	board_time_init = sh03_time_init;
 }
 
 static struct resource cf_ide_resources[] = {
@@ -82,7 +75,7 @@ static int __init sh03_devices_setup(void)
 	/* open I/O area window */
 	paddrbase = virt_to_phys((void *)PA_AREA5_IO);
 	prot = PAGE_KERNEL_PCC(1, _PAGE_PCC_IO16);
-	cf_ide_base = p3_ioremap(paddrbase, PAGE_SIZE, prot.pgprot);
+	cf_ide_base = ioremap_prot(paddrbase, PAGE_SIZE, pgprot_val(prot));
 	if (!cf_ide_base) {
 		printk("allocate_cf_area : can't open CF I/O window!\n");
 		return -ENOMEM;
@@ -96,11 +89,9 @@ static int __init sh03_devices_setup(void)
 
 	return platform_add_devices(sh03_devices, ARRAY_SIZE(sh03_devices));
 }
-__initcall(sh03_devices_setup);
+device_initcall(sh03_devices_setup);
 
 static struct sh_machine_vector mv_sh03 __initmv = {
 	.mv_name		= "Interface (CTP/PCI-SH03)",
-	.mv_setup		= sh03_setup,
-	.mv_nr_irqs		= 48,
 	.mv_init_irq		= init_sh03_IRQ,
 };

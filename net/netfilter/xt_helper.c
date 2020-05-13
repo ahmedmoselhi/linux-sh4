@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* iptables module to match on related connections */
 /*
  * (C) 2001 Martin Josefsson <gandalf@wlug.westbo.se>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
-
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 #include <linux/module.h>
 #include <linux/skbuff.h>
 #include <linux/netfilter.h>
@@ -24,7 +21,7 @@ MODULE_ALIAS("ip6t_helper");
 
 
 static bool
-helper_mt(const struct sk_buff *skb, const struct xt_match_param *par)
+helper_mt(const struct sk_buff *skb, struct xt_action_param *par)
 {
 	const struct xt_helper_info *info = par->matchinfo;
 	const struct nf_conn *ct;
@@ -41,7 +38,7 @@ helper_mt(const struct sk_buff *skb, const struct xt_match_param *par)
 	if (!master_help)
 		return ret;
 
-	/* rcu_read_lock()ed by nf_hook_slow */
+	/* rcu_read_lock()ed by nf_hook_thresh */
 	helper = rcu_dereference(master_help->helper);
 	if (!helper)
 		return ret;
@@ -54,22 +51,24 @@ helper_mt(const struct sk_buff *skb, const struct xt_match_param *par)
 	return ret;
 }
 
-static bool helper_mt_check(const struct xt_mtchk_param *par)
+static int helper_mt_check(const struct xt_mtchk_param *par)
 {
 	struct xt_helper_info *info = par->matchinfo;
+	int ret;
 
-	if (nf_ct_l3proto_try_module_get(par->family) < 0) {
-		printk(KERN_WARNING "can't load conntrack support for "
-				    "proto=%u\n", par->family);
-		return false;
+	ret = nf_ct_netns_get(par->net, par->family);
+	if (ret < 0) {
+		pr_info_ratelimited("cannot load conntrack support for proto=%u\n",
+				    par->family);
+		return ret;
 	}
-	info->name[29] = '\0';
-	return true;
+	info->name[sizeof(info->name) - 1] = '\0';
+	return 0;
 }
 
 static void helper_mt_destroy(const struct xt_mtdtor_param *par)
 {
-	nf_ct_l3proto_module_put(par->family);
+	nf_ct_netns_put(par->net, par->family);
 }
 
 static struct xt_match helper_mt_reg __read_mostly = {

@@ -1,61 +1,112 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * ad1980.c  --  ALSA Soc AD1980 codec support
  *
  * Copyright:	Analog Device Inc.
  * Author:	Roy Huang <roy.huang@analog.com>
  * 		Cliff Cai <cliff.cai@analog.com>
+ */
+
+/*
+ * WARNING:
  *
- *  This program is free software; you can redistribute  it and/or modify it
- *  under  the terms of  the GNU General  Public License as published by the
- *  Free Software Foundation;  either version 2 of the  License, or (at your
- *  option) any later version.
+ * Because Analog Devices Inc. discontinued the ad1980 sound chip since
+ * Sep. 2009, this ad1980 driver is not maintained, tested and supported
+ * by ADI now.
  */
 
 #include <linux/init.h>
+#include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/device.h>
+#include <linux/regmap.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/ac97_codec.h>
 #include <sound/initval.h>
 #include <sound/soc.h>
-#include <sound/soc-dapm.h>
 
-#include "ad1980.h"
+static const struct reg_default ad1980_reg_defaults[] = {
+	{ 0x02, 0x8000 },
+	{ 0x04, 0x8000 },
+	{ 0x06, 0x8000 },
+	{ 0x0c, 0x8008 },
+	{ 0x0e, 0x8008 },
+	{ 0x10, 0x8808 },
+	{ 0x12, 0x8808 },
+	{ 0x16, 0x8808 },
+	{ 0x18, 0x8808 },
+	{ 0x1a, 0x0000 },
+	{ 0x1c, 0x8000 },
+	{ 0x20, 0x0000 },
+	{ 0x28, 0x03c7 },
+	{ 0x2c, 0xbb80 },
+	{ 0x2e, 0xbb80 },
+	{ 0x30, 0xbb80 },
+	{ 0x32, 0xbb80 },
+	{ 0x36, 0x8080 },
+	{ 0x38, 0x8080 },
+	{ 0x3a, 0x2000 },
+	{ 0x60, 0x0000 },
+	{ 0x62, 0x0000 },
+	{ 0x72, 0x0000 },
+	{ 0x74, 0x1001 },
+	{ 0x76, 0x0000 },
+};
 
-static unsigned int ac97_read(struct snd_soc_codec *codec,
-	unsigned int reg);
-static int ac97_write(struct snd_soc_codec *codec,
-	unsigned int reg, unsigned int val);
+static bool ad1980_readable_reg(struct device *dev, unsigned int reg)
+{
+	switch (reg) {
+	case AC97_RESET ... AC97_MASTER_MONO:
+	case AC97_PHONE ... AC97_CD:
+	case AC97_AUX ... AC97_GENERAL_PURPOSE:
+	case AC97_POWERDOWN ... AC97_PCM_LR_ADC_RATE:
+	case AC97_SPDIF:
+	case AC97_CODEC_CLASS_REV:
+	case AC97_PCI_SVID:
+	case AC97_AD_CODEC_CFG:
+	case AC97_AD_JACK_SPDIF:
+	case AC97_AD_SERIAL_CFG:
+	case AC97_VENDOR_ID1:
+	case AC97_VENDOR_ID2:
+		return true;
+	default:
+		return false;
+	}
+}
 
-/*
- * AD1980 register cache
- */
-static const u16 ad1980_reg[] = {
-	0x0090, 0x8000, 0x8000, 0x8000, /* 0 - 6  */
-	0x0000, 0x0000, 0x8008, 0x8008, /* 8 - e  */
-	0x8808, 0x8808, 0x0000, 0x8808, /* 10 - 16 */
-	0x8808, 0x0000, 0x8000, 0x0000, /* 18 - 1e */
-	0x0000, 0x0000, 0x0000, 0x0000, /* 20 - 26 */
-	0x03c7, 0x0000, 0xbb80, 0xbb80, /* 28 - 2e */
-	0xbb80, 0xbb80, 0x0000, 0x8080, /* 30 - 36 */
-	0x8080, 0x2000, 0x0000, 0x0000, /* 38 - 3e */
-	0x0000, 0x0000, 0x0000, 0x0000, /* reserved */
-	0x0000, 0x0000, 0x0000, 0x0000, /* reserved */
-	0x0000, 0x0000, 0x0000, 0x0000, /* reserved */
-	0x0000, 0x0000, 0x0000, 0x0000, /* reserved */
-	0x8080, 0x0000, 0x0000, 0x0000, /* 60 - 66 */
-	0x0000, 0x0000, 0x0000, 0x0000, /* reserved */
-	0x0000, 0x0000, 0x1001, 0x0000, /* 70 - 76 */
-	0x0000, 0x0000, 0x4144, 0x5370  /* 78 - 7e */
+static bool ad1980_writeable_reg(struct device *dev, unsigned int reg)
+{
+	switch (reg) {
+	case AC97_VENDOR_ID1:
+	case AC97_VENDOR_ID2:
+		return false;
+	default:
+		return ad1980_readable_reg(dev, reg);
+	}
+}
+
+static const struct regmap_config ad1980_regmap_config = {
+	.reg_bits = 16,
+	.reg_stride = 2,
+	.val_bits = 16,
+	.max_register = 0x7e,
+	.cache_type = REGCACHE_RBTREE,
+
+	.volatile_reg = regmap_ac97_default_volatile,
+	.readable_reg = ad1980_readable_reg,
+	.writeable_reg = ad1980_writeable_reg,
+
+	.reg_defaults = ad1980_reg_defaults,
+	.num_reg_defaults = ARRAY_SIZE(ad1980_reg_defaults),
 };
 
 static const char *ad1980_rec_sel[] = {"Mic", "CD", "NC", "AUX", "Line",
 		"Stereo Mix", "Mono Mix", "Phone"};
 
-static const struct soc_enum ad1980_cap_src =
-	SOC_ENUM_DOUBLE(AC97_REC_SEL, 8, 0, 7, ad1980_rec_sel);
+static SOC_ENUM_DOUBLE_DECL(ad1980_cap_src,
+			    AC97_REC_SEL, 8, 0, ad1980_rec_sel);
 
 static const struct snd_kcontrol_new ad1980_snd_ac97_controls[] = {
 SOC_DOUBLE("Master Playback Volume", AC97_MASTER, 8, 0, 31, 1),
@@ -93,45 +144,46 @@ SOC_ENUM("Capture Source", ad1980_cap_src),
 SOC_SINGLE("Mic Boost Switch", AC97_MIC, 6, 1, 0),
 };
 
-static unsigned int ac97_read(struct snd_soc_codec *codec,
-	unsigned int reg)
-{
-	u16 *cache = codec->reg_cache;
+static const struct snd_soc_dapm_widget ad1980_dapm_widgets[] = {
+SND_SOC_DAPM_INPUT("MIC1"),
+SND_SOC_DAPM_INPUT("MIC2"),
+SND_SOC_DAPM_INPUT("CD_L"),
+SND_SOC_DAPM_INPUT("CD_R"),
+SND_SOC_DAPM_INPUT("AUX_L"),
+SND_SOC_DAPM_INPUT("AUX_R"),
+SND_SOC_DAPM_INPUT("LINE_IN_L"),
+SND_SOC_DAPM_INPUT("LINE_IN_R"),
 
-	switch (reg) {
-	case AC97_RESET:
-	case AC97_INT_PAGING:
-	case AC97_POWERDOWN:
-	case AC97_EXTENDED_STATUS:
-	case AC97_VENDOR_ID1:
-	case AC97_VENDOR_ID2:
-		return soc_ac97_ops.read(codec->ac97, reg);
-	default:
-		reg = reg >> 1;
+SND_SOC_DAPM_OUTPUT("LFE_OUT"),
+SND_SOC_DAPM_OUTPUT("CENTER_OUT"),
+SND_SOC_DAPM_OUTPUT("LINE_OUT_L"),
+SND_SOC_DAPM_OUTPUT("LINE_OUT_R"),
+SND_SOC_DAPM_OUTPUT("MONO_OUT"),
+SND_SOC_DAPM_OUTPUT("HP_OUT_L"),
+SND_SOC_DAPM_OUTPUT("HP_OUT_R"),
+};
 
-		if (reg >= ARRAY_SIZE(ad1980_reg))
-			return -EINVAL;
+static const struct snd_soc_dapm_route ad1980_dapm_routes[] = {
+	{ "Capture", NULL, "MIC1" },
+	{ "Capture", NULL, "MIC2" },
+	{ "Capture", NULL, "CD_L" },
+	{ "Capture", NULL, "CD_R" },
+	{ "Capture", NULL, "AUX_L" },
+	{ "Capture", NULL, "AUX_R" },
+	{ "Capture", NULL, "LINE_IN_L" },
+	{ "Capture", NULL, "LINE_IN_R" },
 
-		return cache[reg];
-	}
-}
+	{ "LFE_OUT", NULL, "Playback" },
+	{ "CENTER_OUT", NULL, "Playback" },
+	{ "LINE_OUT_L", NULL, "Playback" },
+	{ "LINE_OUT_R", NULL, "Playback" },
+	{ "MONO_OUT", NULL, "Playback" },
+	{ "HP_OUT_L", NULL, "Playback" },
+	{ "HP_OUT_R", NULL, "Playback" },
+};
 
-static int ac97_write(struct snd_soc_codec *codec, unsigned int reg,
-	unsigned int val)
-{
-	u16 *cache = codec->reg_cache;
-
-	soc_ac97_ops.write(codec->ac97, reg, val);
-	reg = reg >> 1;
-	if (reg < ARRAY_SIZE(ad1980_reg))
-		cache[reg] = val;
-
-	return 0;
-}
-
-struct snd_soc_dai ad1980_dai = {
-	.name = "AC97",
-	.ac97_control = 1,
+static struct snd_soc_dai_driver ad1980_dai = {
+	.name = "ad1980-hifi",
 	.playback = {
 		.stream_name = "Playback",
 		.channels_min = 2,
@@ -145,163 +197,130 @@ struct snd_soc_dai ad1980_dai = {
 		.rates = SNDRV_PCM_RATE_48000,
 		.formats = SND_SOC_STD_AC97_FMTS, },
 };
-EXPORT_SYMBOL_GPL(ad1980_dai);
 
-static int ad1980_reset(struct snd_soc_codec *codec, int try_warm)
+#define AD1980_VENDOR_ID 0x41445300
+#define AD1980_VENDOR_MASK 0xffffff00
+
+static int ad1980_reset(struct snd_soc_component *component, int try_warm)
 {
-	u16 retry_cnt = 0;
+	struct snd_ac97 *ac97 = snd_soc_component_get_drvdata(component);
+	unsigned int retry_cnt = 0;
+	int ret;
 
-retry:
-	if (try_warm && soc_ac97_ops.warm_reset) {
-		soc_ac97_ops.warm_reset(codec->ac97);
-		if (ac97_read(codec, AC97_RESET) == 0x0090)
-			return 1;
-	}
+	do {
+		ret = snd_ac97_reset(ac97, true, AD1980_VENDOR_ID,
+			AD1980_VENDOR_MASK);
+		if (ret >= 0)
+			return 0;
 
-	soc_ac97_ops.reset(codec->ac97);
-	/* Set bit 16slot in register 74h, then every slot will has only 16
-	 * bits. This command is sent out in 20bit mode, in which case the
-	 * first nibble of data is eaten by the addr. (Tag is always 16 bit)*/
-	ac97_write(codec, AC97_AD_SERIAL_CFG, 0x9900);
+		/*
+		 * Set bit 16slot in register 74h, then every slot will has only
+		 * 16 bits. This command is sent out in 20bit mode, in which
+		 * case the first nibble of data is eaten by the addr. (Tag is
+		 * always 16 bit)
+		 */
+		snd_soc_component_write(component, AC97_AD_SERIAL_CFG, 0x9900);
 
-	if (ac97_read(codec, AC97_RESET)  != 0x0090)
-		goto err;
-	return 0;
+	} while (retry_cnt++ < 10);
 
-err:
-	while (retry_cnt++ < 10)
-		goto retry;
+	dev_err(component->dev, "Failed to reset: AC97 link error\n");
 
-	printk(KERN_ERR "AD1980 AC97 reset failed\n");
 	return -EIO;
 }
 
-static int ad1980_soc_probe(struct platform_device *pdev)
+static int ad1980_soc_probe(struct snd_soc_component *component)
 {
-	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
-	struct snd_soc_codec *codec;
-	int ret = 0;
+	struct snd_ac97 *ac97;
+	struct regmap *regmap;
+	int ret;
 	u16 vendor_id2;
 	u16 ext_status;
 
-	printk(KERN_INFO "AD1980 SoC Audio Codec\n");
-
-	socdev->card->codec = kzalloc(sizeof(struct snd_soc_codec), GFP_KERNEL);
-	if (socdev->card->codec == NULL)
-		return -ENOMEM;
-	codec = socdev->card->codec;
-	mutex_init(&codec->mutex);
-
-	codec->reg_cache =
-		kzalloc(sizeof(u16) * ARRAY_SIZE(ad1980_reg), GFP_KERNEL);
-	if (codec->reg_cache == NULL) {
-		ret = -ENOMEM;
-		goto cache_err;
-	}
-	memcpy(codec->reg_cache, ad1980_reg, sizeof(u16) * \
-			ARRAY_SIZE(ad1980_reg));
-	codec->reg_cache_size = sizeof(u16) * ARRAY_SIZE(ad1980_reg);
-	codec->reg_cache_step = 2;
-	codec->name = "AD1980";
-	codec->owner = THIS_MODULE;
-	codec->dai = &ad1980_dai;
-	codec->num_dai = 1;
-	codec->write = ac97_write;
-	codec->read = ac97_read;
-	INIT_LIST_HEAD(&codec->dapm_widgets);
-	INIT_LIST_HEAD(&codec->dapm_paths);
-
-	ret = snd_soc_new_ac97_codec(codec, &soc_ac97_ops, 0);
-	if (ret < 0) {
-		printk(KERN_ERR "ad1980: failed to register AC97 codec\n");
-		goto codec_err;
+	ac97 = snd_soc_new_ac97_component(component, 0, 0);
+	if (IS_ERR(ac97)) {
+		ret = PTR_ERR(ac97);
+		dev_err(component->dev, "Failed to register AC97 component: %d\n", ret);
+		return ret;
 	}
 
-	/* register pcms */
-	ret = snd_soc_new_pcms(socdev, SNDRV_DEFAULT_IDX1, SNDRV_DEFAULT_STR1);
+	regmap = regmap_init_ac97(ac97, &ad1980_regmap_config);
+	if (IS_ERR(regmap)) {
+		ret = PTR_ERR(regmap);
+		goto err_free_ac97;
+	}
+
+	snd_soc_component_init_regmap(component, regmap);
+	snd_soc_component_set_drvdata(component, ac97);
+
+	ret = ad1980_reset(component, 0);
 	if (ret < 0)
-		goto pcm_err;
-
-
-	ret = ad1980_reset(codec, 0);
-	if (ret < 0) {
-		printk(KERN_ERR "Failed to reset AD1980: AC97 link error\n");
-		goto reset_err;
-	}
-
-	/* Read out vendor ID to make sure it is ad1980 */
-	if (ac97_read(codec, AC97_VENDOR_ID1) != 0x4144)
 		goto reset_err;
 
-	vendor_id2 = ac97_read(codec, AC97_VENDOR_ID2);
-
-	if (vendor_id2 != 0x5370) {
-		if (vendor_id2 != 0x5374)
-			goto reset_err;
-		else
-			printk(KERN_WARNING "ad1980: "
-				"Found AD1981 - only 2/2 IN/OUT Channels "
-				"supported\n");
+	vendor_id2 = snd_soc_component_read32(component, AC97_VENDOR_ID2);
+	if (vendor_id2 == 0x5374) {
+		dev_warn(component->dev,
+			"Found AD1981 - only 2/2 IN/OUT Channels supported\n");
 	}
 
 	/* unmute captures and playbacks volume */
-	ac97_write(codec, AC97_MASTER, 0x0000);
-	ac97_write(codec, AC97_PCM, 0x0000);
-	ac97_write(codec, AC97_REC_GAIN, 0x0000);
-	ac97_write(codec, AC97_CENTER_LFE_MASTER, 0x0000);
-	ac97_write(codec, AC97_SURROUND_MASTER, 0x0000);
+	snd_soc_component_write(component, AC97_MASTER, 0x0000);
+	snd_soc_component_write(component, AC97_PCM, 0x0000);
+	snd_soc_component_write(component, AC97_REC_GAIN, 0x0000);
+	snd_soc_component_write(component, AC97_CENTER_LFE_MASTER, 0x0000);
+	snd_soc_component_write(component, AC97_SURROUND_MASTER, 0x0000);
 
 	/*power on LFE/CENTER/Surround DACs*/
-	ext_status = ac97_read(codec, AC97_EXTENDED_STATUS);
-	ac97_write(codec, AC97_EXTENDED_STATUS, ext_status&~0x3800);
-
-	snd_soc_add_controls(codec, ad1980_snd_ac97_controls,
-				ARRAY_SIZE(ad1980_snd_ac97_controls));
-	ret = snd_soc_init_card(socdev);
-	if (ret < 0) {
-		printk(KERN_ERR "ad1980: failed to register card\n");
-		goto reset_err;
-	}
+	ext_status = snd_soc_component_read32(component, AC97_EXTENDED_STATUS);
+	snd_soc_component_write(component, AC97_EXTENDED_STATUS, ext_status&~0x3800);
 
 	return 0;
 
 reset_err:
-	snd_soc_free_pcms(socdev);
-
-pcm_err:
-	snd_soc_free_ac97_codec(codec);
-
-codec_err:
-	kfree(codec->reg_cache);
-
-cache_err:
-	kfree(socdev->card->codec);
-	socdev->card->codec = NULL;
+	snd_soc_component_exit_regmap(component);
+err_free_ac97:
+	snd_soc_free_ac97_component(ac97);
 	return ret;
 }
 
-static int ad1980_soc_remove(struct platform_device *pdev)
+static void ad1980_soc_remove(struct snd_soc_component *component)
 {
-	struct snd_soc_device *socdev = platform_get_drvdata(pdev);
-	struct snd_soc_codec *codec = socdev->card->codec;
+	struct snd_ac97 *ac97 = snd_soc_component_get_drvdata(component);
 
-	if (codec == NULL)
-		return 0;
-
-	snd_soc_dapm_free(socdev);
-	snd_soc_free_pcms(socdev);
-	snd_soc_free_ac97_codec(codec);
-	kfree(codec->reg_cache);
-	kfree(codec);
-	return 0;
+	snd_soc_component_exit_regmap(component);
+	snd_soc_free_ac97_component(ac97);
 }
 
-struct snd_soc_codec_device soc_codec_dev_ad1980 = {
-	.probe = 	ad1980_soc_probe,
-	.remove = 	ad1980_soc_remove,
+static const struct snd_soc_component_driver soc_component_dev_ad1980 = {
+	.probe			= ad1980_soc_probe,
+	.remove			= ad1980_soc_remove,
+	.controls		= ad1980_snd_ac97_controls,
+	.num_controls		= ARRAY_SIZE(ad1980_snd_ac97_controls),
+	.dapm_widgets		= ad1980_dapm_widgets,
+	.num_dapm_widgets	= ARRAY_SIZE(ad1980_dapm_widgets),
+	.dapm_routes		= ad1980_dapm_routes,
+	.num_dapm_routes	= ARRAY_SIZE(ad1980_dapm_routes),
+	.idle_bias_on		= 1,
+	.use_pmdown_time	= 1,
+	.endianness		= 1,
+	.non_legacy_dai_naming	= 1,
 };
-EXPORT_SYMBOL_GPL(soc_codec_dev_ad1980);
 
-MODULE_DESCRIPTION("ASoC ad1980 driver");
+static int ad1980_probe(struct platform_device *pdev)
+{
+	return devm_snd_soc_register_component(&pdev->dev,
+			&soc_component_dev_ad1980, &ad1980_dai, 1);
+}
+
+static struct platform_driver ad1980_codec_driver = {
+	.driver = {
+			.name = "ad1980",
+	},
+
+	.probe = ad1980_probe,
+};
+
+module_platform_driver(ad1980_codec_driver);
+
+MODULE_DESCRIPTION("ASoC ad1980 driver (Obsolete)");
 MODULE_AUTHOR("Roy Huang, Cliff Cai");
 MODULE_LICENSE("GPL");

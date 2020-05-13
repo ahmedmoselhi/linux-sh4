@@ -1,22 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Squashfs - a compressed read only filesystem for Linux
  *
  * Copyright (c) 2002, 2003, 2004, 2005, 2006, 2007, 2008
- * Phillip Lougher <phillip@lougher.demon.co.uk>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2,
- * or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+ * Phillip Lougher <phillip@squashfs.org.uk>
  *
  * export.c
  */
@@ -110,7 +97,7 @@ static struct dentry *squashfs_fh_to_parent(struct super_block *sb,
 
 static struct dentry *squashfs_get_parent(struct dentry *child)
 {
-	struct inode *inode = child->d_inode;
+	struct inode *inode = d_inode(child);
 	unsigned int parent_ino = squashfs_i(inode)->parent;
 
 	return squashfs_export_iget(inode->i_sb, parent_ino);
@@ -121,30 +108,38 @@ static struct dentry *squashfs_get_parent(struct dentry *child)
  * Read uncompressed inode lookup table indexes off disk into memory
  */
 __le64 *squashfs_read_inode_lookup_table(struct super_block *sb,
-		u64 lookup_table_start, unsigned int inodes)
+		u64 lookup_table_start, u64 next_table, unsigned int inodes)
 {
 	unsigned int length = SQUASHFS_LOOKUP_BLOCK_BYTES(inodes);
-	__le64 *inode_lookup_table;
-	int err;
+	__le64 *table;
 
 	TRACE("In read_inode_lookup_table, length %d\n", length);
 
-	/* Allocate inode lookup table indexes */
-	inode_lookup_table = kmalloc(length, GFP_KERNEL);
-	if (inode_lookup_table == NULL) {
-		ERROR("Failed to allocate inode lookup table\n");
-		return ERR_PTR(-ENOMEM);
+	/* Sanity check values */
+
+	/* there should always be at least one inode */
+	if (inodes == 0)
+		return ERR_PTR(-EINVAL);
+
+	/* length bytes should not extend into the next table - this check
+	 * also traps instances where lookup_table_start is incorrectly larger
+	 * than the next table start
+	 */
+	if (lookup_table_start + length > next_table)
+		return ERR_PTR(-EINVAL);
+
+	table = squashfs_read_table(sb, lookup_table_start, length);
+
+	/*
+	 * table[0] points to the first inode lookup table metadata block,
+	 * this should be less than lookup_table_start
+	 */
+	if (!IS_ERR(table) && le64_to_cpu(table[0]) >= lookup_table_start) {
+		kfree(table);
+		return ERR_PTR(-EINVAL);
 	}
 
-	err = squashfs_read_table(sb, inode_lookup_table, lookup_table_start,
-			length);
-	if (err < 0) {
-		ERROR("unable to read inode lookup table\n");
-		kfree(inode_lookup_table);
-		return ERR_PTR(err);
-	}
-
-	return inode_lookup_table;
+	return table;
 }
 
 

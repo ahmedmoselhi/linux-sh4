@@ -18,7 +18,6 @@
  * 	- crash dumping code reserved region
  * 	- Kernel memory map built from EFI memory map
  * 	- ELF core header
- *	- xen start info if CONFIG_XEN
  *
  * More could be added if necessary
  */
@@ -61,7 +60,7 @@ extern int register_active_ranges(u64 start, u64 len, int nid);
 
 #ifdef CONFIG_VIRTUAL_MEM_MAP
 # define LARGE_GAP	0x40000000 /* Use virtual mem map if hole is > than this */
-  extern unsigned long vmalloc_end;
+  extern unsigned long VMALLOC_END;
   extern struct page *vmem_map;
   extern int find_largest_hole(u64 start, u64 end, void *arg);
   extern int create_mem_map_page_table(u64 start, u64 end, void *arg);

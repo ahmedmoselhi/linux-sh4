@@ -1,14 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Userland implementation of gettimeofday() for 64 bits processes in a
  * ppc64 kernel for use in the vDSO
  *
  * Copyright (C) 2004 Benjamin Herrenschmuidt (benh@kernel.crashing.org),
  *                    IBM Corp.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 #include <asm/processor.h>
 #include <asm/ppc_asm.h>
@@ -33,18 +29,11 @@ V_FUNCTION_BEGIN(__kernel_gettimeofday)
 	bl	V_LOCAL_FUNC(__get_datapage)	/* get data page */
 	cmpldi	r11,0			/* check if tv is NULL */
 	beq	2f
-	bl	V_LOCAL_FUNC(__do_get_xsec)	/* get xsec from tb & kernel */
-	lis     r7,15			/* r7 = 1000000 = USEC_PER_SEC */
-	ori     r7,r7,16960
-	rldicl  r5,r4,44,20		/* r5 = sec = xsec / XSEC_PER_SEC */
-	rldicr  r6,r5,20,43		/* r6 = sec * XSEC_PER_SEC */
-	std	r5,TVAL64_TV_SEC(r11)	/* store sec in tv */
-	subf	r0,r6,r4		/* r0 = xsec = (xsec - r6) */
-	mulld   r0,r0,r7		/* usec = (xsec * USEC_PER_SEC) /
-					 * XSEC_PER_SEC
-					 */
-	rldicl  r0,r0,44,20
-	std	r0,TVAL64_TV_USEC(r11)	/* store usec in tv */
+	lis	r7,1000000@ha		/* load up USEC_PER_SEC */
+	addi	r7,r7,1000000@l
+	bl	V_LOCAL_FUNC(__do_get_tspec) /* get sec/us from tb & kernel */
+	std	r4,TVAL64_TV_SEC(r11)	/* store sec in tv */
+	std	r5,TVAL64_TV_USEC(r11)	/* store usec in tv */
 2:	cmpldi	r10,0			/* check if tz is NULL */
 	beq	1f
 	lwz	r4,CFG_TZ_MINUTEWEST(r3)/* fill tz */
@@ -71,12 +60,21 @@ V_FUNCTION_BEGIN(__kernel_clock_gettime)
 	cmpwi	cr0,r3,CLOCK_REALTIME
 	cmpwi	cr1,r3,CLOCK_MONOTONIC
 	cror	cr0*4+eq,cr0*4+eq,cr1*4+eq
+
+	cmpwi	cr5,r3,CLOCK_REALTIME_COARSE
+	cmpwi	cr6,r3,CLOCK_MONOTONIC_COARSE
+	cror	cr5*4+eq,cr5*4+eq,cr6*4+eq
+
+	cror	cr0*4+eq,cr0*4+eq,cr5*4+eq
 	bne	cr0,99f
 
 	mflr	r12			/* r12 saves lr */
   .cfi_register lr,r12
 	mr	r11,r4			/* r11 saves tp */
 	bl	V_LOCAL_FUNC(__get_datapage)	/* get data page */
+	lis	r7,NSEC_PER_SEC@h	/* want nanoseconds */
+	ori	r7,r7,NSEC_PER_SEC@l
+	beq	cr5,70f
 50:	bl	V_LOCAL_FUNC(__do_get_tspec)	/* get time from tb & kernel */
 	bne	cr1,80f			/* if not monotonic, all done */
 
@@ -90,7 +88,7 @@ V_FUNCTION_BEGIN(__kernel_clock_gettime)
 	 * At this point, r4,r5 contain our sec/nsec values.
 	 */
 
-	lwa	r6,WTOM_CLOCK_SEC(r3)
+	ld	r6,WTOM_CLOCK_SEC(r3)
 	lwa	r9,WTOM_CLOCK_NSEC(r3)
 
 	/* We now have our result in r6,r9. We create a fake dependency
@@ -102,19 +100,57 @@ V_FUNCTION_BEGIN(__kernel_clock_gettime)
 	ld	r0,CFG_TB_UPDATE_COUNT(r3)
         cmpld   cr0,r0,r8		/* check if updated */
 	bne-	50b
+	b	78f
 
-	/* Add wall->monotonic offset and check for overflow or underflow.
+	/*
+	 * For coarse clocks we get data directly from the vdso data page, so
+	 * we don't need to call __do_get_tspec, but we still need to do the
+	 * counter trick.
 	 */
-	add	r4,r4,r6
-	add	r5,r5,r9
-	cmpd	cr0,r5,r7
-	cmpdi	cr1,r5,0
-	blt	1f
-	subf	r5,r7,r5
-	addi	r4,r4,1
-1:	bge	cr1,80f
-	addi	r4,r4,-1
-	add	r5,r5,r7
+70:	ld      r8,CFG_TB_UPDATE_COUNT(r3)
+	andi.   r0,r8,1                 /* pending update ? loop */
+	bne-    70b
+	add     r3,r3,r0		/* r0 is already 0 */
+
+	/*
+	 * CLOCK_REALTIME_COARSE, below values are needed for MONOTONIC_COARSE
+	 * too
+	 */
+	ld      r4,STAMP_XTIME_SEC(r3)
+	ld      r5,STAMP_XTIME_NSEC(r3)
+	bne     cr6,75f
+
+	/* CLOCK_MONOTONIC_COARSE */
+	ld	r6,WTOM_CLOCK_SEC(r3)
+	lwa     r9,WTOM_CLOCK_NSEC(r3)
+
+	/* check if counter has updated */
+	or      r0,r6,r9
+75:	or	r0,r0,r4
+	or	r0,r0,r5
+	xor     r0,r0,r0
+	add     r3,r3,r0
+	ld      r0,CFG_TB_UPDATE_COUNT(r3)
+	cmpld   cr0,r0,r8               /* check if updated */
+	bne-    70b
+
+	/* Counter has not updated, so continue calculating proper values for
+	 * sec and nsec if monotonic coarse, or just return with the proper
+	 * values for realtime.
+	 */
+	bne     cr6,80f
+
+	/* Add wall->monotonic offset and check for overflow or underflow */
+78:	add     r4,r4,r6
+	add     r5,r5,r9
+	cmpd    cr0,r5,r7
+	cmpdi   cr1,r5,0
+	blt     79f
+	subf    r5,r7,r5
+	addi    r4,r4,1
+79:	bge     cr1,80f
+	addi    r4,r4,-1
+	add     r5,r5,r7
 
 80:	std	r4,TSPC64_TV_SEC(r11)
 	std	r5,TSPC64_TV_NSEC(r11)
@@ -129,6 +165,7 @@ V_FUNCTION_BEGIN(__kernel_clock_gettime)
 	 */
 99:
 	li	r0,__NR_clock_gettime
+  .cfi_restore lr
 	sc
 	blr
   .cfi_endproc
@@ -149,12 +186,15 @@ V_FUNCTION_BEGIN(__kernel_clock_getres)
 	cror	cr0*4+eq,cr0*4+eq,cr1*4+eq
 	bne	cr0,99f
 
+	mflr	r12
+  .cfi_register lr,r12
+	bl	V_LOCAL_FUNC(__get_datapage)
+	lwz	r5, CLOCK_HRTIMER_RES(r3)
+	mtlr	r12
 	li	r3,0
-	cmpli	cr0,r4,0
+	cmpldi	cr0,r4,0
 	crclr	cr0*4+so
 	beqlr
-	lis	r5,CLOCK_REALTIME_RES@h
-	ori	r5,r5,CLOCK_REALTIME_RES@l
 	std	r3,TSPC64_TV_SEC(r4)
 	std	r5,TSPC64_TV_NSEC(r4)
 	blr
@@ -169,51 +209,40 @@ V_FUNCTION_BEGIN(__kernel_clock_getres)
   .cfi_endproc
 V_FUNCTION_END(__kernel_clock_getres)
 
-
 /*
- * This is the core of gettimeofday(), it returns the xsec
- * value in r4 and expects the datapage ptr (non clobbered)
- * in r3. clobbers r0,r4,r5,r6,r7,r8
- * When returning, r8 contains the counter value that can be reused
+ * Exact prototype of time()
+ *
+ * time_t time(time *t);
+ *
  */
-V_FUNCTION_BEGIN(__do_get_xsec)
+V_FUNCTION_BEGIN(__kernel_time)
   .cfi_startproc
-	/* check for update count & load values */
-1:	ld	r8,CFG_TB_UPDATE_COUNT(r3)
-	andi.	r0,r8,1			/* pending update ? loop */
-	bne-	1b
-	xor	r0,r8,r8		/* create dependency */
-	add	r3,r3,r0
+	mflr	r12
+  .cfi_register lr,r12
 
-	/* Get TB & offset it. We use the MFTB macro which will generate
-	 * workaround code for Cell.
-	 */
-	MFTB(r7)
-	ld	r9,CFG_TB_ORIG_STAMP(r3)
-	subf	r7,r9,r7
+	mr	r11,r3			/* r11 holds t */
+	bl	V_LOCAL_FUNC(__get_datapage)
 
-	/* Scale result */
-	ld	r5,CFG_TB_TO_XS(r3)
-	mulhdu	r7,r7,r5
+	ld	r4,STAMP_XTIME_SEC(r3)
 
-	/* Add stamp since epoch */
-	ld	r6,CFG_STAMP_XSEC(r3)
-	add	r4,r6,r7
-
-	xor	r0,r4,r4
-	add	r3,r3,r0
-	ld	r0,CFG_TB_UPDATE_COUNT(r3)
-        cmpld   cr0,r0,r8		/* check if updated */
-	bne-	1b
+	cmpldi	r11,0			/* check if t is NULL */
+	beq	2f
+	std	r4,0(r11)		/* store result at *t */
+2:	mtlr	r12
+	crclr	cr0*4+so
+	mr	r3,r4
 	blr
   .cfi_endproc
-V_FUNCTION_END(__do_get_xsec)
+V_FUNCTION_END(__kernel_time)
+
 
 /*
- * This is the core of clock_gettime(), it returns the current
- * time in seconds and nanoseconds in r4 and r5.
+ * This is the core of clock_gettime() and gettimeofday(),
+ * it returns the current time in r4 (seconds) and r5.
+ * On entry, r7 gives the resolution of r5, either USEC_PER_SEC
+ * or NSEC_PER_SEC, giving r5 in microseconds or nanoseconds.
  * It expects the datapage ptr in r3 and doesn't clobber it.
- * It clobbers r0 and r6 and returns NSEC_PER_SEC in r7.
+ * It clobbers r0, r6 and r9.
  * On return, r8 contains the counter value that can be reused.
  * This clobbers cr0 but not any other cr field.
  */
@@ -229,18 +258,18 @@ V_FUNCTION_BEGIN(__do_get_tspec)
 	/* Get TB & offset it. We use the MFTB macro which will generate
 	 * workaround code for Cell.
 	 */
-	MFTB(r7)
+	MFTB(r6)
 	ld	r9,CFG_TB_ORIG_STAMP(r3)
-	subf	r7,r9,r7
+	subf	r6,r9,r6
 
 	/* Scale result */
 	ld	r5,CFG_TB_TO_XS(r3)
-	sldi	r7,r7,12		/* compute time since stamp_xtime */
-	mulhdu	r6,r7,r5		/* in units of 2^-32 seconds */
+	sldi	r6,r6,12		/* compute time since stamp_xtime */
+	mulhdu	r6,r6,r5		/* in units of 2^-32 seconds */
 
 	/* Add stamp since epoch */
-	ld	r4,STAMP_XTIME+TSPC64_TV_SEC(r3)
-	ld	r5,STAMP_XTIME+TSPC64_TV_NSEC(r3)
+	ld	r4,STAMP_XTIME_SEC(r3)
+	lwz	r5,STAMP_SEC_FRAC(r3)
 	or	r0,r4,r5
 	or	r0,r0,r6
 	xor	r0,r0,r0
@@ -250,17 +279,11 @@ V_FUNCTION_BEGIN(__do_get_tspec)
 	bne-	1b			/* reload if so */
 
 	/* convert to seconds & nanoseconds and add to stamp */
-	lis	r7,NSEC_PER_SEC@h
-	ori	r7,r7,NSEC_PER_SEC@l
-	mulhwu	r0,r6,r7		/* compute nanoseconds and */
+	add	r6,r6,r5		/* add on fractional seconds of xtime */
+	mulhwu	r5,r6,r7		/* compute micro or nanoseconds and */
 	srdi	r6,r6,32		/* seconds since stamp_xtime */
-	clrldi	r0,r0,32
-	add	r5,r5,r0		/* add nanoseconds together */
-	cmpd	r5,r7			/* overflow? */
+	clrldi	r5,r5,32
 	add	r4,r4,r6
-	bltlr				/* all done if no overflow */
-	subf	r5,r7,r5		/* if overflow, adjust */
-	addi	r4,r4,1
 	blr
   .cfi_endproc
 V_FUNCTION_END(__do_get_tspec)

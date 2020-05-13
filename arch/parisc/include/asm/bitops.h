@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _PARISC_BITOPS_H
 #define _PARISC_BITOPS_H
 
@@ -6,9 +7,10 @@
 #endif
 
 #include <linux/compiler.h>
-#include <asm/types.h>		/* for BITS_PER_LONG/SHIFT_PER_LONG */
+#include <asm/types.h>
 #include <asm/byteorder.h>
-#include <asm/atomic.h>
+#include <asm/barrier.h>
+#include <linux/atomic.h>
 
 /*
  * HP-PARISC specific bit operations
@@ -16,11 +18,14 @@
  * to include/asm-i386/bitops.h or kerneldoc
  */
 
+#if __BITS_PER_LONG == 64
+#define SHIFT_PER_LONG 6
+#else
+#define SHIFT_PER_LONG 5
+#endif
+
 #define CHOP_SHIFTCOUNT(x) (((unsigned long) (x)) & (BITS_PER_LONG - 1))
 
-
-#define smp_mb__before_clear_bit()      smp_mb()
-#define smp_mb__after_clear_bit()       smp_mb()
 
 /* See http://marc.theaimsgroup.com/?t=108826637900003 for discussion
  * on use of volatile and __*_bit() (set/clear/change):
@@ -183,7 +188,7 @@ static __inline__ int ffs(int x)
  * fls(0) = 0, fls(1) = 1, fls(0x80000000) = 32.
  */
 
-static __inline__ int fls(int x)
+static __inline__ int fls(unsigned int x)
 {
 	int ret;
 	if (!x)
@@ -222,18 +227,9 @@ static __inline__ int fls(int x)
 
 #ifdef __KERNEL__
 
-#include <asm-generic/bitops/ext2-non-atomic.h>
-
-/* '3' is bits per byte */
-#define LE_BYTE_ADDR ((sizeof(unsigned long) - 1) << 3)
-
-#define ext2_set_bit_atomic(l,nr,addr) \
-		test_and_set_bit((nr)   ^ LE_BYTE_ADDR, (unsigned long *)addr)
-#define ext2_clear_bit_atomic(l,nr,addr) \
-		test_and_clear_bit( (nr) ^ LE_BYTE_ADDR, (unsigned long *)addr)
+#include <asm-generic/bitops/le.h>
+#include <asm-generic/bitops/ext2-atomic-setbit.h>
 
 #endif	/* __KERNEL__ */
-
-#include <asm-generic/bitops/minix-le.h>
 
 #endif /* _PARISC_BITOPS_H */

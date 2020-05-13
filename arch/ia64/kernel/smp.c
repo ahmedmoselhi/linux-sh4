@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * SMP Support
  *
@@ -32,10 +33,9 @@
 #include <linux/bitops.h>
 #include <linux/kexec.h>
 
-#include <asm/atomic.h>
+#include <linux/atomic.h>
 #include <asm/current.h>
 #include <asm/delay.h>
-#include <asm/machvec.h>
 #include <asm/io.h>
 #include <asm/irq.h>
 #include <asm/page.h>
@@ -44,7 +44,6 @@
 #include <asm/processor.h>
 #include <asm/ptrace.h>
 #include <asm/sal.h>
-#include <asm/system.h>
 #include <asm/tlbflush.h>
 #include <asm/unistd.h>
 #include <asm/mca.h>
@@ -77,7 +76,7 @@ stop_this_cpu(void)
 	/*
 	 * Remove this CPU:
 	 */
-	cpu_clear(smp_processor_id(), cpu_online_map);
+	set_cpu_online(smp_processor_id(), false);
 	max_xtp();
 	local_irq_disable();
 	cpu_halt();
@@ -146,7 +145,7 @@ static inline void
 send_IPI_single (int dest_cpu, int op)
 {
 	set_bit(op, &per_cpu(ipi_operation, dest_cpu));
-	platform_send_ipi(dest_cpu, IA64_IPI_VECTOR, IA64_IPI_DM_INT, 0);
+	ia64_send_ipi(dest_cpu, IA64_IPI_VECTOR, IA64_IPI_DM_INT, 0);
 }
 
 /*
@@ -213,7 +212,7 @@ kdump_smp_send_init(void)
 	for_each_online_cpu(cpu) {
 		if (cpu != self_cpu) {
 			if(kdump_status[cpu] == 0)
-				platform_send_ipi(cpu, 0, IA64_IPI_DM_INIT, 0);
+				ia64_send_ipi(cpu, 0, IA64_IPI_DM_INIT, 0);
 		}
 	}
 }
@@ -224,7 +223,7 @@ kdump_smp_send_init(void)
 void
 smp_send_reschedule (int cpu)
 {
-	platform_send_ipi(cpu, IA64_IPI_RESCHEDULE, IA64_IPI_DM_INT, 0);
+	ia64_send_ipi(cpu, IA64_IPI_RESCHEDULE, IA64_IPI_DM_INT, 0);
 }
 EXPORT_SYMBOL_GPL(smp_send_reschedule);
 
@@ -234,7 +233,7 @@ EXPORT_SYMBOL_GPL(smp_send_reschedule);
 static void
 smp_send_local_flush_tlb (int cpu)
 {
-	platform_send_ipi(cpu, IA64_IPI_LOCAL_TLB_FLUSH, IA64_IPI_DM_INT, 0);
+	ia64_send_ipi(cpu, IA64_IPI_LOCAL_TLB_FLUSH, IA64_IPI_DM_INT, 0);
 }
 
 void
@@ -263,11 +262,11 @@ smp_flush_tlb_cpumask(cpumask_t xcpumask)
 	preempt_disable();
 	mycpu = smp_processor_id();
 
-	for_each_cpu_mask(cpu, cpumask)
+	for_each_cpu(cpu, &cpumask)
 		counts[cpu] = local_tlb_flush_counts[cpu].count & 0xffff;
 
 	mb();
-	for_each_cpu_mask(cpu, cpumask) {
+	for_each_cpu(cpu, &cpumask) {
 		if (cpu == mycpu)
 			flush_mycpu = 1;
 		else
@@ -277,7 +276,7 @@ smp_flush_tlb_cpumask(cpumask_t xcpumask)
 	if (flush_mycpu)
 		smp_local_flush_tlb();
 
-	for_each_cpu_mask(cpu, cpumask)
+	for_each_cpu(cpu, &cpumask)
 		while(counts[cpu] == (local_tlb_flush_counts[cpu].count & 0xffff))
 			udelay(FLUSH_DELAY);
 
@@ -293,6 +292,7 @@ smp_flush_tlb_all (void)
 void
 smp_flush_tlb_mm (struct mm_struct *mm)
 {
+	cpumask_var_t cpus;
 	preempt_disable();
 	/* this happens for the common case of a single-threaded fork():  */
 	if (likely(mm == current->active_mm && atomic_read(&mm->mm_users) == 1))
@@ -301,9 +301,15 @@ smp_flush_tlb_mm (struct mm_struct *mm)
 		preempt_enable();
 		return;
 	}
-
-	smp_call_function_many(mm_cpumask(mm),
-		(void (*)(void *))local_finish_flush_tlb_mm, mm, 1);
+	if (!alloc_cpumask_var(&cpus, GFP_ATOMIC)) {
+		smp_call_function((void (*)(void *))local_finish_flush_tlb_mm,
+			mm, 1);
+	} else {
+		cpumask_copy(cpus, mm_cpumask(mm));
+		smp_call_function_many(cpus,
+			(void (*)(void *))local_finish_flush_tlb_mm, mm, 1);
+		free_cpumask_var(cpus);
+	}
 	local_irq_disable();
 	local_finish_flush_tlb_mm(mm);
 	local_irq_enable();

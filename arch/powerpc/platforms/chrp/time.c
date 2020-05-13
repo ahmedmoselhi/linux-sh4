@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  Copyright (C) 1991, 1992, 1995  Linus Torvalds
  *
@@ -27,7 +28,13 @@
 #include <asm/sections.h>
 #include <asm/time.h>
 
+#include <platforms/chrp/chrp.h>
+
 extern spinlock_t rtc_lock;
+
+#define NVRAM_AS0  0x74
+#define NVRAM_AS1  0x75
+#define NVRAM_DATA 0x77
 
 static int nvram_as1 = NVRAM_AS1;
 static int nvram_as0 = NVRAM_AS0;
@@ -58,7 +65,7 @@ long __init chrp_time_init(void)
 	return 0;
 }
 
-int chrp_cmos_clock_read(int addr)
+static int chrp_cmos_clock_read(int addr)
 {
 	if (nvram_as1 != 0)
 		outb(addr>>8, nvram_as1);
@@ -66,7 +73,7 @@ int chrp_cmos_clock_read(int addr)
 	return (inb(nvram_data));
 }
 
-void chrp_cmos_clock_write(unsigned long val, int addr)
+static void chrp_cmos_clock_write(unsigned long val, int addr)
 {
 	if (nvram_as1 != 0)
 		outb(addr>>8, nvram_as1);

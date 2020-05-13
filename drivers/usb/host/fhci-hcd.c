@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Freescale QUICC Engine USB Host Controller Driver
  *
@@ -8,11 +9,6 @@
  *               Peter Barada <peterb@logicpd.com>
  * Copyright (c) MontaVista Software, Inc. 2008.
  *               Anton Vorontsov <avorontsov@ru.mvista.com>
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  */
 
 #include <linux/module.h>
@@ -25,11 +21,14 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/usb.h>
+#include <linux/usb/hcd.h>
+#include <linux/of_address.h>
+#include <linux/of_irq.h>
 #include <linux/of_platform.h>
 #include <linux/of_gpio.h>
-#include <asm/qe.h>
+#include <linux/slab.h>
+#include <soc/fsl/qe/qe.h>
 #include <asm/fsl_gtm.h>
-#include "../core/hcd.h"
 #include "fhci.h"
 
 void fhci_start_sof_timer(struct fhci_hcd *fhci)
@@ -39,8 +38,8 @@ void fhci_start_sof_timer(struct fhci_hcd *fhci)
 	/* clear frame_n */
 	out_be16(&fhci->pram->frame_num, 0);
 
-	out_be16(&fhci->regs->usb_sof_tmr, 0);
-	setbits8(&fhci->regs->usb_mod, USB_MODE_SFTE);
+	out_be16(&fhci->regs->usb_ussft, 0);
+	setbits8(&fhci->regs->usb_usmod, USB_MODE_SFTE);
 
 	fhci_dbg(fhci, "<- %s\n", __func__);
 }
@@ -49,7 +48,7 @@ void fhci_stop_sof_timer(struct fhci_hcd *fhci)
 {
 	fhci_dbg(fhci, "-> %s\n", __func__);
 
-	clrbits8(&fhci->regs->usb_mod, USB_MODE_SFTE);
+	clrbits8(&fhci->regs->usb_usmod, USB_MODE_SFTE);
 	gtm_stop_timer16(fhci->timer);
 
 	fhci_dbg(fhci, "<- %s\n", __func__);
@@ -57,7 +56,7 @@ void fhci_stop_sof_timer(struct fhci_hcd *fhci)
 
 u16 fhci_get_sof_timer_count(struct fhci_usb *usb)
 {
-	return be16_to_cpu(in_be16(&usb->fhci->regs->usb_sof_tmr) / 12);
+	return be16_to_cpu(in_be16(&usb->fhci->regs->usb_ussft) / 12);
 }
 
 /* initialize the endpoint zero */
@@ -87,8 +86,8 @@ void fhci_usb_enable_interrupt(struct fhci_usb *usb)
 		enable_irq(fhci_to_hcd(fhci)->irq);
 
 		/* initialize the event register and mask register */
-		out_be16(&usb->fhci->regs->usb_event, 0xffff);
-		out_be16(&usb->fhci->regs->usb_mask, usb->saved_msk);
+		out_be16(&usb->fhci->regs->usb_usber, 0xffff);
+		out_be16(&usb->fhci->regs->usb_usbmr, usb->saved_msk);
 
 		/* enable the timer interrupts */
 		enable_irq(fhci->timer->irq);
@@ -97,18 +96,18 @@ void fhci_usb_enable_interrupt(struct fhci_usb *usb)
 	usb->intr_nesting_cnt--;
 }
 
-/* diable the usb interrupt */
+/* disable the usb interrupt */
 void fhci_usb_disable_interrupt(struct fhci_usb *usb)
 {
 	struct fhci_hcd *fhci = usb->fhci;
 
 	if (usb->intr_nesting_cnt == 0) {
-		/* diable the timer interrupt */
+		/* disable the timer interrupt */
 		disable_irq_nosync(fhci->timer->irq);
 
 		/* disable the usb interrupt */
 		disable_irq_nosync(fhci_to_hcd(fhci)->irq);
-		out_be16(&usb->fhci->regs->usb_mask, 0);
+		out_be16(&usb->fhci->regs->usb_usbmr, 0);
 	}
 	usb->intr_nesting_cnt++;
 }
@@ -118,9 +117,9 @@ static u32 fhci_usb_enable(struct fhci_hcd *fhci)
 {
 	struct fhci_usb *usb = fhci->usb_lld;
 
-	out_be16(&usb->fhci->regs->usb_event, 0xffff);
-	out_be16(&usb->fhci->regs->usb_mask, usb->saved_msk);
-	setbits8(&usb->fhci->regs->usb_mod, USB_MODE_EN);
+	out_be16(&usb->fhci->regs->usb_usber, 0xffff);
+	out_be16(&usb->fhci->regs->usb_usbmr, usb->saved_msk);
+	setbits8(&usb->fhci->regs->usb_usmod, USB_MODE_EN);
 
 	mdelay(100);
 
@@ -140,7 +139,7 @@ static u32 fhci_usb_disable(struct fhci_hcd *fhci)
 			usb->port_status == FHCI_PORT_LOW)
 		fhci_device_disconnected_interrupt(fhci);
 
-	clrbits8(&usb->fhci->regs->usb_mod, USB_MODE_EN);
+	clrbits8(&usb->fhci->regs->usb_usmod, USB_MODE_EN);
 
 	return 0;
 }
@@ -242,9 +241,10 @@ err:
 static void fhci_usb_free(void *lld)
 {
 	struct fhci_usb *usb = lld;
-	struct fhci_hcd *fhci = usb->fhci;
+	struct fhci_hcd *fhci;
 
 	if (usb) {
+		fhci = usb->fhci;
 		fhci_config_transceiver(fhci, FHCI_PORT_POWER_OFF);
 		fhci_ep0_free(usb);
 		kfree(usb->actual_frame);
@@ -283,13 +283,13 @@ static int fhci_usb_init(struct fhci_hcd *fhci)
 			  USB_E_IDLE_MASK |
 			  USB_E_RESET_MASK | USB_E_SFT_MASK | USB_E_MSF_MASK);
 
-	out_8(&usb->fhci->regs->usb_mod, USB_MODE_HOST | USB_MODE_EN);
+	out_8(&usb->fhci->regs->usb_usmod, USB_MODE_HOST | USB_MODE_EN);
 
 	/* clearing the mask register */
-	out_be16(&usb->fhci->regs->usb_mask, 0);
+	out_be16(&usb->fhci->regs->usb_usbmr, 0);
 
 	/* initialing the event register */
-	out_be16(&usb->fhci->regs->usb_event, 0xffff);
+	out_be16(&usb->fhci->regs->usb_usber, 0xffff);
 
 	if (endpoint_zero_init(usb, DEFAULT_DATA_MEM, DEFAULT_RING_LEN) != 0) {
 		fhci_usb_free(usb);
@@ -306,10 +306,8 @@ static struct fhci_usb *fhci_create_lld(struct fhci_hcd *fhci)
 
 	/* allocate memory for SCC data structure */
 	usb = kzalloc(sizeof(*usb), GFP_KERNEL);
-	if (!usb) {
-		fhci_err(fhci, "no memory for SCC data struct\n");
+	if (!usb)
 		return NULL;
-	}
 
 	usb->fhci = fhci;
 	usb->hc_list = fhci->hc_list;
@@ -356,12 +354,12 @@ static int fhci_start(struct usb_hcd *hcd)
 	hcd->state = HC_STATE_RUNNING;
 
 	/*
-	 * From here on, khubd concurrently accesses the root
+	 * From here on, hub_wq concurrently accesses the root
 	 * hub; drivers will be talking to enumerated devices.
-	 * (On restart paths, khubd already knows about the root
+	 * (On restart paths, hub_wq already knows about the root
 	 * hub and could find work as soon as we wrote FLAG_CF.)
 	 *
-	 * Before this point the HC was idle/ready.  After, khubd
+	 * Before this point the HC was idle/ready.  After, hub_wq
 	 * and device drivers may start it running.
 	 */
 	fhci_usb_enable(fhci);
@@ -398,8 +396,9 @@ static int fhci_urb_enqueue(struct usb_hcd *hcd, struct urb *urb,
 	case PIPE_CONTROL:
 		/* 1 td fro setup,1 for ack */
 		size = 2;
+		fallthrough;
 	case PIPE_BULK:
-		/* one td for every 4096 bytes(can be upto 8k) */
+		/* one td for every 4096 bytes(can be up to 8k) */
 		size += urb->transfer_buffer_length / 4096;
 		/* ...add for any remaining bytes... */
 		if ((urb->transfer_buffer_length % 4096) != 0)
@@ -432,7 +431,7 @@ static int fhci_urb_enqueue(struct usb_hcd *hcd, struct urb *urb,
 		return -ENOMEM;
 
 	/* allocate the private part of the URB */
-	urb_priv->tds = kzalloc(size * sizeof(struct td), mem_flags);
+	urb_priv->tds = kcalloc(size, sizeof(*urb_priv->tds), mem_flags);
 	if (!urb_priv->tds) {
 		kfree(urb_priv);
 		return -ENOMEM;
@@ -540,7 +539,7 @@ static const struct hc_driver fhci_driver = {
 
 	/* generic hardware linkage */
 	.irq = fhci_irq,
-	.flags = HCD_USB11 | HCD_MEMORY,
+	.flags = HCD_DMA | HCD_USB11 | HCD_MEMORY,
 
 	/* basic lifecycle operation */
 	.start = fhci_start,
@@ -559,11 +558,10 @@ static const struct hc_driver fhci_driver = {
 	.hub_control = fhci_hub_control,
 };
 
-static int __devinit of_fhci_probe(struct of_device *ofdev,
-				   const struct of_device_id *ofid)
+static int of_fhci_probe(struct platform_device *ofdev)
 {
 	struct device *dev = &ofdev->dev;
-	struct device_node *node = ofdev->node;
+	struct device_node *node = dev->of_node;
 	struct usb_hcd *hcd;
 	struct fhci_hcd *fhci;
 	struct resource usb_regs;
@@ -604,7 +602,7 @@ static int __devinit of_fhci_probe(struct of_device *ofdev,
 		goto err_regs;
 	}
 
-	hcd->regs = ioremap(usb_regs.start, usb_regs.end - usb_regs.start + 1);
+	hcd->regs = ioremap(usb_regs.start, resource_size(&usb_regs));
 	if (!hcd->regs) {
 		dev_err(dev, "could not ioremap regs\n");
 		ret = -ENOMEM;
@@ -620,12 +618,15 @@ static int __devinit of_fhci_probe(struct of_device *ofdev,
 		goto err_pram;
 	}
 
-	pram_addr = cpm_muram_alloc_fixed(iprop[2], FHCI_PRAM_SIZE);
+	pram_addr = cpm_muram_alloc(FHCI_PRAM_SIZE, 64);
 	if (IS_ERR_VALUE(pram_addr)) {
 		dev_err(dev, "failed to allocate usb pram\n");
 		ret = -ENOMEM;
 		goto err_pram;
 	}
+
+	qe_issue_cmd(QE_ASSIGN_PAGE_TO_DEVICE, QE_CR_SUBBLOCK_USB,
+		     QE_CR_PROTOCOL_UNSPECIFIED, pram_addr);
 	fhci->pram = cpm_muram_addr(pram_addr);
 
 	/* GPIOs and pins */
@@ -668,7 +669,7 @@ static int __devinit of_fhci_probe(struct of_device *ofdev,
 	}
 
 	for (j = 0; j < NUM_PINS; j++) {
-		fhci->pins[j] = qe_pin_request(ofdev->node, j);
+		fhci->pins[j] = qe_pin_request(node, j);
 		if (IS_ERR(fhci->pins[j])) {
 			ret = PTR_ERR(fhci->pins[j]);
 			dev_err(dev, "can't get pin %d: %d\n", j, ret);
@@ -685,7 +686,7 @@ static int __devinit of_fhci_probe(struct of_device *ofdev,
 	}
 
 	ret = request_irq(fhci->timer->irq, fhci_frame_limit_timer_irq,
-			  IRQF_DISABLED, "qe timer (usb)", hcd);
+			  0, "qe timer (usb)", hcd);
 	if (ret) {
 		dev_err(dev, "failed to request timer irq");
 		goto err_timer_irq;
@@ -741,12 +742,14 @@ static int __devinit of_fhci_probe(struct of_device *ofdev,
 	}
 
 	/* Clear and disable any pending interrupts. */
-	out_be16(&fhci->regs->usb_event, 0xffff);
-	out_be16(&fhci->regs->usb_mask, 0);
+	out_be16(&fhci->regs->usb_usber, 0xffff);
+	out_be16(&fhci->regs->usb_usbmr, 0);
 
-	ret = usb_add_hcd(hcd, usb_irq, IRQF_DISABLED);
+	ret = usb_add_hcd(hcd, usb_irq, 0);
 	if (ret < 0)
 		goto err_add_hcd;
+
+	device_wakeup_enable(hcd->self.controller);
 
 	fhci_dfs_create(fhci);
 
@@ -776,7 +779,7 @@ err_regs:
 	return ret;
 }
 
-static int __devexit fhci_remove(struct device *dev)
+static int fhci_remove(struct device *dev)
 {
 	struct usb_hcd *hcd = dev_get_drvdata(dev);
 	struct fhci_hcd *fhci = hcd_to_fhci(hcd);
@@ -799,35 +802,27 @@ static int __devexit fhci_remove(struct device *dev)
 	return 0;
 }
 
-static int __devexit of_fhci_remove(struct of_device *ofdev)
+static int of_fhci_remove(struct platform_device *ofdev)
 {
 	return fhci_remove(&ofdev->dev);
 }
 
-static struct of_device_id of_fhci_match[] = {
+static const struct of_device_id of_fhci_match[] = {
 	{ .compatible = "fsl,mpc8323-qe-usb", },
 	{},
 };
 MODULE_DEVICE_TABLE(of, of_fhci_match);
 
-static struct of_platform_driver of_fhci_driver = {
-	.name		= "fsl,usb-fhci",
-	.match_table	= of_fhci_match,
+static struct platform_driver of_fhci_driver = {
+	.driver = {
+		.name = "fsl,usb-fhci",
+		.of_match_table = of_fhci_match,
+	},
 	.probe		= of_fhci_probe,
-	.remove		= __devexit_p(of_fhci_remove),
+	.remove		= of_fhci_remove,
 };
 
-static int __init fhci_module_init(void)
-{
-	return of_register_platform_driver(&of_fhci_driver);
-}
-module_init(fhci_module_init);
-
-static void __exit fhci_module_exit(void)
-{
-	of_unregister_platform_driver(&of_fhci_driver);
-}
-module_exit(fhci_module_exit);
+module_platform_driver(of_fhci_driver);
 
 MODULE_DESCRIPTION("USB Freescale Host Controller Interface Driver");
 MODULE_AUTHOR("Shlomi Gridish <gridish@freescale.com>, "

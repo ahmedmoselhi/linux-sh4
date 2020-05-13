@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * linux/arch/arm/mach-omap1/board-sx1-mmc.c
  *
@@ -6,20 +7,17 @@
  *
  * This code is based on linux/arch/arm/mach-omap1/board-h2-mmc.c, which is:
  * Copyright (C) 2007 Instituto Nokia de Tecnologia - INdT
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
+#include <linux/gpio.h>
 #include <linux/platform_device.h>
 
 #include <mach/hardware.h>
-#include <mach/mmc.h>
-#include <mach/gpio.h>
-#include <mach/board-sx1.h>
+#include "board-sx1.h"
 
-#if defined(CONFIG_MMC_OMAP) || defined(CONFIG_MMC_OMAP_MODULE)
+#include "mmc.h"
+
+#if IS_ENABLED(CONFIG_MMC_OMAP)
 
 static int mmc_set_power(struct device *dev, int slot, int power_on,
 				int vdd)
@@ -44,8 +42,7 @@ static struct omap_mmc_platform_data mmc1_data = {
 	.nr_slots                       = 1,
 	.slots[0]       = {
 		.set_power              = mmc_set_power,
-		.ocr_mask               = MMC_VDD_28_29 | MMC_VDD_30_31 |
-					  MMC_VDD_32_33 | MMC_VDD_33_34,
+		.ocr_mask               = MMC_VDD_32_33 | MMC_VDD_33_34,
 		.name                   = "mmcblk",
 	},
 };

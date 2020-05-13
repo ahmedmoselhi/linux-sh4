@@ -269,12 +269,14 @@ static snd_pcm_sframes_t mulaw_transfer(struct snd_pcm_plugin *plugin,
 		}
 	}
 #endif
+	if (frames > dst_channels[0].frames)
+		frames = dst_channels[0].frames;
 	data = (struct mulaw_priv *)plugin->extra_data;
 	data->func(plugin, src_channels, dst_channels, frames);
 	return frames;
 }
 
-static void init_data(struct mulaw_priv *data, int format)
+static void init_data(struct mulaw_priv *data, snd_pcm_format_t format)
 {
 #ifdef SNDRV_LITTLE_ENDIAN
 	data->cvt_endian = snd_pcm_format_big_endian(format) > 0;

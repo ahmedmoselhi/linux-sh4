@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * PROM interface routines.
  */
@@ -7,11 +8,12 @@
 #include <linux/ctype.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
-#include <linux/bootmem.h>
+#include <linux/memblock.h>
 #include <linux/ioport.h>
 #include <asm/bootinfo.h>
 #include <asm/lasat/lasat.h>
 #include <asm/cpu.h>
+#include <asm/setup.h>
 
 #include "at93c.h"
 #include <asm/lasat/eeprom.h>
@@ -100,8 +102,8 @@ void __init prom_init(void)
 
 	/* Get the command line */
 	if (argc > 0) {
-		strncpy(arcs_cmdline, argv[0], CL_SIZE-1);
-		arcs_cmdline[CL_SIZE-1] = '\0';
+		strncpy(arcs_cmdline, argv[0], COMMAND_LINE_SIZE-1);
+		arcs_cmdline[COMMAND_LINE_SIZE-1] = '\0';
 	}
 
 	/* Set the I/O base address */

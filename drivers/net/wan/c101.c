@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Moxa C101 synchronous serial card driver for Linux
  *
  * Copyright (C) 2000-2003 Krzysztof Halasa <khc@pm.waw.pl>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of version 2 of the GNU General Public License
- * as published by the Free Software Foundation.
  *
  * For information see <http://www.kernel.org/pub/linux/utils/net/hdlc/>
  *
@@ -13,6 +10,8 @@
  *    Hitachi HD64570 SCA User's Manual
  *    Moxa C101 User's Manual
  */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -22,7 +21,6 @@
 #include <linux/string.h>
 #include <linux/errno.h>
 #include <linux/init.h>
-#include <linux/moduleparam.h>
 #include <linux/netdevice.h>
 #include <linux/hdlc.h>
 #include <linux/delay.h>
@@ -264,7 +262,7 @@ static int c101_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 		    new_line.clock_type != CLOCK_TXFROMRX &&
 		    new_line.clock_type != CLOCK_INT &&
 		    new_line.clock_type != CLOCK_TXINT)
-		return -EINVAL;	/* No such clock setting */
+			return -EINVAL;	/* No such clock setting */
 
 		if (new_line.loopback != 0 && new_line.loopback != 1)
 			return -EINVAL;
@@ -300,7 +298,6 @@ static void c101_destroy_card(card_t *card)
 static const struct net_device_ops c101_ops = {
 	.ndo_open       = c101_open,
 	.ndo_stop       = c101_close,
-	.ndo_change_mtu = hdlc_change_mtu,
 	.ndo_start_xmit = hdlc_start_xmit,
 	.ndo_do_ioctl   = c101_ioctl,
 };
@@ -313,44 +310,42 @@ static int __init c101_run(unsigned long irq, unsigned long winbase)
 	int result;
 
 	if (irq<3 || irq>15 || irq == 6) /* FIXME */ {
-		printk(KERN_ERR "c101: invalid IRQ value\n");
+		pr_err("invalid IRQ value\n");
 		return -ENODEV;
 	}
 
 	if (winbase < 0xC0000 || winbase > 0xDFFFF || (winbase & 0x3FFF) !=0) {
-		printk(KERN_ERR "c101: invalid RAM value\n");
+		pr_err("invalid RAM value\n");
 		return -ENODEV;
 	}
 
 	card = kzalloc(sizeof(card_t), GFP_KERNEL);
-	if (card == NULL) {
-		printk(KERN_ERR "c101: unable to allocate memory\n");
+	if (card == NULL)
 		return -ENOBUFS;
-	}
 
 	card->dev = alloc_hdlcdev(card);
 	if (!card->dev) {
-		printk(KERN_ERR "c101: unable to allocate memory\n");
+		pr_err("unable to allocate memory\n");
 		kfree(card);
 		return -ENOBUFS;
 	}
 
 	if (request_irq(irq, sca_intr, 0, devname, card)) {
-		printk(KERN_ERR "c101: could not allocate IRQ\n");
+		pr_err("could not allocate IRQ\n");
 		c101_destroy_card(card);
 		return -EBUSY;
 	}
 	card->irq = irq;
 
 	if (!request_mem_region(winbase, C101_MAPPED_RAM_SIZE, devname)) {
-		printk(KERN_ERR "c101: could not request RAM window\n");
+		pr_err("could not request RAM window\n");
 		c101_destroy_card(card);
 		return -EBUSY;
 	}
 	card->phy_winbase = winbase;
 	card->win0base = ioremap(winbase, C101_MAPPED_RAM_SIZE);
 	if (!card->win0base) {
-		printk(KERN_ERR "c101: could not map I/O address\n");
+		pr_err("could not map I/O address\n");
 		c101_destroy_card(card);
 		return -EFAULT;
 	}
@@ -381,7 +376,7 @@ static int __init c101_run(unsigned long irq, unsigned long winbase)
 
 	result = register_hdlc_device(dev);
 	if (result) {
-		printk(KERN_WARNING "c101: unable to register hdlc device\n");
+		pr_warn("unable to register hdlc device\n");
 		c101_destroy_card(card);
 		return result;
 	}
@@ -389,10 +384,8 @@ static int __init c101_run(unsigned long irq, unsigned long winbase)
 	sca_init_port(card); /* Set up C101 memory */
 	set_carrier(card);
 
-	printk(KERN_INFO "%s: Moxa C101 on IRQ%u,"
-	       " using %u TX + %u RX packets rings\n",
-	       dev->name, card->irq,
-	       card->tx_ring_buffers, card->rx_ring_buffers);
+	netdev_info(dev, "Moxa C101 on IRQ%u, using %u TX + %u RX packets rings\n",
+		    card->irq, card->tx_ring_buffers, card->rx_ring_buffers);
 
 	*new_card = card;
 	new_card = &card->next_card;
@@ -405,12 +398,12 @@ static int __init c101_init(void)
 {
 	if (hw == NULL) {
 #ifdef MODULE
-		printk(KERN_INFO "c101: no card initialized\n");
+		pr_info("no card initialized\n");
 #endif
 		return -EINVAL;	/* no parameters specified, abort */
 	}
 
-	printk(KERN_INFO "%s\n", version);
+	pr_info("%s\n", version);
 
 	do {
 		unsigned long irq, ram;
@@ -428,7 +421,7 @@ static int __init c101_init(void)
 			return first_card ? 0 : -EINVAL;
 	}while(*hw++ == ':');
 
-	printk(KERN_ERR "c101: invalid hardware parameters\n");
+	pr_err("invalid hardware parameters\n");
 	return first_card ? 0 : -EINVAL;
 }
 

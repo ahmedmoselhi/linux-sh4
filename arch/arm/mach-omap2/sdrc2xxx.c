@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * linux/arch/arm/mach-omap2/sdrc2xxx.c
  *
@@ -9,10 +10,6 @@
  * Tony Lindgren <tony@atomide.com>
  * Paul Walmsley
  * Richard Woodruff <r-woodruff2@ti.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/module.h>
@@ -24,14 +21,13 @@
 #include <linux/clk.h>
 #include <linux/io.h>
 
-#include <mach/common.h>
-#include <mach/clock.h>
-#include <mach/sram.h>
-
-#include "prm.h"
+#include "soc.h"
+#include "iomap.h"
+#include "common.h"
+#include "prm2xxx.h"
 #include "clock.h"
-#include <mach/sdrc.h>
 #include "sdrc.h"
+#include "sram.h"
 
 /* Memory timing, DLL mode flags */
 #define M_DDR		1
@@ -99,10 +95,14 @@ u32 omap2xxx_sdrc_reprogram(u32 level, u32 force)
 	m_type = omap2xxx_sdrc_get_type();
 
 	local_irq_save(flags);
+	/*
+	 * XXX These calls should be abstracted out through a
+	 * prm2xxx.c function
+	 */
 	if (cpu_is_omap2420())
-		__raw_writel(0xffff, OMAP2420_PRCM_VOLTSETUP);
+		writel_relaxed(0xffff, OMAP2420_PRCM_VOLTSETUP);
 	else
-		__raw_writel(0xffff, OMAP2430_PRCM_VOLTSETUP);
+		writel_relaxed(0xffff, OMAP2430_PRCM_VOLTSETUP);
 	omap2_sram_reprogram_sdrc(level, dll_ctrl, m_type);
 	curr_perf_level = level;
 	local_irq_restore(flags);
@@ -161,6 +161,6 @@ void omap2xxx_sdrc_init_params(u32 force_lock_to_unlock_mode)
 	mem_timings.slow_dll_ctrl |=
 		((mem_timings.fast_dll_ctrl & 0xF) | (1 << 2));
 
-	/* 90 degree phase for anything below 133Mhz + disable DLL filter */
+	/* 90 degree phase for anything below 133MHz + disable DLL filter */
 	mem_timings.slow_dll_ctrl |= ((1 << 1) | (3 << 8));
 }

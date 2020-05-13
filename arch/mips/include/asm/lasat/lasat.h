@@ -1,21 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * lasat.h
  *
  * Thomas Horsten <thh@lasat.com>
  * Copyright (C) 2000 LASAT Networks A/S.
- *
- *  This program is free software; you can distribute it and/or modify it
- *  under the terms of the GNU General Public License (Version 2) as
- *  published by the Free Software Foundation.
- *
- *  This program is distributed in the hope it will be useful, but WITHOUT
- *  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- *  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
- *  for more details.
- *
- *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, write to the Free Software Foundation, Inc.,
- *  59 Temple Place - Suite 330, Boston MA 02111-1307, USA.
  *
  * Configuration for LASAT boards, loads the appropriate include files.
  */
@@ -41,10 +29,8 @@ enum lasat_mtdparts {
 
 /*
  * The format of the data record in the EEPROM.
- * See Documentation/LASAT/eeprom.txt for a detailed description
- * of the fields in this struct, and the LASAT Hardware Configuration
- * field specification for a detailed description of the config
- * field.
+ * See the LASAT Hardware Configuration field specification for a detailed
+ * description of the config field.
  */
 #include <linux/types.h>
 
@@ -102,7 +88,7 @@ struct lasat_eeprom_struct_pre7 {
 
 /* Configuration descriptor encoding - see the doc for details */
 
-#define LASAT_W0_DSCTYPE(v)		(((v))         & 0xf)
+#define LASAT_W0_DSCTYPE(v)		(((v))	       & 0xf)
 #define LASAT_W0_BMID(v)		(((v) >> 0x04) & 0xf)
 #define LASAT_W0_CPUTYPE(v)		(((v) >> 0x08) & 0xf)
 #define LASAT_W0_BUSSPEED(v)		(((v) >> 0x0c) & 0xf)
@@ -111,7 +97,7 @@ struct lasat_eeprom_struct_pre7 {
 #define LASAT_W0_SDRAMBANKS(v)		(((v) >> 0x18) & 0xf)
 #define LASAT_W0_L2CACHE(v)		(((v) >> 0x1c) & 0xf)
 
-#define LASAT_W1_EDHAC(v)		(((v))         & 0xf)
+#define LASAT_W1_EDHAC(v)		(((v))	       & 0xf)
 #define LASAT_W1_HIFN(v)		(((v) >> 0x04) & 0x1)
 #define LASAT_W1_ISDN(v)		(((v) >> 0x05) & 0x1)
 #define LASAT_W1_IDE(v)			(((v) >> 0x06) & 0x1)
@@ -241,7 +227,7 @@ static inline void lasat_ndelay(unsigned int ns)
 	__delay(ns / lasat_ndelay_divider);
 }
 
-#define IS_LASAT_200()     (current_cpu_data.cputype == CPU_R5000)
+#define IS_LASAT_200()	   (current_cpu_data.cputype == CPU_R5000)
 
 #endif /* !defined (_LANGUAGE_ASSEMBLY) */
 
@@ -249,11 +235,11 @@ static inline void lasat_ndelay(unsigned int ns)
 #define LASAT_SERVICEMODE_MAGIC_2     0xfedeabba
 
 /* Lasat 100 boards */
-#define LASAT_GT_BASE           (KSEG1ADDR(0x14000000))
+#define LASAT_GT_BASE		(KSEG1ADDR(0x14000000))
 
 /* Lasat 200 boards */
-#define Vrc5074_PHYS_BASE       0x1fa00000
-#define Vrc5074_BASE            (KSEG1ADDR(Vrc5074_PHYS_BASE))
-#define PCI_WINDOW1             0x1a000000
+#define Vrc5074_PHYS_BASE	0x1fa00000
+#define Vrc5074_BASE		(KSEG1ADDR(Vrc5074_PHYS_BASE))
+#define PCI_WINDOW1		0x1a000000
 
 #endif /* _LASAT_H */

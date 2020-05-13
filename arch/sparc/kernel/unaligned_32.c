@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * unaligned.c: Unaligned load/store trap handling with special
  *              cases for the kernel to do them more quickly.
@@ -8,17 +9,17 @@
 
 
 #include <linux/kernel.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/mm.h>
-#include <linux/module.h>
 #include <asm/ptrace.h>
 #include <asm/processor.h>
-#include <asm/system.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/smp.h>
-#include <linux/smp_lock.h>
+#include <linux/perf_event.h>
 
-/* #define DEBUG_MNA */
+#include <asm/setup.h>
+
+#include "kernel.h"
 
 enum direction {
 	load,    /* ld, ldd, ldh, ldsh */
@@ -28,12 +29,6 @@ enum direction {
 	fpstore,
 	invalid,
 };
-
-#ifdef DEBUG_MNA
-static char *dirstrings[] = {
-  "load", "store", "both", "fpload", "fpstore", "invalid"
-};
-#endif
 
 static inline enum direction decode_direction(unsigned int insn)
 {
@@ -172,7 +167,7 @@ unsigned long safe_compute_effective_address(struct pt_regs *regs,
 /* This is just to make gcc think panic does return... */
 static void unaligned_panic(char *str)
 {
-	panic(str);
+	panic("%s", str);
 }
 
 /* una_asm.S */
@@ -255,10 +250,7 @@ asmlinkage void kernel_unaligned_trap(struct pt_regs *regs, unsigned int insn)
 		unsigned long addr = compute_effective_address(regs, insn);
 		int err;
 
-#ifdef DEBUG_MNA
-		printk("KMNA: pc=%08lx [dir=%s addr=%08lx size=%d] retpc[%08lx]\n",
-		       regs->pc, dirstrings[dir], addr, size, regs->u_regs[UREG_RETPC]);
-#endif
+		perf_sw_event(PERF_COUNT_SW_ALIGNMENT_FAULTS, 1, regs, addr);
 		switch (dir) {
 		case load:
 			err = do_int_load(fetch_reg_addr(((insn>>25)&0x1f),
@@ -286,7 +278,6 @@ static inline int ok_for_user(struct pt_regs *regs, unsigned int insn,
 			      enum direction dir)
 {
 	unsigned int reg;
-	int check = (dir == load) ? VERIFY_READ : VERIFY_WRITE;
 	int size = ((insn >> 19) & 3) == 3 ? 8 : 4;
 
 	if ((regs->pc | regs->npc) & 3)
@@ -298,18 +289,18 @@ static inline int ok_for_user(struct pt_regs *regs, unsigned int insn,
 
 	reg = (insn >> 25) & 0x1f;
 	if (reg >= 16) {
-		if (!access_ok(check, WINREG_ADDR(reg - 16), size))
+		if (!access_ok(WINREG_ADDR(reg - 16), size))
 			return -EFAULT;
 	}
 	reg = (insn >> 14) & 0x1f;
 	if (reg >= 16) {
-		if (!access_ok(check, WINREG_ADDR(reg - 16), size))
+		if (!access_ok(WINREG_ADDR(reg - 16), size))
 			return -EFAULT;
 	}
 	if (!(insn & 0x2000)) {
 		reg = (insn & 0x1f);
 		if (reg >= 16) {
-			if (!access_ok(check, WINREG_ADDR(reg - 16), size))
+			if (!access_ok(WINREG_ADDR(reg - 16), size))
 				return -EFAULT;
 		}
 	}
@@ -319,21 +310,15 @@ static inline int ok_for_user(struct pt_regs *regs, unsigned int insn,
 
 static void user_mna_trap_fault(struct pt_regs *regs, unsigned int insn)
 {
-	siginfo_t info;
-
-	info.si_signo = SIGBUS;
-	info.si_errno = 0;
-	info.si_code = BUS_ADRALN;
-	info.si_addr = (void __user *)safe_compute_effective_address(regs, insn);
-	info.si_trapno = 0;
-	send_sig_info(SIGBUS, &info, current);
+	send_sig_fault(SIGBUS, BUS_ADRALN,
+		       (void __user *)safe_compute_effective_address(regs, insn),
+		       0, current);
 }
 
 asmlinkage void user_unaligned_trap(struct pt_regs *regs, unsigned int insn)
 {
 	enum direction dir;
 
-	lock_kernel();
 	if(!(current->thread.flags & SPARC_FLAG_UNALIGNED) ||
 	   (((insn >> 30) & 3) != 3))
 		goto kill_user;
@@ -350,6 +335,7 @@ asmlinkage void user_unaligned_trap(struct pt_regs *regs, unsigned int insn)
 		}
 
 		addr = compute_effective_address(regs, insn);
+		perf_sw_event(PERF_COUNT_SW_ALIGNMENT_FAULTS, 1, regs, addr);
 		switch(dir) {
 		case load:
 			err = do_int_load(fetch_reg_addr(((insn>>25)&0x1f),
@@ -386,5 +372,5 @@ asmlinkage void user_unaligned_trap(struct pt_regs *regs, unsigned int insn)
 kill_user:
 	user_mna_trap_fault(regs, insn);
 out:
-	unlock_kernel();
+	;
 }

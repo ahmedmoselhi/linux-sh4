@@ -1,4 +1,5 @@
-#!/usr/bin/perl
+#!/usr/bin/env perl
+# SPDX-License-Identifier: GPL-2.0
 #
 # checkincludes: find/remove files included more than once
 #
@@ -10,6 +11,8 @@
 # consideration macros so you should run this only if you know
 # you do have real dups and do not have them under #ifdef's. You
 # could also just review the results.
+
+use strict;
 
 sub usage {
 	print "Usage: checkincludes.pl [-r]\n";
@@ -35,51 +38,61 @@ if ($#ARGV >= 1) {
 	}
 }
 
-foreach $file (@ARGV) {
-	open(FILE, $file) or die "Cannot open $file: $!.\n";
+my $dup_counter = 0;
+
+foreach my $file (@ARGV) {
+	open(my $f, '<', $file)
+	    or die "Cannot open $file: $!.\n";
 
 	my %includedfiles = ();
 	my @file_lines = ();
 
-	while (<FILE>) {
+	while (<$f>) {
 		if (m/^\s*#\s*include\s*[<"](\S*)[>"]/o) {
 			++$includedfiles{$1};
 		}
 		push(@file_lines, $_);
 	}
 
-	close(FILE);
+	close($f);
 
 	if (!$remove) {
-		foreach $filename (keys %includedfiles) {
+		foreach my $filename (keys %includedfiles) {
 			if ($includedfiles{$filename} > 1) {
 				print "$file: $filename is included more than once.\n";
+				++$dup_counter;
 			}
 		}
 		next;
 	}
 
-	open(FILE,">$file") || die("Cannot write to $file: $!");
+	open($f, '>', $file)
+	    or die("Cannot write to $file: $!");
 
 	my $dups = 0;
 	foreach (@file_lines) {
 		if (m/^\s*#\s*include\s*[<"](\S*)[>"]/o) {
-			foreach $filename (keys %includedfiles) {
+			foreach my $filename (keys %includedfiles) {
 				if ($1 eq $filename) {
 					if ($includedfiles{$filename} > 1) {
 						$includedfiles{$filename}--;
 						$dups++;
+						++$dup_counter;
 					} else {
-						print FILE $_;
+						print {$f} $_;
 					}
 				}
 			}
 		} else {
-			print FILE $_;
+			print {$f} $_;
 		}
 	}
 	if ($dups > 0) {
 		print "$file: removed $dups duplicate includes\n";
 	}
-	close(FILE);
+	close($f);
+}
+
+if ($dup_counter == 0) {
+	print "No duplicate includes found.\n";
 }

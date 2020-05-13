@@ -1,16 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Apple Onboard Audio driver for Toonie codec
  *
  * Copyright 2006 Johannes Berg <johannes@sipsolutions.net>
- *
- * GPL v2, can be found in COPYING.
- *
  *
  * This is a driver for the toonie codec chip. This chip is present
  * on the Mac Mini and is nothing but a DAC.
  */
 #include <linux/delay.h>
 #include <linux/module.h>
+#include <linux/slab.h>
 MODULE_AUTHOR("Johannes Berg <johannes@sipsolutions.net>");
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("toonie codec driver for snd-aoa");
@@ -31,7 +30,7 @@ static int toonie_dev_register(struct snd_device *dev)
 	return 0;
 }
 
-static struct snd_device_ops ops = {
+static const struct snd_device_ops ops = {
 	.dev_register = toonie_dev_register,
 };
 
@@ -91,7 +90,7 @@ static int toonie_init_codec(struct aoa_codec *codec)
 	if (toonie->codec.connected != 1)
 		return -ENOTCONN;
 
-	if (aoa_snd_device_new(SNDRV_DEV_LOWLEVEL, toonie, &ops)) {
+	if (aoa_snd_device_new(SNDRV_DEV_CODEC, toonie, &ops)) {
 		printk(KERN_ERR PFX "failed to create toonie snd device!\n");
 		return -ENODEV;
 	}

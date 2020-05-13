@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /* sercos3: UIO driver for the Automata Sercos III PCI card
 
    Copyright (C) 2008 Linutronix GmbH
@@ -28,6 +29,7 @@
 #include <linux/pci.h>
 #include <linux/uio_driver.h>
 #include <linux/io.h>
+#include <linux/slab.h>
 
 /* ID's for SERCOS III PCI card (PLX 9030) */
 #define SERCOS_SUB_VENDOR_ID  0x1971
@@ -115,7 +117,7 @@ static int sercos3_setup_iomem(struct pci_dev *dev, struct uio_info *info,
 	return 0;
 }
 
-static int __devinit sercos3_pci_probe(struct pci_dev *dev,
+static int sercos3_pci_probe(struct pci_dev *dev,
 				       const struct pci_device_id *id)
 {
 	struct uio_info *info;
@@ -153,7 +155,7 @@ static int __devinit sercos3_pci_probe(struct pci_dev *dev,
 	info->name = "Sercos_III_PCI";
 	info->version = "0.0.1";
 	info->irq = dev->irq;
-	info->irq_flags = IRQF_DISABLED | IRQF_SHARED;
+	info->irq_flags = IRQF_SHARED;
 	info->handler = sercos3_handler;
 	info->irqcontrol = sercos3_irqcontrol;
 
@@ -187,7 +189,6 @@ static void sercos3_pci_remove(struct pci_dev *dev)
 	uio_unregister_device(info);
 	pci_release_regions(dev);
 	pci_disable_device(dev);
-	pci_set_drvdata(dev, NULL);
 	for (i = 0; i < 5; i++) {
 		if (info->mem[i].internal_addr)
 			iounmap(info->mem[i].internal_addr);
@@ -196,7 +197,7 @@ static void sercos3_pci_remove(struct pci_dev *dev)
 	kfree(info);
 }
 
-static struct pci_device_id sercos3_pci_ids[] __devinitdata = {
+static struct pci_device_id sercos3_pci_ids[] = {
 	{
 		.vendor =       PCI_VENDOR_ID_PLX,
 		.device =       PCI_DEVICE_ID_PLX_9030,
@@ -225,19 +226,7 @@ static struct pci_driver sercos3_pci_driver = {
 	.remove = sercos3_pci_remove,
 };
 
-static int __init sercos3_init_module(void)
-{
-	return pci_register_driver(&sercos3_pci_driver);
-}
-
-static void __exit sercos3_exit_module(void)
-{
-	pci_unregister_driver(&sercos3_pci_driver);
-}
-
-module_init(sercos3_init_module);
-module_exit(sercos3_exit_module);
-
+module_pci_driver(sercos3_pci_driver);
 MODULE_DESCRIPTION("UIO driver for the Automata Sercos III PCI card");
 MODULE_AUTHOR("John Ogness <john.ogness@linutronix.de>");
 MODULE_LICENSE("GPL v2");

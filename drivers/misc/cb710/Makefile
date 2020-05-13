@@ -1,6 +1,5 @@
-ifeq ($(CONFIG_CB710_DEBUG),y)
-	EXTRA_CFLAGS		+= -DDEBUG
-endif
+# SPDX-License-Identifier: GPL-2.0-only
+ccflags-$(CONFIG_CB710_DEBUG)	:= -DDEBUG
 
 obj-$(CONFIG_CB710_CORE)	+= cb710.o
 

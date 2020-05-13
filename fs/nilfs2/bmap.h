@@ -1,23 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0+ */
 /*
  * bmap.h - NILFS block mapping.
  *
  * Copyright (C) 2006-2008 Nippon Telegraph and Telephone Corporation.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- *
- * Written by Koji Sato <koji@osrg.net>.
+ * Written by Koji Sato.
  */
 
 #ifndef _NILFS_BMAP_H
@@ -26,16 +13,11 @@
 #include <linux/types.h>
 #include <linux/fs.h>
 #include <linux/buffer_head.h>
-#include <linux/nilfs2_fs.h>
+#include <linux/nilfs2_ondisk.h>	/* nilfs_binfo, nilfs_inode, etc */
 #include "alloc.h"
 #include "dat.h"
 
 #define NILFS_BMAP_INVALID_PTR	0
-
-#define nilfs_bmap_dkey_to_key(dkey)	le64_to_cpu(dkey)
-#define nilfs_bmap_key_to_dkey(key)	cpu_to_le64(key)
-#define nilfs_bmap_dptr_to_ptr(dptr)	le64_to_cpu(dptr)
-#define nilfs_bmap_ptr_to_dptr(ptr)	cpu_to_le64(ptr)
 
 #define nilfs_bmap_keydiff_abs(diff)	((diff) < 0 ? -(diff) : (diff))
 
@@ -66,12 +48,12 @@ struct nilfs_bmap_stats {
 struct nilfs_bmap_operations {
 	int (*bop_lookup)(const struct nilfs_bmap *, __u64, int, __u64 *);
 	int (*bop_lookup_contig)(const struct nilfs_bmap *, __u64, __u64 *,
-				 unsigned);
+				 unsigned int);
 	int (*bop_insert)(struct nilfs_bmap *, __u64, __u64);
 	int (*bop_delete)(struct nilfs_bmap *, __u64);
 	void (*bop_clear)(struct nilfs_bmap *);
 
-	int (*bop_propagate)(const struct nilfs_bmap *, struct buffer_head *);
+	int (*bop_propagate)(struct nilfs_bmap *, struct buffer_head *);
 	void (*bop_lookup_dirty_buffers)(struct nilfs_bmap *,
 					 struct list_head *);
 
@@ -81,8 +63,10 @@ struct nilfs_bmap_operations {
 			  union nilfs_binfo *);
 	int (*bop_mark)(struct nilfs_bmap *, __u64, int);
 
-	/* The following functions are internal use only. */
+	int (*bop_seek_key)(const struct nilfs_bmap *, __u64, __u64 *);
 	int (*bop_last_key)(const struct nilfs_bmap *, __u64 *);
+
+	/* The following functions are internal use only. */
 	int (*bop_check_insert)(const struct nilfs_bmap *, __u64);
 	int (*bop_check_delete)(struct nilfs_bmap *, __u64);
 	int (*bop_gather_data)(struct nilfs_bmap *, __u64 *, __u64 *, int);
@@ -110,6 +94,7 @@ static inline int nilfs_bmap_is_new_ptr(unsigned long ptr)
  * @b_last_allocated_ptr: last allocated ptr for data block
  * @b_ptr_type: pointer type
  * @b_state: state
+ * @b_nchildren_per_block: maximum number of child nodes for non-root nodes
  */
 struct nilfs_bmap {
 	union {
@@ -123,14 +108,19 @@ struct nilfs_bmap {
 	__u64 b_last_allocated_ptr;
 	int b_ptr_type;
 	int b_state;
+	__u16 b_nchildren_per_block;
 };
 
 /* pointer type */
 #define NILFS_BMAP_PTR_P	0	/* physical block number (i.e. LBN) */
-#define NILFS_BMAP_PTR_VS	1	/* virtual block number (single
-					   version) */
-#define NILFS_BMAP_PTR_VM	2	/* virtual block number (has multiple
-					   versions) */
+#define NILFS_BMAP_PTR_VS	1	/*
+					 * virtual block number (single
+					 * version)
+					 */
+#define NILFS_BMAP_PTR_VM	2	/*
+					 * virtual block number (has multiple
+					 * versions)
+					 */
 #define NILFS_BMAP_PTR_U	(-1)	/* never perform pointer operations */
 
 #define NILFS_BMAP_USE_VBN(bmap)	((bmap)->b_ptr_type > 0)
@@ -138,15 +128,29 @@ struct nilfs_bmap {
 /* state */
 #define NILFS_BMAP_DIRTY	0x00000001
 
+/**
+ * struct nilfs_bmap_store - shadow copy of bmap state
+ * @data: cached raw block mapping of on-disk inode
+ * @last_allocated_key: cached value of last allocated key for data block
+ * @last_allocated_ptr: cached value of last allocated ptr for data block
+ * @state: cached value of state field of bmap structure
+ */
+struct nilfs_bmap_store {
+	__le64 data[NILFS_BMAP_SIZE / sizeof(__le64)];
+	__u64 last_allocated_key;
+	__u64 last_allocated_ptr;
+	int state;
+};
 
 int nilfs_bmap_test_and_clear_dirty(struct nilfs_bmap *);
 int nilfs_bmap_read(struct nilfs_bmap *, struct nilfs_inode *);
 void nilfs_bmap_write(struct nilfs_bmap *, struct nilfs_inode *);
-int nilfs_bmap_lookup_contig(struct nilfs_bmap *, __u64, __u64 *, unsigned);
-int nilfs_bmap_insert(struct nilfs_bmap *, unsigned long, unsigned long);
-int nilfs_bmap_delete(struct nilfs_bmap *, unsigned long);
-int nilfs_bmap_last_key(struct nilfs_bmap *, unsigned long *);
-int nilfs_bmap_truncate(struct nilfs_bmap *, unsigned long);
+int nilfs_bmap_lookup_contig(struct nilfs_bmap *, __u64, __u64 *, unsigned int);
+int nilfs_bmap_insert(struct nilfs_bmap *bmap, __u64 key, unsigned long rec);
+int nilfs_bmap_delete(struct nilfs_bmap *bmap, __u64 key);
+int nilfs_bmap_seek_key(struct nilfs_bmap *bmap, __u64 start, __u64 *keyp);
+int nilfs_bmap_last_key(struct nilfs_bmap *bmap, __u64 *keyp);
+int nilfs_bmap_truncate(struct nilfs_bmap *bmap, __u64 key);
 void nilfs_bmap_clear(struct nilfs_bmap *);
 int nilfs_bmap_propagate(struct nilfs_bmap *, struct buffer_head *);
 void nilfs_bmap_lookup_dirty_buffers(struct nilfs_bmap *, struct list_head *);
@@ -156,9 +160,9 @@ int nilfs_bmap_lookup_at_level(struct nilfs_bmap *, __u64, int, __u64 *);
 int nilfs_bmap_mark(struct nilfs_bmap *, __u64, int);
 
 void nilfs_bmap_init_gc(struct nilfs_bmap *);
-void nilfs_bmap_init_gcdat(struct nilfs_bmap *, struct nilfs_bmap *);
-void nilfs_bmap_commit_gcdat(struct nilfs_bmap *, struct nilfs_bmap *);
 
+void nilfs_bmap_save(const struct nilfs_bmap *, struct nilfs_bmap_store *);
+void nilfs_bmap_restore(struct nilfs_bmap *, const struct nilfs_bmap_store *);
 
 static inline int nilfs_bmap_lookup(struct nilfs_bmap *bmap, __u64 key,
 				    __u64 *ptr)
@@ -224,14 +228,18 @@ static inline void nilfs_bmap_abort_end_ptr(struct nilfs_bmap *bmap,
 		nilfs_dat_abort_end(dat, &req->bpr_req);
 }
 
+static inline void nilfs_bmap_set_target_v(struct nilfs_bmap *bmap, __u64 key,
+					   __u64 ptr)
+{
+	bmap->b_last_allocated_key = key;
+	bmap->b_last_allocated_ptr = ptr;
+}
+
 __u64 nilfs_bmap_data_get_key(const struct nilfs_bmap *,
 			      const struct buffer_head *);
 
 __u64 nilfs_bmap_find_target_seq(const struct nilfs_bmap *, __u64);
 __u64 nilfs_bmap_find_target_in_group(const struct nilfs_bmap *);
-
-void nilfs_bmap_add_blocks(const struct nilfs_bmap *, int);
-void nilfs_bmap_sub_blocks(const struct nilfs_bmap *, int);
 
 
 /* Assume that bmap semaphore is locked. */

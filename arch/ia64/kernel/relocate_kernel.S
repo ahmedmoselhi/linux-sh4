@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * arch/ia64/kernel/relocate_kernel.S
  *
@@ -6,9 +7,6 @@
  * Copyright (C) 2005 Hewlett-Packard Development Company, L.P.
  * Copyright (C) 2005 Khalid Aziz  <khalid.aziz@hp.com>
  * Copyright (C) 2005 Intel Corp,  Zou Nan hai <nanhai.zou@intel.com>
- *
- * This source code is licensed under the GNU General Public License,
- * Version 2.  See the file COPYING for more details.
  */
 #include <asm/asmmacro.h>
 #include <asm/kregs.h>
@@ -61,7 +59,7 @@ GLOBAL_ENTRY(relocate_new_kernel)
 
 	// purge all TC entries
 #define O(member)       IA64_CPUINFO_##member##_OFFSET
-        GET_THIS_PADDR(r2, cpu_info)    // load phys addr of cpu_info into r2
+        GET_THIS_PADDR(r2, ia64_cpu_info) // load phys addr of cpu_info into r2
         ;;
         addl r17=O(PTCE_STRIDE),r2
         addl r2=O(PTCE_BASE),r2

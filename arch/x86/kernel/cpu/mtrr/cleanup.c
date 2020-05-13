@@ -17,27 +17,21 @@
  * License along with this library; if not, write to the Free
  * Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
-#include <linux/module.h>
 #include <linux/init.h>
 #include <linux/pci.h>
 #include <linux/smp.h>
 #include <linux/cpu.h>
-#include <linux/sort.h>
 #include <linux/mutex.h>
 #include <linux/uaccess.h>
 #include <linux/kvm_para.h>
+#include <linux/range.h>
 
 #include <asm/processor.h>
-#include <asm/e820.h>
+#include <asm/e820/api.h>
 #include <asm/mtrr.h>
 #include <asm/msr.h>
 
 #include "mtrr.h"
-
-struct res_range {
-	unsigned long	start;
-	unsigned long	end;
-};
 
 struct var_mtrr_range_state {
 	unsigned long	base_pfn;
@@ -56,125 +50,19 @@ struct var_mtrr_state {
 /* Should be related to MTRR_VAR_RANGES nums */
 #define RANGE_NUM				256
 
-static struct res_range __initdata		range[RANGE_NUM];
+static struct range __initdata		range[RANGE_NUM];
 static int __initdata				nr_range;
 
 static struct var_mtrr_range_state __initdata	range_state[RANGE_NUM];
 
 static int __initdata debug_print;
-#define Dprintk(x...) do { if (debug_print) printk(KERN_DEBUG x); } while (0)
+#define Dprintk(x...) do { if (debug_print) pr_debug(x); } while (0)
 
-
-static int __init
-add_range(struct res_range *range, int nr_range,
-	  unsigned long start, unsigned long end)
-{
-	/* Out of slots: */
-	if (nr_range >= RANGE_NUM)
-		return nr_range;
-
-	range[nr_range].start = start;
-	range[nr_range].end = end;
-
-	nr_range++;
-
-	return nr_range;
-}
-
-static int __init
-add_range_with_merge(struct res_range *range, int nr_range,
-		     unsigned long start, unsigned long end)
-{
-	int i;
-
-	/* Try to merge it with old one: */
-	for (i = 0; i < nr_range; i++) {
-		unsigned long final_start, final_end;
-		unsigned long common_start, common_end;
-
-		if (!range[i].end)
-			continue;
-
-		common_start = max(range[i].start, start);
-		common_end = min(range[i].end, end);
-		if (common_start > common_end + 1)
-			continue;
-
-		final_start = min(range[i].start, start);
-		final_end = max(range[i].end, end);
-
-		range[i].start = final_start;
-		range[i].end =  final_end;
-		return nr_range;
-	}
-
-	/* Need to add it: */
-	return add_range(range, nr_range, start, end);
-}
-
-static void __init
-subtract_range(struct res_range *range, unsigned long start, unsigned long end)
-{
-	int i, j;
-
-	for (j = 0; j < RANGE_NUM; j++) {
-		if (!range[j].end)
-			continue;
-
-		if (start <= range[j].start && end >= range[j].end) {
-			range[j].start = 0;
-			range[j].end = 0;
-			continue;
-		}
-
-		if (start <= range[j].start && end < range[j].end &&
-		    range[j].start < end + 1) {
-			range[j].start = end + 1;
-			continue;
-		}
-
-
-		if (start > range[j].start && end >= range[j].end &&
-		    range[j].end > start - 1) {
-			range[j].end = start - 1;
-			continue;
-		}
-
-		if (start > range[j].start && end < range[j].end) {
-			/* Find the new spare: */
-			for (i = 0; i < RANGE_NUM; i++) {
-				if (range[i].end == 0)
-					break;
-			}
-			if (i < RANGE_NUM) {
-				range[i].end = range[j].end;
-				range[i].start = end + 1;
-			} else {
-				printk(KERN_ERR "run of slot in ranges\n");
-			}
-			range[j].end = start - 1;
-			continue;
-		}
-	}
-}
-
-static int __init cmp_range(const void *x1, const void *x2)
-{
-	const struct res_range *r1 = x1;
-	const struct res_range *r2 = x2;
-	long start1, start2;
-
-	start1 = r1->start;
-	start2 = r2->start;
-
-	return start1 - start2;
-}
-
-#define BIOS_BUG_MSG KERN_WARNING \
+#define BIOS_BUG_MSG \
 	"WARNING: BIOS bug: VAR MTRR %d contains strange UC entry under 1M, check with your system vendor!\n"
 
 static int __init
-x86_get_mtrr_mem_range(struct res_range *range, int nr_range,
+x86_get_mtrr_mem_range(struct range *range, int nr_range,
 		       unsigned long extra_remove_base,
 		       unsigned long extra_remove_size)
 {
@@ -188,14 +76,14 @@ x86_get_mtrr_mem_range(struct res_range *range, int nr_range,
 			continue;
 		base = range_state[i].base_pfn;
 		size = range_state[i].size_pfn;
-		nr_range = add_range_with_merge(range, nr_range, base,
-						base + size - 1);
+		nr_range = add_range_with_merge(range, RANGE_NUM, nr_range,
+						base, base + size);
 	}
 	if (debug_print) {
-		printk(KERN_DEBUG "After WB checking\n");
+		pr_debug("After WB checking\n");
 		for (i = 0; i < nr_range; i++)
-			printk(KERN_DEBUG "MTRR MAP PFN: %016lx - %016lx\n",
-				 range[i].start, range[i].end + 1);
+			pr_debug("MTRR MAP PFN: %016llx - %016llx\n",
+				 range[i].start, range[i].end);
 	}
 
 	/* Take out UC ranges: */
@@ -209,59 +97,52 @@ x86_get_mtrr_mem_range(struct res_range *range, int nr_range,
 			continue;
 		base = range_state[i].base_pfn;
 		if (base < (1<<(20-PAGE_SHIFT)) && mtrr_state.have_fixed &&
-		    (mtrr_state.enabled & 1)) {
+		    (mtrr_state.enabled & MTRR_STATE_MTRR_ENABLED) &&
+		    (mtrr_state.enabled & MTRR_STATE_MTRR_FIXED_ENABLED)) {
 			/* Var MTRR contains UC entry below 1M? Skip it: */
-			printk(BIOS_BUG_MSG, i);
+			pr_warn(BIOS_BUG_MSG, i);
 			if (base + size <= (1<<(20-PAGE_SHIFT)))
 				continue;
 			size -= (1<<(20-PAGE_SHIFT)) - base;
 			base = 1<<(20-PAGE_SHIFT);
 		}
-		subtract_range(range, base, base + size - 1);
+		subtract_range(range, RANGE_NUM, base, base + size);
 	}
 	if (extra_remove_size)
-		subtract_range(range, extra_remove_base,
-				 extra_remove_base + extra_remove_size  - 1);
+		subtract_range(range, RANGE_NUM, extra_remove_base,
+				 extra_remove_base + extra_remove_size);
 
-	/* get new range num */
-	nr_range = 0;
-	for (i = 0; i < RANGE_NUM; i++) {
-		if (!range[i].end)
-			continue;
-		nr_range++;
-	}
 	if  (debug_print) {
-		printk(KERN_DEBUG "After UC checking\n");
-		for (i = 0; i < nr_range; i++)
-			printk(KERN_DEBUG "MTRR MAP PFN: %016lx - %016lx\n",
-				 range[i].start, range[i].end + 1);
+		pr_debug("After UC checking\n");
+		for (i = 0; i < RANGE_NUM; i++) {
+			if (!range[i].end)
+				continue;
+			pr_debug("MTRR MAP PFN: %016llx - %016llx\n",
+				 range[i].start, range[i].end);
+		}
 	}
 
 	/* sort the ranges */
-	sort(range, nr_range, sizeof(struct res_range), cmp_range, NULL);
+	nr_range = clean_sort_range(range, RANGE_NUM);
 	if  (debug_print) {
-		printk(KERN_DEBUG "After sorting\n");
+		pr_debug("After sorting\n");
 		for (i = 0; i < nr_range; i++)
-			printk(KERN_DEBUG "MTRR MAP PFN: %016lx - %016lx\n",
-				 range[i].start, range[i].end + 1);
+			pr_debug("MTRR MAP PFN: %016llx - %016llx\n",
+				 range[i].start, range[i].end);
 	}
-
-	/* clear those is not used */
-	for (i = nr_range; i < RANGE_NUM; i++)
-		memset(&range[i], 0, sizeof(range[i]));
 
 	return nr_range;
 }
 
 #ifdef CONFIG_MTRR_SANITIZER
 
-static unsigned long __init sum_ranges(struct res_range *range, int nr_range)
+static unsigned long __init sum_ranges(struct range *range, int nr_range)
 {
 	unsigned long sum = 0;
 	int i;
 
 	for (i = 0; i < nr_range; i++)
-		sum += range[i].end + 1 - range[i].start;
+		sum += range[i].end - range[i].start;
 
 	return sum;
 }
@@ -377,15 +258,15 @@ range_to_mtrr(unsigned int reg, unsigned long range_startk,
 
 		/* Compute the maximum size with which we can make a range: */
 		if (range_startk)
-			max_align = ffs(range_startk) - 1;
+			max_align = __ffs(range_startk);
 		else
-			max_align = 32;
+			max_align = BITS_PER_LONG - 1;
 
-		align = fls(range_sizek) - 1;
+		align = __fls(range_sizek);
 		if (align > max_align)
 			align = max_align;
 
-		sizek = 1 << align;
+		sizek = 1UL << align;
 		if (debug_print) {
 			char start_factor = 'K', size_factor = 'K';
 			unsigned long start_base, size_base;
@@ -415,7 +296,7 @@ range_to_mtrr_with_hole(struct var_mtrr_state *state, unsigned long basek,
 			unsigned long sizek)
 {
 	unsigned long hole_basek, hole_sizek;
-	unsigned long second_basek, second_sizek;
+	unsigned long second_sizek;
 	unsigned long range0_basek, range0_sizek;
 	unsigned long range_basek, range_sizek;
 	unsigned long chunk_sizek;
@@ -423,7 +304,6 @@ range_to_mtrr_with_hole(struct var_mtrr_state *state, unsigned long basek,
 
 	hole_basek = 0;
 	hole_sizek = 0;
-	second_basek = 0;
 	second_sizek = 0;
 	chunk_sizek = state->chunk_sizek;
 	gran_sizek = state->gran_sizek;
@@ -590,7 +470,7 @@ static int __init parse_mtrr_spare_reg(char *arg)
 early_param("mtrr_spare_reg_nr", parse_mtrr_spare_reg);
 
 static int __init
-x86_setup_var_mtrrs(struct res_range *range, int nr_range,
+x86_setup_var_mtrrs(struct range *range, int nr_range,
 		    u64 chunk_size, u64 gran_size)
 {
 	struct var_mtrr_state var_state;
@@ -608,7 +488,7 @@ x86_setup_var_mtrrs(struct res_range *range, int nr_range,
 	/* Write the range: */
 	for (i = 0; i < nr_range; i++) {
 		set_var_mtrr_range(&var_state, range[i].start,
-				   range[i].end - range[i].start + 1);
+				   range[i].end - range[i].start);
 	}
 
 	/* Write the last range: */
@@ -662,7 +542,7 @@ static void __init print_out_mtrr_range_state(void)
 		start_base = to_size_factor(start_base, &start_factor),
 		type = range_state[i].type;
 
-		printk(KERN_DEBUG "reg %d, base: %ld%cB, range: %ld%cB, type %s\n",
+		pr_debug("reg %d, base: %ld%cB, range: %ld%cB, type %s\n",
 			i, start_base, start_factor,
 			size_base, size_factor,
 			(type == MTRR_TYPE_UNCACHABLE) ? "UC" :
@@ -689,8 +569,6 @@ static int __init mtrr_need_cleanup(void)
 			continue;
 		if (!size)
 			type = MTRR_NUM_TYPES;
-		if (type == MTRR_TYPE_WRPROT)
-			type = MTRR_TYPE_UNCACHABLE;
 		num[type]++;
 	}
 
@@ -713,9 +591,16 @@ mtrr_calc_range_state(u64 chunk_size, u64 gran_size,
 		      unsigned long x_remove_base,
 		      unsigned long x_remove_size, int i)
 {
-	static struct res_range range_new[RANGE_NUM];
+	/*
+	 * range_new should really be an automatic variable, but
+	 * putting 4096 bytes on the stack is frowned upon, to put it
+	 * mildly. It is safe to make it a static __initdata variable,
+	 * since mtrr_calc_range_state is only called during init and
+	 * there's no way it will call itself recursively.
+	 */
+	static struct range range_new[RANGE_NUM] __initdata;
 	unsigned long range_sums_new;
-	static int nr_range_new;
+	int nr_range_new;
 	int num_reg;
 
 	/* Convert ranges to var ranges state: */
@@ -753,9 +638,9 @@ static void __init mtrr_print_out_one_result(int i)
 	unsigned long gran_base, chunk_base, lose_base;
 	char gran_factor, chunk_factor, lose_factor;
 
-	gran_base = to_size_factor(result[i].gran_sizek, &gran_factor),
-	chunk_base = to_size_factor(result[i].chunk_sizek, &chunk_factor),
-	lose_base = to_size_factor(result[i].lose_cover_sizek, &lose_factor),
+	gran_base = to_size_factor(result[i].gran_sizek, &gran_factor);
+	chunk_base = to_size_factor(result[i].chunk_sizek, &chunk_factor);
+	lose_base = to_size_factor(result[i].lose_cover_sizek, &lose_factor);
 
 	pr_info("%sgran_size: %ld%c \tchunk_size: %ld%c \t",
 		result[i].bad ? "*BAD*" : " ",
@@ -826,7 +711,7 @@ int __init mtrr_cleanup(unsigned address_bits)
 		return 0;
 
 	/* Print original var MTRRs at first, for debugging: */
-	printk(KERN_DEBUG "original variable MTRRs\n");
+	pr_debug("original variable MTRRs\n");
 	print_out_mtrr_range_state();
 
 	memset(range, 0, sizeof(range));
@@ -835,18 +720,18 @@ int __init mtrr_cleanup(unsigned address_bits)
 	if (mtrr_tom2)
 		x_remove_size = (mtrr_tom2 >> PAGE_SHIFT) - x_remove_base;
 
-	nr_range = x86_get_mtrr_mem_range(range, 0, x_remove_base, x_remove_size);
 	/*
 	 * [0, 1M) should always be covered by var mtrr with WB
 	 * and fixed mtrrs should take effect before var mtrr for it:
 	 */
-	nr_range = add_range_with_merge(range, nr_range, 0,
-					(1ULL<<(20 - PAGE_SHIFT)) - 1);
-	/* Sort the ranges: */
-	sort(range, nr_range, sizeof(struct res_range), cmp_range, NULL);
+	nr_range = add_range_with_merge(range, RANGE_NUM, 0, 0,
+					1ULL<<(20 - PAGE_SHIFT));
+	/* add from var mtrr at last */
+	nr_range = x86_get_mtrr_mem_range(range, nr_range,
+					  x_remove_base, x_remove_size);
 
 	range_sums = sum_ranges(range, nr_range);
-	printk(KERN_INFO "total RAM covered: %ldM\n",
+	pr_info("total RAM covered: %ldM\n",
 	       range_sums >> (20 - PAGE_SHIFT));
 
 	if (mtrr_chunk_size && mtrr_gran_size) {
@@ -858,12 +743,11 @@ int __init mtrr_cleanup(unsigned address_bits)
 
 		if (!result[i].bad) {
 			set_var_mtrr_all(address_bits);
-			printk(KERN_DEBUG "New variable MTRRs\n");
+			pr_debug("New variable MTRRs\n");
 			print_out_mtrr_range_state();
 			return 1;
 		}
-		printk(KERN_INFO "invalid mtrr_gran_size or mtrr_chunk_size, "
-		       "will find optimal one\n");
+		pr_info("invalid mtrr_gran_size or mtrr_chunk_size, will find optimal one\n");
 	}
 
 	i = 0;
@@ -881,7 +765,7 @@ int __init mtrr_cleanup(unsigned address_bits)
 				      x_remove_base, x_remove_size, i);
 			if (debug_print) {
 				mtrr_print_out_one_result(i);
-				printk(KERN_INFO "\n");
+				pr_info("\n");
 			}
 
 			i++;
@@ -892,7 +776,7 @@ int __init mtrr_cleanup(unsigned address_bits)
 	index_good = mtrr_search_optimal_index();
 
 	if (index_good != -1) {
-		printk(KERN_INFO "Found optimal setting for mtrr clean up\n");
+		pr_info("Found optimal setting for mtrr clean up\n");
 		i = index_good;
 		mtrr_print_out_one_result(i);
 
@@ -903,7 +787,7 @@ int __init mtrr_cleanup(unsigned address_bits)
 		gran_size <<= 10;
 		x86_setup_var_mtrrs(range, nr_range, chunk_size, gran_size);
 		set_var_mtrr_all(address_bits);
-		printk(KERN_DEBUG "New variable MTRRs\n");
+		pr_debug("New variable MTRRs\n");
 		print_out_mtrr_range_state();
 		return 1;
 	} else {
@@ -912,8 +796,8 @@ int __init mtrr_cleanup(unsigned address_bits)
 			mtrr_print_out_one_result(i);
 	}
 
-	printk(KERN_INFO "mtrr_cleanup: can not find optimal value\n");
-	printk(KERN_INFO "please specify mtrr_gran_size/mtrr_chunk_size\n");
+	pr_info("mtrr_cleanup: can not find optimal value\n");
+	pr_info("please specify mtrr_gran_size/mtrr_chunk_size\n");
 
 	return 0;
 }
@@ -946,7 +830,8 @@ int __init amd_special_default_mtrr(void)
 {
 	u32 l, h;
 
-	if (boot_cpu_data.x86_vendor != X86_VENDOR_AMD)
+	if (boot_cpu_data.x86_vendor != X86_VENDOR_AMD &&
+	    boot_cpu_data.x86_vendor != X86_VENDOR_HYGON)
 		return 0;
 	if (boot_cpu_data.x86 < 0xf)
 		return 0;
@@ -975,7 +860,7 @@ real_trim_memory(unsigned long start_pfn, unsigned long limit_pfn)
 	trim_size <<= PAGE_SHIFT;
 	trim_size -= trim_start;
 
-	return e820_update_range(trim_start, trim_size, E820_RAM, E820_RESERVED);
+	return e820__range_update(trim_start, trim_size, E820_TYPE_RAM, E820_TYPE_RESERVED);
 }
 
 /**
@@ -1031,7 +916,7 @@ int __init mtrr_trim_uncached_memory(unsigned long end_pfn)
 
 	/* kvm/qemu doesn't have mtrr set right, don't trim them all: */
 	if (!highest_pfn) {
-		printk(KERN_INFO "CPU MTRRs all blank - virtualized system.\n");
+		pr_info("CPU MTRRs all blank - virtualized system.\n");
 		return 0;
 	}
 
@@ -1060,9 +945,9 @@ int __init mtrr_trim_uncached_memory(unsigned long end_pfn)
 	nr_range = 0;
 	if (mtrr_tom2) {
 		range[nr_range].start = (1ULL<<(32 - PAGE_SHIFT));
-		range[nr_range].end = (mtrr_tom2 >> PAGE_SHIFT) - 1;
-		if (highest_pfn < range[nr_range].end + 1)
-			highest_pfn = range[nr_range].end + 1;
+		range[nr_range].end = mtrr_tom2 >> PAGE_SHIFT;
+		if (highest_pfn < range[nr_range].end)
+			highest_pfn = range[nr_range].end;
 		nr_range++;
 	}
 	nr_range = x86_get_mtrr_mem_range(range, nr_range, 0, 0);
@@ -1074,25 +959,26 @@ int __init mtrr_trim_uncached_memory(unsigned long end_pfn)
 
 	/* Check the holes: */
 	for (i = 0; i < nr_range - 1; i++) {
-		if (range[i].end + 1 < range[i+1].start)
-			total_trim_size += real_trim_memory(range[i].end + 1,
+		if (range[i].end < range[i+1].start)
+			total_trim_size += real_trim_memory(range[i].end,
 							    range[i+1].start);
 	}
 
 	/* Check the top: */
 	i = nr_range - 1;
-	if (range[i].end + 1 < end_pfn)
-		total_trim_size += real_trim_memory(range[i].end + 1,
+	if (range[i].end < end_pfn)
+		total_trim_size += real_trim_memory(range[i].end,
 							 end_pfn);
 
 	if (total_trim_size) {
-		pr_warning("WARNING: BIOS bug: CPU MTRRs don't cover all of memory, losing %lluMB of RAM.\n", total_trim_size >> 20);
+		pr_warn("WARNING: BIOS bug: CPU MTRRs don't cover all of memory, losing %lluMB of RAM.\n",
+			total_trim_size >> 20);
 
 		if (!changed_by_mtrr_cleanup)
 			WARN_ON(1);
 
 		pr_info("update e820 for mtrr\n");
-		update_e820();
+		e820__update_table_print();
 
 		return 1;
 	}

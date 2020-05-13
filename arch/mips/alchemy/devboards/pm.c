@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Alchemy Development Board example suspend userspace interface.
  *
@@ -9,7 +10,8 @@
 #include <linux/suspend.h>
 #include <linux/sysfs.h>
 #include <asm/mach-au1x00/au1000.h>
-#include <asm/mach-au1x00/gpio.h>
+#include <asm/mach-au1x00/gpio-au1000.h>
+#include <asm/mach-db1x00/bcsr.h>
 
 /*
  * Generic suspend userspace interface for Alchemy development boards.
@@ -26,31 +28,59 @@ static unsigned long db1x_pm_last_wakesrc;
 
 static int db1x_pm_enter(suspend_state_t state)
 {
+	unsigned short bcsrs[16];
+	int i, j, hasint;
+
+	/* save CPLD regs */
+	hasint = bcsr_read(BCSR_WHOAMI);
+	hasint = BCSR_WHOAMI_BOARD(hasint) >= BCSR_WHOAMI_DB1200;
+	j = (hasint) ? BCSR_MASKSET : BCSR_SYSTEM;
+
+	for (i = BCSR_STATUS; i <= j; i++)
+		bcsrs[i] = bcsr_read(i);
+
+	/* shut off hexleds */
+	bcsr_write(BCSR_HEXCLEAR, 3);
+
 	/* enable GPIO based wakeup */
 	alchemy_gpio1_input_enable();
 
 	/* clear and setup wake cause and source */
-	au_writel(0, SYS_WAKEMSK);
-	au_sync();
-	au_writel(0, SYS_WAKESRC);
-	au_sync();
+	alchemy_wrsys(0, AU1000_SYS_WAKEMSK);
+	alchemy_wrsys(0, AU1000_SYS_WAKESRC);
 
-	au_writel(db1x_pm_wakemsk, SYS_WAKEMSK);
-	au_sync();
+	alchemy_wrsys(db1x_pm_wakemsk, AU1000_SYS_WAKEMSK);
 
 	/* setup 1Hz-timer-based wakeup: wait for reg access */
-	while (au_readl(SYS_COUNTER_CNTRL) & SYS_CNTRL_M20)
+	while (alchemy_rdsys(AU1000_SYS_CNTRCTRL) & SYS_CNTRL_M20)
 		asm volatile ("nop");
 
-	au_writel(au_readl(SYS_TOYREAD) + db1x_pm_sleep_secs, SYS_TOYMATCH2);
-	au_sync();
+	alchemy_wrsys(alchemy_rdsys(AU1000_SYS_TOYREAD) + db1x_pm_sleep_secs,
+		      AU1000_SYS_TOYMATCH2);
 
 	/* wait for value to really hit the register */
-	while (au_readl(SYS_COUNTER_CNTRL) & SYS_CNTRL_M20)
+	while (alchemy_rdsys(AU1000_SYS_CNTRCTRL) & SYS_CNTRL_M20)
 		asm volatile ("nop");
 
 	/* ...and now the sandman can come! */
 	au_sleep();
+
+
+	/* restore CPLD regs */
+	for (i = BCSR_STATUS; i <= BCSR_SYSTEM; i++)
+		bcsr_write(i, bcsrs[i]);
+
+	/* restore CPLD int registers */
+	if (hasint) {
+		bcsr_write(BCSR_INTCLR, 0xffff);
+		bcsr_write(BCSR_MASKCLR, 0xffff);
+		bcsr_write(BCSR_INTSTAT, 0xffff);
+		bcsr_write(BCSR_INTSET, bcsrs[BCSR_INTSET]);
+		bcsr_write(BCSR_MASKSET, bcsrs[BCSR_MASKSET]);
+	}
+
+	/* light up hexleds */
+	bcsr_write(BCSR_HEXCLEAR, 0);
 
 	return 0;
 }
@@ -70,15 +100,13 @@ static void db1x_pm_end(void)
 	/* read and store wakeup source, the clear the register. To
 	 * be able to clear it, WAKEMSK must be cleared first.
 	 */
-	db1x_pm_last_wakesrc = au_readl(SYS_WAKESRC);
+	db1x_pm_last_wakesrc = alchemy_rdsys(AU1000_SYS_WAKESRC);
 
-	au_writel(0, SYS_WAKEMSK);
-	au_writel(0, SYS_WAKESRC);
-	au_sync();
-
+	alchemy_wrsys(0, AU1000_SYS_WAKEMSK);
+	alchemy_wrsys(0, AU1000_SYS_WAKESRC);
 }
 
-static struct platform_suspend_ops db1x_pm_ops = {
+static const struct platform_suspend_ops db1x_pm_ops = {
 	.valid		= suspend_valid_only_mem,
 	.begin		= db1x_pm_begin,
 	.enter		= db1x_pm_enter,
@@ -126,7 +154,7 @@ static ssize_t db1x_pmattr_store(struct kobject *kobj,
 	int tmp;
 
 	if (ATTRCMP(timer_timeout)) {
-		tmp = strict_strtoul(instr, 0, &l);
+		tmp = kstrtoul(instr, 0, &l);
 		if (tmp)
 			return tmp;
 
@@ -149,7 +177,7 @@ static ssize_t db1x_pmattr_store(struct kobject *kobj,
 		}
 
 	} else if (ATTRCMP(wakemsk)) {
-		tmp = strict_strtoul(instr, 0, &l);
+		tmp = kstrtoul(instr, 0, &l);
 		if (tmp)
 			return tmp;
 
@@ -162,7 +190,7 @@ static ssize_t db1x_pmattr_store(struct kobject *kobj,
 }
 
 #define ATTR(x)							\
-	static struct kobj_attribute x##_attribute = 		\
+	static struct kobj_attribute x##_attribute =		\
 		__ATTR(x, 0664, db1x_pmattr_show,		\
 				db1x_pmattr_store);
 
@@ -210,17 +238,13 @@ static int __init pm_init(void)
 	 * for confirmation since there's plenty of time from here to
 	 * the next suspend cycle.
 	 */
-	if (au_readl(SYS_TOYTRIM) != 32767) {
-		au_writel(32767, SYS_TOYTRIM);
-		au_sync();
-	}
+	if (alchemy_rdsys(AU1000_SYS_TOYTRIM) != 32767)
+		alchemy_wrsys(32767, AU1000_SYS_TOYTRIM);
 
-	db1x_pm_last_wakesrc = au_readl(SYS_WAKESRC);
+	db1x_pm_last_wakesrc = alchemy_rdsys(AU1000_SYS_WAKESRC);
 
-	au_writel(0, SYS_WAKESRC);
-	au_sync();
-	au_writel(0, SYS_WAKEMSK);
-	au_sync();
+	alchemy_wrsys(0, AU1000_SYS_WAKESRC);
+	alchemy_wrsys(0, AU1000_SYS_WAKEMSK);
 
 	suspend_set_ops(&db1x_pm_ops);
 

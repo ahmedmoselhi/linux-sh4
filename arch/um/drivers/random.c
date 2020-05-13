@@ -6,24 +6,22 @@
  * This software may be used and distributed according to the terms
  * of the GNU General Public License, incorporated herein by reference.
  */
-#include <linux/sched.h>
-#include <linux/smp_lock.h>
+#include <linux/sched/signal.h>
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/interrupt.h>
 #include <linux/miscdevice.h>
 #include <linux/delay.h>
-#include <asm/uaccess.h>
-#include "irq_kern.h"
-#include "os.h"
+#include <linux/uaccess.h>
+#include <init.h>
+#include <irq_kern.h>
+#include <os.h>
 
 /*
  * core module and version information
  */
 #define RNG_VERSION "1.0.0"
 #define RNG_MODULE_NAME "hw_random"
-
-#define RNG_MISCDEV_MINOR		183 /* official */
 
 /* Changed at init time, in the non-modular case, and at module load
  * time, in the module case.  Presumably, the module subsystem
@@ -34,8 +32,6 @@ static DECLARE_WAIT_QUEUE_HEAD(host_read_wait);
 
 static int rng_dev_open (struct inode *inode, struct file *filp)
 {
-	cycle_kernel_lock();
-
 	/* enforce read-only access to this chrdev */
 	if ((filp->f_mode & FMODE_READ) == 0)
 		return -EINVAL;
@@ -75,14 +71,12 @@ static ssize_t rng_dev_read (struct file *filp, char __user *buf, size_t size,
 				return ret ? : -EAGAIN;
 
 			atomic_inc(&host_sleep_count);
-			reactivate_fd(random_fd, RANDOM_IRQ);
 			add_sigio_fd(random_fd);
 
 			add_wait_queue(&host_read_wait, &wait);
-			set_task_state(current, TASK_INTERRUPTIBLE);
+			set_current_state(TASK_INTERRUPTIBLE);
 
 			schedule();
-			set_task_state(current, TASK_RUNNING);
 			remove_wait_queue(&host_read_wait, &wait);
 
 			if (atomic_dec_and_test(&host_sleep_count)) {
@@ -103,11 +97,12 @@ static const struct file_operations rng_chrdev_ops = {
 	.owner		= THIS_MODULE,
 	.open		= rng_dev_open,
 	.read		= rng_dev_read,
+	.llseek		= noop_llseek,
 };
 
 /* rng_init shouldn't be called more than once at boot time */
 static struct miscdevice rng_miscdev = {
-	RNG_MISCDEV_MINOR,
+	HWRNG_MINOR,
 	RNG_MODULE_NAME,
 	&rng_chrdev_ops,
 };
@@ -133,8 +128,7 @@ static int __init rng_init (void)
 	random_fd = err;
 
 	err = um_request_irq(RANDOM_IRQ, random_fd, IRQ_READ, random_interrupt,
-			     IRQF_DISABLED | IRQF_SAMPLE_RANDOM, "random",
-			     NULL);
+			     0, "random", NULL);
 	if (err)
 		goto err_out_cleanup_hw;
 
@@ -158,7 +152,14 @@ err_out_cleanup_hw:
 /*
  * rng_cleanup - shutdown RNG module
  */
-static void __exit rng_cleanup (void)
+
+static void cleanup(void)
+{
+	free_irq_by_fd(random_fd);
+	os_close_file(random_fd);
+}
+
+static void __exit rng_cleanup(void)
 {
 	os_close_file(random_fd);
 	misc_deregister (&rng_miscdev);
@@ -166,6 +167,7 @@ static void __exit rng_cleanup (void)
 
 module_init (rng_init);
 module_exit (rng_cleanup);
+__uml_exitcall(cleanup);
 
 MODULE_DESCRIPTION("UML Host Random Number Generator (RNG) driver");
 MODULE_LICENSE("GPL");

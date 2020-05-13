@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  Copyright (C) 1994-1998	    Linus Torvalds & authors (see below)
  *  Copyright (C) 2003-2005, 2007   Bartlomiej Zolnierkiewicz
@@ -52,7 +53,6 @@
 #include <linux/major.h>
 #include <linux/errno.h>
 #include <linux/genhd.h>
-#include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/pci.h>
 #include <linux/ide.h>
@@ -102,8 +102,7 @@ void ide_device_put(ide_drive_t *drive)
 	struct device *host_dev = drive->hwif->host->dev[0];
 	struct module *module = host_dev ? host_dev->driver->owner : NULL;
 
-	if (module)
-		module_put(module);
+	module_put(module);
 #endif
 	put_device(&drive->gendev);
 }
@@ -159,7 +158,7 @@ struct bus_type ide_bus_type = {
 	.probe		= generic_ide_probe,
 	.remove		= generic_ide_remove,
 	.shutdown	= generic_ide_shutdown,
-	.dev_attrs	= ide_dev_attrs,
+	.dev_groups	= ide_dev_groups,
 	.suspend	= generic_ide_suspend,
 	.resume		= generic_ide_resume,
 };
@@ -178,19 +177,19 @@ EXPORT_SYMBOL_GPL(ide_pci_clk);
 module_param_named(pci_clock, ide_pci_clk, int, 0);
 MODULE_PARM_DESC(pci_clock, "PCI bus clock frequency (in MHz)");
 
-static int ide_set_dev_param_mask(const char *s, struct kernel_param *kp)
+static int ide_set_dev_param_mask(const char *s, const struct kernel_param *kp)
 {
-	int a, b, i, j = 1;
+	unsigned int a, b, i, j = 1;
 	unsigned int *dev_param_mask = (unsigned int *)kp->arg;
 
 	/* controller . device (0 or 1) [ : 1 (set) | 0 (clear) ] */
-	if (sscanf(s, "%d.%d:%d", &a, &b, &j) != 3 &&
-	    sscanf(s, "%d.%d", &a, &b) != 2)
+	if (sscanf(s, "%u.%u:%u", &a, &b, &j) != 3 &&
+	    sscanf(s, "%u.%u", &a, &b) != 2)
 		return -EINVAL;
 
 	i = a * MAX_DRIVES + b;
 
-	if (i >= MAX_HWIFS * MAX_DRIVES || j < 0 || j > 1)
+	if (i >= MAX_HWIFS * MAX_DRIVES || j > 1)
 		return -EINVAL;
 
 	if (j)
@@ -201,34 +200,40 @@ static int ide_set_dev_param_mask(const char *s, struct kernel_param *kp)
 	return 0;
 }
 
+static const struct kernel_param_ops param_ops_ide_dev_mask = {
+	.set = ide_set_dev_param_mask
+};
+
+#define param_check_ide_dev_mask(name, p) param_check_uint(name, p)
+
 static unsigned int ide_nodma;
 
-module_param_call(nodma, ide_set_dev_param_mask, NULL, &ide_nodma, 0);
+module_param_named(nodma, ide_nodma, ide_dev_mask, 0);
 MODULE_PARM_DESC(nodma, "disallow DMA for a device");
 
 static unsigned int ide_noflush;
 
-module_param_call(noflush, ide_set_dev_param_mask, NULL, &ide_noflush, 0);
+module_param_named(noflush, ide_noflush, ide_dev_mask, 0);
 MODULE_PARM_DESC(noflush, "disable flush requests for a device");
 
 static unsigned int ide_nohpa;
 
-module_param_call(nohpa, ide_set_dev_param_mask, NULL, &ide_nohpa, 0);
+module_param_named(nohpa, ide_nohpa, ide_dev_mask, 0);
 MODULE_PARM_DESC(nohpa, "disable Host Protected Area for a device");
 
 static unsigned int ide_noprobe;
 
-module_param_call(noprobe, ide_set_dev_param_mask, NULL, &ide_noprobe, 0);
+module_param_named(noprobe, ide_noprobe, ide_dev_mask, 0);
 MODULE_PARM_DESC(noprobe, "skip probing for a device");
 
 static unsigned int ide_nowerr;
 
-module_param_call(nowerr, ide_set_dev_param_mask, NULL, &ide_nowerr, 0);
+module_param_named(nowerr, ide_nowerr, ide_dev_mask, 0);
 MODULE_PARM_DESC(nowerr, "ignore the ATA_DF bit for a device");
 
 static unsigned int ide_cdroms;
 
-module_param_call(cdrom, ide_set_dev_param_mask, NULL, &ide_cdroms, 0);
+module_param_named(cdrom, ide_cdroms, ide_dev_mask, 0);
 MODULE_PARM_DESC(cdrom, "force device as a CD-ROM");
 
 struct chs_geom {
@@ -240,19 +245,19 @@ struct chs_geom {
 static unsigned int ide_disks;
 static struct chs_geom ide_disks_chs[MAX_HWIFS * MAX_DRIVES];
 
-static int ide_set_disk_chs(const char *str, struct kernel_param *kp)
+static int ide_set_disk_chs(const char *str, const struct kernel_param *kp)
 {
-	int a, b, c = 0, h = 0, s = 0, i, j = 1;
+	unsigned int a, b, c = 0, h = 0, s = 0, i, j = 1;
 
 	/* controller . device (0 or 1) : Cylinders , Heads , Sectors */
 	/* controller . device (0 or 1) : 1 (use CHS) | 0 (ignore CHS) */
-	if (sscanf(str, "%d.%d:%d,%d,%d", &a, &b, &c, &h, &s) != 5 &&
-	    sscanf(str, "%d.%d:%d", &a, &b, &j) != 3)
+	if (sscanf(str, "%u.%u:%u,%u,%u", &a, &b, &c, &h, &s) != 5 &&
+	    sscanf(str, "%u.%u:%u", &a, &b, &j) != 3)
 		return -EINVAL;
 
 	i = a * MAX_DRIVES + b;
 
-	if (i >= MAX_HWIFS * MAX_DRIVES || j < 0 || j > 1)
+	if (i >= MAX_HWIFS * MAX_DRIVES || j > 1)
 		return -EINVAL;
 
 	if (c > INT_MAX || h > 255 || s > 255)
@@ -324,7 +329,7 @@ static void ide_dev_apply_params(ide_drive_t *drive, u8 unit)
 
 static unsigned int ide_ignore_cable;
 
-static int ide_set_ignore_cable(const char *s, struct kernel_param *kp)
+static int ide_set_ignore_cable(const char *s, const struct kernel_param *kp)
 {
 	int i, j = 1;
 

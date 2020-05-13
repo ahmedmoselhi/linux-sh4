@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_PARISC_FUTEX_H
 #define _ASM_PARISC_FUTEX_H
 
@@ -5,72 +6,117 @@
 
 #include <linux/futex.h>
 #include <linux/uaccess.h>
+#include <asm/atomic.h>
 #include <asm/errno.h>
 
-static inline int
-futex_atomic_op_inuser (int encoded_op, int __user *uaddr)
+/* The following has to match the LWS code in syscall.S.  We have
+   sixteen four-word locks. */
+
+static inline void
+_futex_spin_lock_irqsave(u32 __user *uaddr, unsigned long int *flags)
 {
-	int op = (encoded_op >> 28) & 7;
-	int cmp = (encoded_op >> 24) & 15;
-	int oparg = (encoded_op << 8) >> 20;
-	int cmparg = (encoded_op << 20) >> 20;
-	int oldval = 0, ret;
-	if (encoded_op & (FUTEX_OP_OPARG_SHIFT << 28))
-		oparg = 1 << oparg;
+	extern u32 lws_lock_start[];
+	long index = ((long)uaddr & 0xf0) >> 2;
+	arch_spinlock_t *s = (arch_spinlock_t *)&lws_lock_start[index];
+	local_irq_save(*flags);
+	arch_spin_lock(s);
+}
 
-	if (! access_ok (VERIFY_WRITE, uaddr, sizeof(int)))
-		return -EFAULT;
+static inline void
+_futex_spin_unlock_irqrestore(u32 __user *uaddr, unsigned long int *flags)
+{
+	extern u32 lws_lock_start[];
+	long index = ((long)uaddr & 0xf0) >> 2;
+	arch_spinlock_t *s = (arch_spinlock_t *)&lws_lock_start[index];
+	arch_spin_unlock(s);
+	local_irq_restore(*flags);
+}
 
-	pagefault_disable();
+static inline int
+arch_futex_atomic_op_inuser(int op, int oparg, int *oval, u32 __user *uaddr)
+{
+	unsigned long int flags;
+	int oldval, ret;
+	u32 tmp;
+
+	_futex_spin_lock_irqsave(uaddr, &flags);
+
+	ret = -EFAULT;
+	if (unlikely(get_user(oldval, uaddr) != 0))
+		goto out_pagefault_enable;
+
+	ret = 0;
+	tmp = oldval;
 
 	switch (op) {
 	case FUTEX_OP_SET:
+		tmp = oparg;
+		break;
 	case FUTEX_OP_ADD:
+		tmp += oparg;
+		break;
 	case FUTEX_OP_OR:
+		tmp |= oparg;
+		break;
 	case FUTEX_OP_ANDN:
+		tmp &= ~oparg;
+		break;
 	case FUTEX_OP_XOR:
+		tmp ^= oparg;
+		break;
 	default:
 		ret = -ENOSYS;
 	}
 
-	pagefault_enable();
+	if (ret == 0 && unlikely(put_user(tmp, uaddr) != 0))
+		ret = -EFAULT;
 
-	if (!ret) {
-		switch (cmp) {
-		case FUTEX_OP_CMP_EQ: ret = (oldval == cmparg); break;
-		case FUTEX_OP_CMP_NE: ret = (oldval != cmparg); break;
-		case FUTEX_OP_CMP_LT: ret = (oldval < cmparg); break;
-		case FUTEX_OP_CMP_GE: ret = (oldval >= cmparg); break;
-		case FUTEX_OP_CMP_LE: ret = (oldval <= cmparg); break;
-		case FUTEX_OP_CMP_GT: ret = (oldval > cmparg); break;
-		default: ret = -ENOSYS;
-		}
-	}
+out_pagefault_enable:
+	_futex_spin_unlock_irqrestore(uaddr, &flags);
+
+	if (!ret)
+		*oval = oldval;
+
 	return ret;
 }
 
-/* Non-atomic version */
 static inline int
-futex_atomic_cmpxchg_inatomic(int __user *uaddr, int oldval, int newval)
+futex_atomic_cmpxchg_inatomic(u32 *uval, u32 __user *uaddr,
+			      u32 oldval, u32 newval)
 {
-	int err = 0;
-	int uval;
+	u32 val;
+	unsigned long flags;
 
 	/* futex.c wants to do a cmpxchg_inatomic on kernel NULL, which is
 	 * our gateway page, and causes no end of trouble...
 	 */
-	if (segment_eq(KERNEL_DS, get_fs()) && !uaddr)
+	if (uaccess_kernel() && !uaddr)
 		return -EFAULT;
 
-	if (!access_ok(VERIFY_WRITE, uaddr, sizeof(int)))
+	if (!access_ok(uaddr, sizeof(u32)))
 		return -EFAULT;
 
-	err = get_user(uval, uaddr);
-	if (err) return -EFAULT;
-	if (uval == oldval)
-		err = put_user(newval, uaddr);
-	if (err) return -EFAULT;
-	return uval;
+	/* HPPA has no cmpxchg in hardware and therefore the
+	 * best we can do here is use an array of locks. The
+	 * lock selected is based on a hash of the userspace
+	 * address. This should scale to a couple of CPUs.
+	 */
+
+	_futex_spin_lock_irqsave(uaddr, &flags);
+	if (unlikely(get_user(val, uaddr) != 0)) {
+		_futex_spin_unlock_irqrestore(uaddr, &flags);
+		return -EFAULT;
+	}
+
+	if (val == oldval && unlikely(put_user(newval, uaddr) != 0)) {
+		_futex_spin_unlock_irqrestore(uaddr, &flags);
+		return -EFAULT;
+	}
+
+	*uval = val;
+	_futex_spin_unlock_irqrestore(uaddr, &flags);
+
+	return 0;
 }
 
 #endif /*__KERNEL__*/

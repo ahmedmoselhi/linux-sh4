@@ -3,7 +3,7 @@
  * Config with both CFI and JEDEC device support.
  *
  * Basically physmap.c with the addition of partitions and
- * an array of mapping info to accomodate more than one flash type per board.
+ * an array of mapping info to accommodate more than one flash type per board.
  *
  * Copyright 2005-2007 PMC-Sierra, Inc.
  *
@@ -28,6 +28,7 @@
  *  675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
+#include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
@@ -74,15 +75,15 @@ static int __init init_msp_flash(void)
 
 	printk(KERN_NOTICE "Found %d PMC flash devices\n", fcnt);
 
-	msp_flash = kmalloc(fcnt * sizeof(struct map_info *), GFP_KERNEL);
+	msp_flash = kcalloc(fcnt, sizeof(*msp_flash), GFP_KERNEL);
 	if (!msp_flash)
 		return -ENOMEM;
 
-	msp_parts = kmalloc(fcnt * sizeof(struct mtd_partition *), GFP_KERNEL);
+	msp_parts = kcalloc(fcnt, sizeof(*msp_parts), GFP_KERNEL);
 	if (!msp_parts)
 		goto free_msp_flash;
 
-	msp_maps = kcalloc(fcnt, sizeof(struct mtd_info), GFP_KERNEL);
+	msp_maps = kcalloc(fcnt, sizeof(*msp_maps), GFP_KERNEL);
 	if (!msp_maps)
 		goto free_msp_parts;
 
@@ -138,14 +139,12 @@ static int __init init_msp_flash(void)
 		}
 
 		msp_maps[i].bankwidth = 1;
-		msp_maps[i].name = kmalloc(7, GFP_KERNEL);
+		msp_maps[i].name = kstrndup(flash_name, 7, GFP_KERNEL);
 		if (!msp_maps[i].name) {
 			iounmap(msp_maps[i].virt);
 			kfree(msp_parts[i]);
 			goto cleanup_loop;
 		}
-
-		msp_maps[i].name = strncpy(msp_maps[i].name, flash_name, 7);
 
 		for (j = 0; j < pcnt; j++) {
 			part_name[5] = '0' + i;
@@ -172,7 +171,7 @@ static int __init init_msp_flash(void)
 		msp_flash[i] = do_map_probe("cfi_probe", &msp_maps[i]);
 		if (msp_flash[i]) {
 			msp_flash[i]->owner = THIS_MODULE;
-			add_mtd_partitions(msp_flash[i], msp_parts[i], pcnt);
+			mtd_device_register(msp_flash[i], msp_parts[i], pcnt);
 		} else {
 			printk(KERN_ERR "map probe failed for flash\n");
 			ret = -ENXIO;
@@ -187,7 +186,7 @@ static int __init init_msp_flash(void)
 
 cleanup_loop:
 	while (i--) {
-		del_mtd_partitions(msp_flash[i]);
+		mtd_device_unregister(msp_flash[i]);
 		map_destroy(msp_flash[i]);
 		kfree(msp_maps[i].name);
 		iounmap(msp_maps[i].virt);
@@ -206,7 +205,7 @@ static void __exit cleanup_msp_flash(void)
 	int i;
 
 	for (i = 0; i < fcnt; i++) {
-		del_mtd_partitions(msp_flash[i]);
+		mtd_device_unregister(msp_flash[i]);
 		map_destroy(msp_flash[i]);
 		iounmap((void *)msp_maps[i].virt);
 

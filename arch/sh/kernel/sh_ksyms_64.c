@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * arch/sh/kernel/sh_ksyms_64.c
  *
  * Copyright (C) 2000, 2001  Paolo Alberelli
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 #include <linux/rwsem.h>
 #include <linux/module.h>
@@ -18,21 +15,11 @@
 #include <linux/screen_info.h>
 #include <asm/cacheflush.h>
 #include <asm/processor.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/checksum.h>
 #include <asm/io.h>
 #include <asm/delay.h>
 #include <asm/irq.h>
-
-extern int dump_fpu(struct pt_regs *, elf_fpregset_t *);
-
-/* platform dependent support */
-EXPORT_SYMBOL(dump_fpu);
-EXPORT_SYMBOL(kernel_thread);
-
-#ifdef CONFIG_VT
-EXPORT_SYMBOL(screen_info);
-#endif
 
 EXPORT_SYMBOL(__put_user_asm_b);
 EXPORT_SYMBOL(__put_user_asm_w);
@@ -42,8 +29,6 @@ EXPORT_SYMBOL(__get_user_asm_b);
 EXPORT_SYMBOL(__get_user_asm_w);
 EXPORT_SYMBOL(__get_user_asm_l);
 EXPORT_SYMBOL(__get_user_asm_q);
-EXPORT_SYMBOL(__strnlen_user);
-EXPORT_SYMBOL(__strncpy_from_user);
 EXPORT_SYMBOL(__clear_user);
 EXPORT_SYMBOL(copy_page);
 EXPORT_SYMBOL(__copy_user);

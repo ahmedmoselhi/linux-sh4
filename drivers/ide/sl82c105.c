@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * SL82C105/Winbond 553 IDE driver
  *
@@ -24,13 +25,6 @@
 
 #define DRV_NAME "sl82c105"
 
-#undef DEBUG
-
-#ifdef DEBUG
-#define DBG(arg) printk arg
-#else
-#define DBG(fmt,...)
-#endif
 /*
  * SL82C105 PCI config register 0x40 bits.
  */
@@ -70,12 +64,13 @@ static unsigned int get_pio_timings(ide_drive_t *drive, u8 pio)
 /*
  * Configure the chipset for PIO mode.
  */
-static void sl82c105_set_pio_mode(ide_drive_t *drive, const u8 pio)
+static void sl82c105_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
-	struct pci_dev *dev	= to_pci_dev(drive->hwif->dev);
+	struct pci_dev *dev	= to_pci_dev(hwif->dev);
 	unsigned long timings	= (unsigned long)ide_get_drivedata(drive);
 	int reg			= 0x44 + drive->dn * 4;
 	u16 drv_ctrl;
+	const u8 pio		= drive->pio_mode - XFER_PIO_0;
 
 	drv_ctrl = get_pio_timings(drive, pio);
 
@@ -98,14 +93,12 @@ static void sl82c105_set_pio_mode(ide_drive_t *drive, const u8 pio)
 /*
  * Configure the chipset for DMA mode.
  */
-static void sl82c105_set_dma_mode(ide_drive_t *drive, const u8 speed)
+static void sl82c105_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
 	static u16 mwdma_timings[] = {0x0707, 0x0201, 0x0200};
 	unsigned long timings = (unsigned long)ide_get_drivedata(drive);
 	u16 drv_ctrl;
-
- 	DBG(("sl82c105_tune_chipset(drive:%s, speed:%s)\n",
-	     drive->name, ide_xfer_verbose(speed)));
+	const u8 speed = drive->dma_mode;
 
 	drv_ctrl = mwdma_timings[speed - XFER_MW_DMA_0];
 
@@ -196,8 +189,6 @@ static void sl82c105_dma_start(ide_drive_t *drive)
 	struct pci_dev *dev	= to_pci_dev(hwif->dev);
 	int reg 		= 0x44 + drive->dn * 4;
 
-	DBG(("%s(drive:%s)\n", __func__, drive->name));
-
 	pci_write_config_word(dev, reg,
 			      (unsigned long)ide_get_drivedata(drive) >> 16);
 
@@ -209,8 +200,6 @@ static void sl82c105_dma_clear(ide_drive_t *drive)
 {
 	struct pci_dev *dev = to_pci_dev(drive->hwif->dev);
 
-	DBG(("sl82c105_dma_clear(drive:%s)\n", drive->name));
-
 	sl82c105_reset_host(dev);
 }
 
@@ -218,11 +207,7 @@ static int sl82c105_dma_end(ide_drive_t *drive)
 {
 	struct pci_dev *dev	= to_pci_dev(drive->hwif->dev);
 	int reg 		= 0x44 + drive->dn * 4;
-	int ret;
-
-	DBG(("%s(drive:%s)\n", __func__, drive->name));
-
-	ret = ide_dma_end(drive);
+	int ret			= ide_dma_end(drive);
 
 	pci_write_config_word(dev, reg,
 			      (unsigned long)ide_get_drivedata(drive));
@@ -238,8 +223,6 @@ static void sl82c105_resetproc(ide_drive_t *drive)
 {
 	struct pci_dev *dev = to_pci_dev(drive->hwif->dev);
 	u32 val;
-
-	DBG(("sl82c105_resetproc(drive:%s)\n", drive->name));
 
 	pci_read_config_dword(dev, 0x40, &val);
 	val |= (CTRL_P1F16 | CTRL_P0F16);
@@ -257,8 +240,9 @@ static u8 sl82c105_bridge_revision(struct pci_dev *dev)
 	/*
 	 * The bridge should be part of the same device, but function 0.
 	 */
-	bridge = pci_get_bus_and_slot(dev->bus->number,
-			       PCI_DEVFN(PCI_SLOT(dev->devfn), 0));
+	bridge = pci_get_domain_bus_and_slot(pci_domain_nr(dev->bus),
+					dev->bus->number,
+					PCI_DEVFN(PCI_SLOT(dev->devfn), 0));
 	if (!bridge)
 		return -1;
 
@@ -291,8 +275,6 @@ static int init_chipset_sl82c105(struct pci_dev *dev)
 {
 	u32 val;
 
-	DBG(("init_chipset_sl82c105()\n"));
-
 	pci_read_config_dword(dev, 0x40, &val);
 	val |= CTRL_P0EN | CTRL_P0F16 | CTRL_P1F16;
 	pci_write_config_dword(dev, 0x40, val);
@@ -319,7 +301,7 @@ static const struct ide_dma_ops sl82c105_dma_ops = {
 	.dma_sff_read_status	= ide_dma_sff_read_status,
 };
 
-static const struct ide_port_info sl82c105_chipset __devinitdata = {
+static const struct ide_port_info sl82c105_chipset = {
 	.name		= DRV_NAME,
 	.init_chipset	= init_chipset_sl82c105,
 	.enablebits	= {{0x40,0x01,0x01}, {0x40,0x10,0x10}},
@@ -333,7 +315,7 @@ static const struct ide_port_info sl82c105_chipset __devinitdata = {
 	.mwdma_mask	= ATA_MWDMA2,
 };
 
-static int __devinit sl82c105_init_one(struct pci_dev *dev, const struct pci_device_id *id)
+static int sl82c105_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 {
 	struct ide_port_info d = sl82c105_chipset;
 	u8 rev = sl82c105_bridge_revision(dev);

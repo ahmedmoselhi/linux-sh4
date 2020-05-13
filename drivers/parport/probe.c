@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Parallel port device probing code
  *
@@ -9,7 +10,8 @@
 #include <linux/parport.h>
 #include <linux/ctype.h>
 #include <linux/string.h>
-#include <asm/uaccess.h>
+#include <linux/slab.h>
+#include <linux/uaccess.h>
 
 static const struct {
 	const char *token;
@@ -255,7 +257,7 @@ static ssize_t parport_read_device_id (struct parport *port, char *buffer,
 ssize_t parport_device_id (int devnum, char *buffer, size_t count)
 {
 	ssize_t retval = -ENXIO;
-	struct pardevice *dev = parport_open (devnum, "Device ID probe");
+	struct pardevice *dev = parport_open(devnum, daisy_dev_name);
 	if (!dev)
 		return -ENXIO;
 

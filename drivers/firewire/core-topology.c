@@ -1,21 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Incremental bus scan, based on bus topology
  *
  * Copyright (C) 2004-2006 Kristian Hoegsberg <krh@bitplanet.net>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software Foundation,
- * Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  */
 
 #include <linux/bug.h>
@@ -28,10 +15,9 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
-#include <linux/string.h>
 
-#include <asm/atomic.h>
-#include <asm/system.h>
+#include <linux/atomic.h>
+#include <asm/byteorder.h>
 
 #include "core.h"
 
@@ -68,6 +54,7 @@ static u32 *count_ports(u32 *sid, int *total_port_count, int *child_port_count)
 		switch (port_type) {
 		case SELFID_PORT_CHILD:
 			(*child_port_count)++;
+			/* fall through */
 		case SELFID_PORT_PARENT:
 		case SELFID_PORT_NCONN:
 			(*total_port_count)++;
@@ -113,8 +100,7 @@ static struct fw_node *fw_node_create(u32 sid, int port_count, int color)
 {
 	struct fw_node *node;
 
-	node = kzalloc(sizeof(*node) + port_count * sizeof(node->ports[0]),
-		       GFP_ATOMIC);
+	node = kzalloc(struct_size(node, ports, port_count), GFP_ATOMIC);
 	if (node == NULL)
 		return NULL;
 
@@ -125,7 +111,7 @@ static struct fw_node *fw_node_create(u32 sid, int port_count, int color)
 	node->initiated_reset = SELF_ID_PHY_INITIATOR(sid);
 	node->port_count = port_count;
 
-	atomic_set(&node->ref_count, 1);
+	refcount_set(&node->ref_count, 1);
 	INIT_LIST_HEAD(&node->link);
 
 	return node;
@@ -174,16 +160,11 @@ static inline struct fw_node *fw_node(struct list_head *l)
 	return list_entry(l, struct fw_node, link);
 }
 
-/**
- * build_tree - Build the tree representation of the topology
- * @self_ids: array of self IDs to create the tree from
- * @self_id_count: the length of the self_ids array
- * @local_id: the node ID of the local node
- *
+/*
  * This function builds the tree representation of the topology given
  * by the self IDs from the latest bus reset.  During the construction
  * of the tree, the function checks that the self IDs are valid and
- * internally consistent.  On succcess this function returns the
+ * internally consistent.  On success this function returns the
  * fw_node corresponding to the local card otherwise NULL.
  */
 static struct fw_node *build_tree(struct fw_card *card,
@@ -210,19 +191,19 @@ static struct fw_node *build_tree(struct fw_card *card,
 		next_sid = count_ports(sid, &port_count, &child_port_count);
 
 		if (next_sid == NULL) {
-			fw_error("Inconsistent extended self IDs.\n");
+			fw_err(card, "inconsistent extended self IDs\n");
 			return NULL;
 		}
 
 		q = *sid;
 		if (phy_id != SELF_ID_PHY_ID(q)) {
-			fw_error("PHY ID mismatch in self ID: %d != %d.\n",
-				 phy_id, SELF_ID_PHY_ID(q));
+			fw_err(card, "PHY ID mismatch in self ID: %d != %d\n",
+			       phy_id, SELF_ID_PHY_ID(q));
 			return NULL;
 		}
 
 		if (child_port_count > stack_depth) {
-			fw_error("Topology stack underflow\n");
+			fw_err(card, "topology stack underflow\n");
 			return NULL;
 		}
 
@@ -240,7 +221,7 @@ static struct fw_node *build_tree(struct fw_card *card,
 
 		node = fw_node_create(q, port_count, card->color);
 		if (node == NULL) {
-			fw_error("Out of memory while building topology.\n");
+			fw_err(card, "out of memory while building topology\n");
 			return NULL;
 		}
 
@@ -289,8 +270,8 @@ static struct fw_node *build_tree(struct fw_card *card,
 		 */
 		if ((next_sid == end && parent_count != 0) ||
 		    (next_sid < end && parent_count != 1)) {
-			fw_error("Parent port inconsistency for node %d: "
-				 "parent_count=%d\n", phy_id, parent_count);
+			fw_err(card, "parent port inconsistency for node %d: "
+			       "parent_count=%d\n", phy_id, parent_count);
 			return NULL;
 		}
 
@@ -420,11 +401,10 @@ static void move_tree(struct fw_node *node0, struct fw_node *node1, int port)
 	}
 }
 
-/**
- * update_tree - compare the old topology tree for card with the new
- * one specified by root.  Queue the nodes and mark them as either
- * found, lost or updated.  Update the nodes in the card topology tree
- * as we go.
+/*
+ * Compare the old topology tree for card with the new one specified by root.
+ * Queue the nodes and mark them as either found, lost or updated.
+ * Update the nodes in the card topology tree as we go.
  */
 static void update_tree(struct fw_card *card, struct fw_node *root)
 {
@@ -510,18 +490,21 @@ static void update_tree(struct fw_card *card, struct fw_node *root)
 static void update_topology_map(struct fw_card *card,
 				u32 *self_ids, int self_id_count)
 {
-	int node_count;
+	int node_count = (card->root_node->node_id & 0x3f) + 1;
+	__be32 *map = card->topology_map;
 
-	card->topology_map[1]++;
-	node_count = (card->root_node->node_id & 0x3f) + 1;
-	card->topology_map[2] = (node_count << 16) | self_id_count;
-	card->topology_map[0] = (self_id_count + 2) << 16;
-	memcpy(&card->topology_map[3], self_ids, self_id_count * 4);
+	*map++ = cpu_to_be32((self_id_count + 2) << 16);
+	*map++ = cpu_to_be32(be32_to_cpu(card->topology_map[1]) + 1);
+	*map++ = cpu_to_be32((node_count << 16) | self_id_count);
+
+	while (self_id_count--)
+		*map++ = cpu_to_be32p(self_ids++);
+
 	fw_compute_block_crc(card->topology_map);
 }
 
 void fw_core_handle_bus_reset(struct fw_card *card, int node_id, int generation,
-			      int self_id_count, u32 *self_ids)
+			      int self_id_count, u32 *self_ids, bool bm_abdicate)
 {
 	struct fw_node *local_node;
 	unsigned long flags;
@@ -533,14 +516,13 @@ void fw_core_handle_bus_reset(struct fw_card *card, int node_id, int generation,
 	 */
 	if (!is_next_generation(generation, card->generation) &&
 	    card->local_node != NULL) {
-		fw_notify("skipped bus generations, destroying all nodes\n");
 		fw_destroy_nodes(card);
 		card->bm_retries = 0;
 	}
 
 	spin_lock_irqsave(&card->lock, flags);
 
-	card->broadcast_channel_allocated = false;
+	card->broadcast_channel_allocated = card->broadcast_channel_auto_allocated;
 	card->node_id = node_id;
 	/*
 	 * Update node_id before generation to prevent anybody from using
@@ -548,7 +530,9 @@ void fw_core_handle_bus_reset(struct fw_card *card, int node_id, int generation,
 	 */
 	smp_wmb();
 	card->generation = generation;
-	card->reset_jiffies = jiffies;
+	card->reset_jiffies = get_jiffies_64();
+	card->bm_node_id  = 0xffff;
+	card->bm_abdicate = bm_abdicate;
 	fw_schedule_bm_work(card, 0);
 
 	local_node = build_tree(card, self_ids, self_id_count);
@@ -558,7 +542,7 @@ void fw_core_handle_bus_reset(struct fw_card *card, int node_id, int generation,
 	card->color++;
 
 	if (local_node == NULL) {
-		fw_error("topology build failed\n");
+		fw_err(card, "topology build failed\n");
 		/* FIXME: We need to issue a bus reset in this case. */
 	} else if (card->local_node == NULL) {
 		card->local_node = local_node;

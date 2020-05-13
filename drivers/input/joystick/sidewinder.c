@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Copyright (c) 1998-2005 Vojtech Pavlik
  */
@@ -7,30 +8,12 @@
  */
 
 /*
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
- *
- * Should you need to contact me, the author, you can do so either by
- * e-mail - mail your message to <vojtech@ucw.cz>, or by paper mail:
- * Vojtech Pavlik, Simunkova 1594, Prague 8, 182 00 Czech Republic
  */
 
 #include <linux/delay.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/slab.h>
-#include <linux/init.h>
 #include <linux/input.h>
 #include <linux/gameport.h>
 #include <linux/jiffies.h>
@@ -240,7 +223,7 @@ static __u64 sw_get_bits(unsigned char *buf, int pos, int num, char bits)
 
 static void sw_init_digital(struct gameport *gameport)
 {
-	int seq[] = { 140, 140+725, 140+300, 0 };
+	static const int seq[] = { 140, 140+725, 140+300, 0 };
 	unsigned long flags;
 	int i, t;
 
@@ -673,16 +656,16 @@ static int sw_connect(struct gameport *gameport, struct gameport_driver *drv)
 
 			switch (i * m) {
 				case 60:
-					sw->number++;
+					sw->number++;			/* fall through */
 				case 45:				/* Ambiguous packet length */
 					if (j <= 40) {			/* ID length less or eq 40 -> FSP */
 				case 43:
 						sw->type = SW_ID_FSP;
 						break;
 					}
-					sw->number++;
+					sw->number++;			/* fall through */
 				case 30:
-					sw->number++;
+					sw->number++;			/* fall through */
 				case 15:
 					sw->type = SW_ID_GP;
 					break;
@@ -698,9 +681,9 @@ static int sw_connect(struct gameport *gameport, struct gameport_driver *drv)
 						sw->type = SW_ID_PP;
 					break;
 				case 66:
-					sw->bits = 3;
+					sw->bits = 3;			/* fall through */
 				case 198:
-					sw->length = 22;
+					sw->length = 22;		/* fall through */
 				case 64:
 					sw->type = SW_ID_3DP;
 					if (j == 160)
@@ -761,17 +744,21 @@ static int sw_connect(struct gameport *gameport, struct gameport_driver *drv)
 		input_dev->evbit[0] = BIT_MASK(EV_KEY) | BIT_MASK(EV_ABS);
 
 		for (j = 0; (bits = sw_bit[sw->type][j]); j++) {
+			int min, max, fuzz, flat;
+
 			code = sw_abs[sw->type][j];
-			set_bit(code, input_dev->absbit);
-			input_dev->absmax[code] = (1 << bits) - 1;
-			input_dev->absmin[code] = (bits == 1) ? -1 : 0;
-			input_dev->absfuzz[code] = ((bits >> 1) >= 2) ? (1 << ((bits >> 1) - 2)) : 0;
-			if (code != ABS_THROTTLE)
-				input_dev->absflat[code] = (bits >= 5) ? (1 << (bits - 5)) : 0;
+			min = bits == 1 ? -1 : 0;
+			max = (1 << bits) - 1;
+			fuzz = (bits >> 1) >= 2 ? 1 << ((bits >> 1) - 2) : 0;
+			flat = code == ABS_THROTTLE || bits < 5 ?
+				0 : 1 << (bits - 5);
+
+			input_set_abs_params(input_dev, code,
+					     min, max, fuzz, flat);
 		}
 
 		for (j = 0; (code = sw_btn[sw->type][j]); j++)
-			set_bit(code, input_dev->keybit);
+			__set_bit(code, input_dev->keybit);
 
 		dbg("%s%s [%d-bit id %d data %d]\n", sw->name, comment, m, l, k);
 
@@ -816,15 +803,4 @@ static struct gameport_driver sw_drv = {
 	.disconnect	= sw_disconnect,
 };
 
-static int __init sw_init(void)
-{
-	return gameport_register_driver(&sw_drv);
-}
-
-static void __exit sw_exit(void)
-{
-	gameport_unregister_driver(&sw_drv);
-}
-
-module_init(sw_init);
-module_exit(sw_exit);
+module_gameport_driver(sw_drv);

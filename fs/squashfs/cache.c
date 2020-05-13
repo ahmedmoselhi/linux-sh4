@@ -1,22 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Squashfs - a compressed read only filesystem for Linux
  *
  * Copyright (c) 2002, 2003, 2004, 2005, 2006, 2007, 2008
- * Phillip Lougher <phillip@lougher.demon.co.uk>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2,
- * or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+ * Phillip Lougher <phillip@squashfs.org.uk>
  *
  * cache.c
  */
@@ -29,8 +16,8 @@
  * plus functions layered ontop of the generic cache implementation to
  * access the metadata and fragment caches.
  *
- * To avoid out of memory and fragmentation isssues with vmalloc the cache
- * uses sequences of kmalloced PAGE_CACHE_SIZE buffers.
+ * To avoid out of memory and fragmentation issues with vmalloc the cache
+ * uses sequences of kmalloced PAGE_SIZE buffers.
  *
  * It should be noted that the cache is not used for file datablocks, these
  * are decompressed and cached in the page-cache in the normal way.  The
@@ -55,8 +42,8 @@
 
 #include "squashfs_fs.h"
 #include "squashfs_fs_sb.h"
-#include "squashfs_fs_i.h"
 #include "squashfs.h"
+#include "page_actor.h"
 
 /*
  * Look-up block in cache, and increment usage count.  If not in cache, read
@@ -71,11 +58,15 @@ struct squashfs_cache_entry *squashfs_cache_get(struct super_block *sb,
 	spin_lock(&cache->lock);
 
 	while (1) {
-		for (i = 0; i < cache->entries; i++)
-			if (cache->entry[i].block == block)
+		for (i = cache->curr_blk, n = 0; n < cache->entries; n++) {
+			if (cache->entry[i].block == block) {
+				cache->curr_blk = i;
 				break;
+			}
+			i = (i + 1) % cache->entries;
+		}
 
-		if (i == cache->entries) {
+		if (n == cache->entries) {
 			/*
 			 * Block not in cache, if all cache entries are used
 			 * go to sleep waiting for one to become available.
@@ -105,7 +96,7 @@ struct squashfs_cache_entry *squashfs_cache_get(struct super_block *sb,
 			entry = &cache->entry[i];
 
 			/*
-			 * Initialise choosen cache entry, and fill it in from
+			 * Initialise chosen cache entry, and fill it in from
 			 * disk.
 			 */
 			cache->unused--;
@@ -116,9 +107,8 @@ struct squashfs_cache_entry *squashfs_cache_get(struct super_block *sb,
 			entry->error = 0;
 			spin_unlock(&cache->lock);
 
-			entry->length = squashfs_read_data(sb, entry->data,
-				block, length, &entry->next_index,
-				cache->block_size, cache->pages);
+			entry->length = squashfs_read_data(sb, block, length,
+				&entry->next_index, entry->actor);
 
 			spin_lock(&cache->lock);
 
@@ -217,6 +207,7 @@ void squashfs_cache_delete(struct squashfs_cache *cache)
 				kfree(cache->entry[i].data[j]);
 			kfree(cache->entry[i].data);
 		}
+		kfree(cache->entry[i].actor);
 	}
 
 	kfree(cache->entry);
@@ -227,7 +218,7 @@ void squashfs_cache_delete(struct squashfs_cache *cache)
 /*
  * Initialise cache allocating the specified number of entries, each of
  * size block_size.  To avoid vmalloc fragmentation issues each entry
- * is allocated as a sequence of kmalloced PAGE_CACHE_SIZE buffers.
+ * is allocated as a sequence of kmalloced PAGE_SIZE buffers.
  */
 struct squashfs_cache *squashfs_cache_init(char *name, int entries,
 	int block_size)
@@ -246,11 +237,12 @@ struct squashfs_cache *squashfs_cache_init(char *name, int entries,
 		goto cleanup;
 	}
 
+	cache->curr_blk = 0;
 	cache->next_blk = 0;
 	cache->unused = entries;
 	cache->entries = entries;
 	cache->block_size = block_size;
-	cache->pages = block_size >> PAGE_CACHE_SHIFT;
+	cache->pages = block_size >> PAGE_SHIFT;
 	cache->pages = cache->pages ? cache->pages : 1;
 	cache->name = name;
 	cache->num_waiters = 0;
@@ -270,11 +262,18 @@ struct squashfs_cache *squashfs_cache_init(char *name, int entries,
 		}
 
 		for (j = 0; j < cache->pages; j++) {
-			entry->data[j] = kmalloc(PAGE_CACHE_SIZE, GFP_KERNEL);
+			entry->data[j] = kmalloc(PAGE_SIZE, GFP_KERNEL);
 			if (entry->data[j] == NULL) {
 				ERROR("Failed to allocate %s buffer\n", name);
 				goto cleanup;
 			}
+		}
+
+		entry->actor = squashfs_page_actor_init(entry->data,
+						cache->pages, 0);
+		if (entry->actor == NULL) {
+			ERROR("Failed to allocate %s cache entry\n", name);
+			goto cleanup;
 		}
 	}
 
@@ -287,7 +286,7 @@ cleanup:
 
 
 /*
- * Copy upto length bytes from cache entry to buffer starting at offset bytes
+ * Copy up to length bytes from cache entry to buffer starting at offset bytes
  * into the cache entry.  If there's not length bytes then copy the number of
  * bytes available.  In all cases return the number of bytes copied.
  */
@@ -302,10 +301,10 @@ int squashfs_copy_data(void *buffer, struct squashfs_cache_entry *entry,
 		return min(length, entry->length - offset);
 
 	while (offset < entry->length) {
-		void *buff = entry->data[offset / PAGE_CACHE_SIZE]
-				+ (offset % PAGE_CACHE_SIZE);
+		void *buff = entry->data[offset / PAGE_SIZE]
+				+ (offset % PAGE_SIZE);
 		int bytes = min_t(int, entry->length - offset,
-				PAGE_CACHE_SIZE - (offset % PAGE_CACHE_SIZE));
+				PAGE_SIZE - (offset % PAGE_SIZE));
 
 		if (bytes >= remaining) {
 			memcpy(buffer, buff, remaining);
@@ -333,17 +332,23 @@ int squashfs_read_metadata(struct super_block *sb, void *buffer,
 		u64 *block, int *offset, int length)
 {
 	struct squashfs_sb_info *msblk = sb->s_fs_info;
-	int bytes, copied = length;
+	int bytes, res = length;
 	struct squashfs_cache_entry *entry;
 
 	TRACE("Entered squashfs_read_metadata [%llx:%x]\n", *block, *offset);
 
+	if (unlikely(length < 0))
+		return -EIO;
+
 	while (length) {
 		entry = squashfs_cache_get(sb, msblk->block_cache, *block, 0);
-		if (entry->error)
-			return entry->error;
-		else if (*offset >= entry->length)
-			return -EIO;
+		if (entry->error) {
+			res = entry->error;
+			goto error;
+		} else if (*offset >= entry->length) {
+			res = -EIO;
+			goto error;
+		}
 
 		bytes = squashfs_copy_data(buffer, entry, *offset, length);
 		if (buffer)
@@ -359,7 +364,11 @@ int squashfs_read_metadata(struct super_block *sb, void *buffer,
 		squashfs_cache_put(entry);
 	}
 
-	return copied;
+	return res;
+
+error:
+	squashfs_cache_put(entry);
+	return res;
 }
 
 
@@ -394,19 +403,46 @@ struct squashfs_cache_entry *squashfs_get_datablock(struct super_block *sb,
 /*
  * Read a filesystem table (uncompressed sequence of bytes) from disk
  */
-int squashfs_read_table(struct super_block *sb, void *buffer, u64 block,
-	int length)
+void *squashfs_read_table(struct super_block *sb, u64 block, int length)
 {
-	int pages = (length + PAGE_CACHE_SIZE - 1) >> PAGE_CACHE_SHIFT;
+	int pages = (length + PAGE_SIZE - 1) >> PAGE_SHIFT;
 	int i, res;
-	void **data = kcalloc(pages, sizeof(void *), GFP_KERNEL);
-	if (data == NULL)
-		return -ENOMEM;
+	void *table, *buffer, **data;
+	struct squashfs_page_actor *actor;
 
-	for (i = 0; i < pages; i++, buffer += PAGE_CACHE_SIZE)
+	table = buffer = kmalloc(length, GFP_KERNEL);
+	if (table == NULL)
+		return ERR_PTR(-ENOMEM);
+
+	data = kcalloc(pages, sizeof(void *), GFP_KERNEL);
+	if (data == NULL) {
+		res = -ENOMEM;
+		goto failed;
+	}
+
+	actor = squashfs_page_actor_init(data, pages, length);
+	if (actor == NULL) {
+		res = -ENOMEM;
+		goto failed2;
+	}
+
+	for (i = 0; i < pages; i++, buffer += PAGE_SIZE)
 		data[i] = buffer;
-	res = squashfs_read_data(sb, data, block, length |
-		SQUASHFS_COMPRESSED_BIT_BLOCK, NULL, length, pages);
+
+	res = squashfs_read_data(sb, block, length |
+		SQUASHFS_COMPRESSED_BIT_BLOCK, NULL, actor);
+
 	kfree(data);
-	return res;
+	kfree(actor);
+
+	if (res < 0)
+		goto failed;
+
+	return table;
+
+failed2:
+	kfree(data);
+failed:
+	kfree(table);
+	return ERR_PTR(res);
 }

@@ -1,9 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2009 Matt Fleming <matt@console-pimps.org>
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  *
  * This is an implementation of a DWARF unwinder. Its main purpose is
  * for generating stacktrace information. Based on the DWARF 3
@@ -20,7 +17,10 @@
 #include <linux/list.h>
 #include <linux/mempool.h>
 #include <linux/mm.h>
+#include <linux/elf.h>
 #include <linux/ftrace.h>
+#include <linux/module.h>
+#include <linux/slab.h>
 #include <asm/dwarf.h>
 #include <asm/unwinder.h>
 #include <asm/sections.h>
@@ -38,13 +38,15 @@ static mempool_t *dwarf_frame_pool;
 static struct kmem_cache *dwarf_reg_cachep;
 static mempool_t *dwarf_reg_pool;
 
-static LIST_HEAD(dwarf_cie_list);
+static struct rb_root cie_root;
 static DEFINE_SPINLOCK(dwarf_cie_lock);
 
-static LIST_HEAD(dwarf_fde_list);
+static struct rb_root fde_root;
 static DEFINE_SPINLOCK(dwarf_fde_lock);
 
 static struct dwarf_cie *cached_cie;
+
+static unsigned int dwarf_unwinder_ready;
 
 /**
  *	dwarf_frame_alloc_reg - allocate memory for a DWARF register
@@ -300,7 +302,8 @@ static inline int dwarf_entry_len(char *addr, unsigned long *len)
  */
 static struct dwarf_cie *dwarf_lookup_cie(unsigned long cie_ptr)
 {
-	struct dwarf_cie *cie;
+	struct rb_node **rb_node = &cie_root.rb_node;
+	struct dwarf_cie *cie = NULL;
 	unsigned long flags;
 
 	spin_lock_irqsave(&dwarf_cie_lock, flags);
@@ -314,16 +317,24 @@ static struct dwarf_cie *dwarf_lookup_cie(unsigned long cie_ptr)
 		goto out;
 	}
 
-	list_for_each_entry(cie, &dwarf_cie_list, link) {
-		if (cie->cie_pointer == cie_ptr) {
-			cached_cie = cie;
-			break;
+	while (*rb_node) {
+		struct dwarf_cie *cie_tmp;
+
+		cie_tmp = rb_entry(*rb_node, struct dwarf_cie, node);
+		BUG_ON(!cie_tmp);
+
+		if (cie_ptr == cie_tmp->cie_pointer) {
+			cie = cie_tmp;
+			cached_cie = cie_tmp;
+			goto out;
+		} else {
+			if (cie_ptr < cie_tmp->cie_pointer)
+				rb_node = &(*rb_node)->rb_left;
+			else
+				rb_node = &(*rb_node)->rb_right;
 		}
 	}
 
-	/* Couldn't find the entry in the list. */
-	if (&cie->link == &dwarf_cie_list)
-		cie = NULL;
 out:
 	spin_unlock_irqrestore(&dwarf_cie_lock, flags);
 	return cie;
@@ -335,25 +346,34 @@ out:
  */
 struct dwarf_fde *dwarf_lookup_fde(unsigned long pc)
 {
-	struct dwarf_fde *fde;
+	struct rb_node **rb_node = &fde_root.rb_node;
+	struct dwarf_fde *fde = NULL;
 	unsigned long flags;
 
 	spin_lock_irqsave(&dwarf_fde_lock, flags);
 
-	list_for_each_entry(fde, &dwarf_fde_list, link) {
-		unsigned long start, end;
+	while (*rb_node) {
+		struct dwarf_fde *fde_tmp;
+		unsigned long tmp_start, tmp_end;
 
-		start = fde->initial_location;
-		end = fde->initial_location + fde->address_range;
+		fde_tmp = rb_entry(*rb_node, struct dwarf_fde, node);
+		BUG_ON(!fde_tmp);
 
-		if (pc >= start && pc < end)
-			break;
+		tmp_start = fde_tmp->initial_location;
+		tmp_end = fde_tmp->initial_location + fde_tmp->address_range;
+
+		if (pc < tmp_start) {
+			rb_node = &(*rb_node)->rb_left;
+		} else {
+			if (pc < tmp_end) {
+				fde = fde_tmp;
+				goto out;
+			} else
+				rb_node = &(*rb_node)->rb_right;
+		}
 	}
 
-	/* Couldn't find the entry in the list. */
-	if (&fde->link == &dwarf_fde_list)
-		fde = NULL;
-
+out:
 	spin_unlock_irqrestore(&dwarf_fde_lock, flags);
 
 	return fde;
@@ -530,7 +550,20 @@ static int dwarf_cfa_execute_insns(unsigned char *insn_start,
 }
 
 /**
- *	dwarf_unwind_stack - recursively unwind the stack
+ *	dwarf_free_frame - free the memory allocated for @frame
+ *	@frame: the frame to free
+ */
+void dwarf_free_frame(struct dwarf_frame *frame)
+{
+	dwarf_frame_free_regs(frame);
+	mempool_free(frame, dwarf_frame_pool);
+}
+
+extern void ret_from_irq(void);
+
+/**
+ *	dwarf_unwind_stack - unwind the stack
+ *
  *	@pc: address of the function to unwind
  *	@prev: struct dwarf_frame of the previous stackframe on the callstack
  *
@@ -538,8 +571,8 @@ static int dwarf_cfa_execute_insns(unsigned char *insn_start,
  *	on the callstack. Each of the lower (older) stack frames are
  *	linked via the "prev" member.
  */
-struct dwarf_frame * dwarf_unwind_stack(unsigned long pc,
-					struct dwarf_frame *prev)
+struct dwarf_frame *dwarf_unwind_stack(unsigned long pc,
+				       struct dwarf_frame *prev)
 {
 	struct dwarf_frame *frame;
 	struct dwarf_cie *cie;
@@ -548,15 +581,22 @@ struct dwarf_frame * dwarf_unwind_stack(unsigned long pc,
 	unsigned long addr;
 
 	/*
-	 * If this is the first invocation of this recursive function we
-	 * need get the contents of a physical register to get the CFA
-	 * in order to begin the virtual unwinding of the stack.
+	 * If we've been called in to before initialization has
+	 * completed, bail out immediately.
+	 */
+	if (!dwarf_unwinder_ready)
+		return NULL;
+
+	/*
+	 * If we're starting at the top of the stack we need get the
+	 * contents of a physical register to get the CFA in order to
+	 * begin the virtual unwinding of the stack.
 	 *
 	 * NOTE: the return address is guaranteed to be setup by the
 	 * time this function makes its first function call.
 	 */
 	if (!pc || !prev)
-		pc = (unsigned long)current_text_addr();
+		pc = _THIS_IP_;
 
 #ifdef CONFIG_FUNCTION_GRAPH_TRACER
 	/*
@@ -565,17 +605,18 @@ struct dwarf_frame * dwarf_unwind_stack(unsigned long pc,
 	 * expected to find the real return address.
 	 */
 	if (pc == (unsigned long)&return_to_handler) {
-		int index = current->curr_ret_stack;
+		struct ftrace_ret_stack *ret_stack;
 
+		ret_stack = ftrace_graph_get_ret_stack(current, 0);
+		if (ret_stack)
+			pc = ret_stack->ret;
 		/*
 		 * We currently have no way of tracking how many
 		 * return_to_handler()'s we've seen. If there is more
 		 * than one patched return address on our stack,
 		 * complain loudly.
 		 */
-		WARN_ON(index > 0);
-
-		pc = current->ret_stack[index].ret;
+		WARN_ON(ftrace_graph_get_ret_stack(current, 1));
 	}
 #endif
 
@@ -593,9 +634,8 @@ struct dwarf_frame * dwarf_unwind_stack(unsigned long pc,
 	fde = dwarf_lookup_fde(pc);
 	if (!fde) {
 		/*
-		 * This is our normal exit path - the one that stops the
-		 * recursion. There's two reasons why we might exit
-		 * here,
+		 * This is our normal exit path. There are two reasons
+		 * why we might exit here,
 		 *
 		 *	a) pc has no asscociated DWARF frame info and so
 		 *	we don't know how to unwind this frame. This is
@@ -637,10 +677,10 @@ struct dwarf_frame * dwarf_unwind_stack(unsigned long pc,
 
 		} else {
 			/*
-			 * Again, this is the first invocation of this
-			 * recurisve function. We need to physically
-			 * read the contents of a register in order to
-			 * get the Canonical Frame Address for this
+			 * Again, we're starting from the top of the
+			 * stack. We need to physically read
+			 * the contents of a register in order to get
+			 * the Canonical Frame Address for this
 			 * function.
 			 */
 			frame->cfa = dwarf_read_arch_reg(frame->cfa_register);
@@ -667,17 +707,36 @@ struct dwarf_frame * dwarf_unwind_stack(unsigned long pc,
 	addr = frame->cfa + reg->addr;
 	frame->return_addr = __raw_readl(addr);
 
+	/*
+	 * Ah, the joys of unwinding through interrupts.
+	 *
+	 * Interrupts are tricky - the DWARF info needs to be _really_
+	 * accurate and unfortunately I'm seeing a lot of bogus DWARF
+	 * info. For example, I've seen interrupts occur in epilogues
+	 * just after the frame pointer (r14) had been restored. The
+	 * problem was that the DWARF info claimed that the CFA could be
+	 * reached by using the value of the frame pointer before it was
+	 * restored.
+	 *
+	 * So until the compiler can be trusted to produce reliable
+	 * DWARF info when it really matters, let's stop unwinding once
+	 * we've calculated the function that was interrupted.
+	 */
+	if (prev && prev->pc == (unsigned long)ret_from_irq)
+		frame->return_addr = 0;
+
 	return frame;
 
 bail:
-	dwarf_frame_free_regs(frame);
-	mempool_free(frame, dwarf_frame_pool);
+	dwarf_free_frame(frame);
 	return NULL;
 }
 
 static int dwarf_parse_cie(void *entry, void *p, unsigned long len,
-			   unsigned char *end)
+			   unsigned char *end, struct module *mod)
 {
+	struct rb_node **rb_node = &cie_root.rb_node;
+	struct rb_node *parent = *rb_node;
 	struct dwarf_cie *cie;
 	unsigned long flags;
 	int count;
@@ -774,7 +833,30 @@ static int dwarf_parse_cie(void *entry, void *p, unsigned long len,
 
 	/* Add to list */
 	spin_lock_irqsave(&dwarf_cie_lock, flags);
-	list_add_tail(&cie->link, &dwarf_cie_list);
+
+	while (*rb_node) {
+		struct dwarf_cie *cie_tmp;
+
+		cie_tmp = rb_entry(*rb_node, struct dwarf_cie, node);
+
+		parent = *rb_node;
+
+		if (cie->cie_pointer < cie_tmp->cie_pointer)
+			rb_node = &parent->rb_left;
+		else if (cie->cie_pointer >= cie_tmp->cie_pointer)
+			rb_node = &parent->rb_right;
+		else
+			WARN_ON(1);
+	}
+
+	rb_link_node(&cie->node, parent, rb_node);
+	rb_insert_color(&cie->node, &cie_root);
+
+#ifdef CONFIG_MODULES
+	if (mod != NULL)
+		list_add_tail(&cie->link, &mod->arch.cie_list);
+#endif
+
 	spin_unlock_irqrestore(&dwarf_cie_lock, flags);
 
 	return 0;
@@ -782,8 +864,10 @@ static int dwarf_parse_cie(void *entry, void *p, unsigned long len,
 
 static int dwarf_parse_fde(void *entry, u32 entry_type,
 			   void *start, unsigned long len,
-			   unsigned char *end)
+			   unsigned char *end, struct module *mod)
 {
+	struct rb_node **rb_node = &fde_root.rb_node;
+	struct rb_node *parent = *rb_node;
 	struct dwarf_fde *fde;
 	struct dwarf_cie *cie;
 	unsigned long flags;
@@ -833,7 +917,38 @@ static int dwarf_parse_fde(void *entry, u32 entry_type,
 
 	/* Add to list. */
 	spin_lock_irqsave(&dwarf_fde_lock, flags);
-	list_add_tail(&fde->link, &dwarf_fde_list);
+
+	while (*rb_node) {
+		struct dwarf_fde *fde_tmp;
+		unsigned long tmp_start, tmp_end;
+		unsigned long start, end;
+
+		fde_tmp = rb_entry(*rb_node, struct dwarf_fde, node);
+
+		start = fde->initial_location;
+		end = fde->initial_location + fde->address_range;
+
+		tmp_start = fde_tmp->initial_location;
+		tmp_end = fde_tmp->initial_location + fde_tmp->address_range;
+
+		parent = *rb_node;
+
+		if (start < tmp_start)
+			rb_node = &parent->rb_left;
+		else if (start >= tmp_end)
+			rb_node = &parent->rb_right;
+		else
+			WARN_ON(1);
+	}
+
+	rb_link_node(&fde->node, parent, rb_node);
+	rb_insert_color(&fde->node, &fde_root);
+
+#ifdef CONFIG_MODULES
+	if (mod != NULL)
+		list_add_tail(&fde->link, &mod->arch.fde_list);
+#endif
+
 	spin_unlock_irqrestore(&dwarf_fde_lock, flags);
 
 	return 0;
@@ -854,10 +969,8 @@ static void dwarf_unwinder_dump(struct task_struct *task,
 	while (1) {
 		frame = dwarf_unwind_stack(return_addr, _frame);
 
-		if (_frame) {
-			dwarf_frame_free_regs(_frame);
-			mempool_free(_frame, dwarf_frame_pool);
-		}
+		if (_frame)
+			dwarf_free_frame(_frame);
 
 		_frame = frame;
 
@@ -867,6 +980,9 @@ static void dwarf_unwinder_dump(struct task_struct *task,
 		return_addr = frame->return_addr;
 		ops->address(data, return_addr, 1);
 	}
+
+	if (frame)
+		dwarf_free_frame(frame);
 }
 
 static struct unwinder dwarf_unwinder = {
@@ -875,69 +991,51 @@ static struct unwinder dwarf_unwinder = {
 	.rating = 150,
 };
 
-static void dwarf_unwinder_cleanup(void)
+static void __init dwarf_unwinder_cleanup(void)
 {
-	struct dwarf_cie *cie, *cie_tmp;
-	struct dwarf_fde *fde, *fde_tmp;
+	struct dwarf_fde *fde, *next_fde;
+	struct dwarf_cie *cie, *next_cie;
 
 	/*
 	 * Deallocate all the memory allocated for the DWARF unwinder.
 	 * Traverse all the FDE/CIE lists and remove and free all the
 	 * memory associated with those data structures.
 	 */
-	list_for_each_entry_safe(cie, cie_tmp, &dwarf_cie_list, link)
-		kfree(cie);
-
-	list_for_each_entry_safe(fde, fde_tmp, &dwarf_fde_list, link)
+	rbtree_postorder_for_each_entry_safe(fde, next_fde, &fde_root, node)
 		kfree(fde);
 
+	rbtree_postorder_for_each_entry_safe(cie, next_cie, &cie_root, node)
+		kfree(cie);
+
+	mempool_destroy(dwarf_reg_pool);
+	mempool_destroy(dwarf_frame_pool);
 	kmem_cache_destroy(dwarf_reg_cachep);
 	kmem_cache_destroy(dwarf_frame_cachep);
 }
 
 /**
- *	dwarf_unwinder_init - initialise the dwarf unwinder
+ *	dwarf_parse_section - parse DWARF section
+ *	@eh_frame_start: start address of the .eh_frame section
+ *	@eh_frame_end: end address of the .eh_frame section
+ *	@mod: the kernel module containing the .eh_frame section
  *
- *	Build the data structures describing the .dwarf_frame section to
- *	make it easier to lookup CIE and FDE entries. Because the
- *	.eh_frame section is packed as tightly as possible it is not
- *	easy to lookup the FDE for a given PC, so we build a list of FDE
- *	and CIE entries that make it easier.
+ *	Parse the information in a .eh_frame section.
  */
-static int __init dwarf_unwinder_init(void)
+static int dwarf_parse_section(char *eh_frame_start, char *eh_frame_end,
+			       struct module *mod)
 {
 	u32 entry_type;
 	void *p, *entry;
 	int count, err = 0;
-	unsigned long len;
+	unsigned long len = 0;
 	unsigned int c_entries, f_entries;
 	unsigned char *end;
-	INIT_LIST_HEAD(&dwarf_cie_list);
-	INIT_LIST_HEAD(&dwarf_fde_list);
 
 	c_entries = 0;
 	f_entries = 0;
-	entry = &__start_eh_frame;
+	entry = eh_frame_start;
 
-	dwarf_frame_cachep = kmem_cache_create("dwarf_frames",
-			sizeof(struct dwarf_frame), 0,
-			SLAB_PANIC | SLAB_HWCACHE_ALIGN | SLAB_NOTRACK, NULL);
-
-	dwarf_reg_cachep = kmem_cache_create("dwarf_regs",
-			sizeof(struct dwarf_reg), 0,
-			SLAB_PANIC | SLAB_HWCACHE_ALIGN | SLAB_NOTRACK, NULL);
-
-	dwarf_frame_pool = mempool_create(DWARF_FRAME_MIN_REQ,
-					  mempool_alloc_slab,
-					  mempool_free_slab,
-					  dwarf_frame_cachep);
-
-	dwarf_reg_pool = mempool_create(DWARF_REG_MIN_REQ,
-					 mempool_alloc_slab,
-					 mempool_free_slab,
-					 dwarf_reg_cachep);
-
-	while ((char *)entry < __stop_eh_frame) {
+	while ((char *)entry < eh_frame_end) {
 		p = entry;
 
 		count = dwarf_entry_len(p, &len);
@@ -949,6 +1047,7 @@ static int __init dwarf_unwinder_init(void)
 			 * entry and move to the next one because 'len'
 			 * tells us where our next entry is.
 			 */
+			err = -EINVAL;
 			goto out;
 		} else
 			p += count;
@@ -960,13 +1059,14 @@ static int __init dwarf_unwinder_init(void)
 		p += 4;
 
 		if (entry_type == DW_EH_FRAME_CIE) {
-			err = dwarf_parse_cie(entry, p, len, end);
+			err = dwarf_parse_cie(entry, p, len, end, mod);
 			if (err < 0)
 				goto out;
 			else
 				c_entries++;
 		} else {
-			err = dwarf_parse_fde(entry, entry_type, p, len, end);
+			err = dwarf_parse_fde(entry, entry_type, p, len,
+					      end, mod);
 			if (err < 0)
 				goto out;
 			else
@@ -979,15 +1079,128 @@ static int __init dwarf_unwinder_init(void)
 	printk(KERN_INFO "DWARF unwinder initialised: read %u CIEs, %u FDEs\n",
 	       c_entries, f_entries);
 
+	return 0;
+
+out:
+	return err;
+}
+
+#ifdef CONFIG_MODULES
+int module_dwarf_finalize(const Elf_Ehdr *hdr, const Elf_Shdr *sechdrs,
+			  struct module *me)
+{
+	unsigned int i, err;
+	unsigned long start, end;
+	char *secstrings = (void *)hdr + sechdrs[hdr->e_shstrndx].sh_offset;
+
+	start = end = 0;
+
+	for (i = 1; i < hdr->e_shnum; i++) {
+		/* Alloc bit cleared means "ignore it." */
+		if ((sechdrs[i].sh_flags & SHF_ALLOC)
+		    && !strcmp(secstrings+sechdrs[i].sh_name, ".eh_frame")) {
+			start = sechdrs[i].sh_addr;
+			end = start + sechdrs[i].sh_size;
+			break;
+		}
+	}
+
+	/* Did we find the .eh_frame section? */
+	if (i != hdr->e_shnum) {
+		INIT_LIST_HEAD(&me->arch.cie_list);
+		INIT_LIST_HEAD(&me->arch.fde_list);
+		err = dwarf_parse_section((char *)start, (char *)end, me);
+		if (err) {
+			printk(KERN_WARNING "%s: failed to parse DWARF info\n",
+			       me->name);
+			return err;
+		}
+	}
+
+	return 0;
+}
+
+/**
+ *	module_dwarf_cleanup - remove FDE/CIEs associated with @mod
+ *	@mod: the module that is being unloaded
+ *
+ *	Remove any FDEs and CIEs from the global lists that came from
+ *	@mod's .eh_frame section because @mod is being unloaded.
+ */
+void module_dwarf_cleanup(struct module *mod)
+{
+	struct dwarf_fde *fde, *ftmp;
+	struct dwarf_cie *cie, *ctmp;
+	unsigned long flags;
+
+	spin_lock_irqsave(&dwarf_cie_lock, flags);
+
+	list_for_each_entry_safe(cie, ctmp, &mod->arch.cie_list, link) {
+		list_del(&cie->link);
+		rb_erase(&cie->node, &cie_root);
+		kfree(cie);
+	}
+
+	spin_unlock_irqrestore(&dwarf_cie_lock, flags);
+
+	spin_lock_irqsave(&dwarf_fde_lock, flags);
+
+	list_for_each_entry_safe(fde, ftmp, &mod->arch.fde_list, link) {
+		list_del(&fde->link);
+		rb_erase(&fde->node, &fde_root);
+		kfree(fde);
+	}
+
+	spin_unlock_irqrestore(&dwarf_fde_lock, flags);
+}
+#endif /* CONFIG_MODULES */
+
+/**
+ *	dwarf_unwinder_init - initialise the dwarf unwinder
+ *
+ *	Build the data structures describing the .dwarf_frame section to
+ *	make it easier to lookup CIE and FDE entries. Because the
+ *	.eh_frame section is packed as tightly as possible it is not
+ *	easy to lookup the FDE for a given PC, so we build a list of FDE
+ *	and CIE entries that make it easier.
+ */
+static int __init dwarf_unwinder_init(void)
+{
+	int err = -ENOMEM;
+
+	dwarf_frame_cachep = kmem_cache_create("dwarf_frames",
+			sizeof(struct dwarf_frame), 0,
+			SLAB_PANIC | SLAB_HWCACHE_ALIGN, NULL);
+
+	dwarf_reg_cachep = kmem_cache_create("dwarf_regs",
+			sizeof(struct dwarf_reg), 0,
+			SLAB_PANIC | SLAB_HWCACHE_ALIGN, NULL);
+
+	dwarf_frame_pool = mempool_create_slab_pool(DWARF_FRAME_MIN_REQ,
+						    dwarf_frame_cachep);
+	if (!dwarf_frame_pool)
+		goto out;
+
+	dwarf_reg_pool = mempool_create_slab_pool(DWARF_REG_MIN_REQ,
+						  dwarf_reg_cachep);
+	if (!dwarf_reg_pool)
+		goto out;
+
+	err = dwarf_parse_section(__start_eh_frame, __stop_eh_frame, NULL);
+	if (err)
+		goto out;
+
 	err = unwinder_register(&dwarf_unwinder);
 	if (err)
 		goto out;
+
+	dwarf_unwinder_ready = 1;
 
 	return 0;
 
 out:
 	printk(KERN_ERR "Failed to initialise DWARF unwinder: %d\n", err);
 	dwarf_unwinder_cleanup();
-	return -EINVAL;
+	return err;
 }
 early_initcall(dwarf_unwinder_init);

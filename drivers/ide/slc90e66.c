@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  Copyright (C) 2000-2002 Andre Hedrick <andre@linux-ide.org>
  *  Copyright (C) 2006-2007 MontaVista Software, Inc. <source@mvista.com>
@@ -18,9 +19,8 @@
 
 static DEFINE_SPINLOCK(slc90e66_lock);
 
-static void slc90e66_set_pio_mode(ide_drive_t *drive, const u8 pio)
+static void slc90e66_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
-	ide_hwif_t *hwif	= drive->hwif;
 	struct pci_dev *dev	= to_pci_dev(hwif->dev);
 	int is_slave		= drive->dn & 1;
 	int master_port		= hwif->channel ? 0x42 : 0x40;
@@ -29,6 +29,8 @@ static void slc90e66_set_pio_mode(ide_drive_t *drive, const u8 pio)
 	u16 master_data;
 	u8 slave_data;
 	int control = 0;
+	const u8 pio = drive->pio_mode - XFER_PIO_0;
+
 				     /* ISP  RTC */
 	static const u8 timings[][2] = {
 					{ 0, 0 },
@@ -71,14 +73,14 @@ static void slc90e66_set_pio_mode(ide_drive_t *drive, const u8 pio)
 	spin_unlock_irqrestore(&slc90e66_lock, flags);
 }
 
-static void slc90e66_set_dma_mode(ide_drive_t *drive, const u8 speed)
+static void slc90e66_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
-	ide_hwif_t *hwif	= drive->hwif;
 	struct pci_dev *dev	= to_pci_dev(hwif->dev);
 	u8 maslave		= hwif->channel ? 0x42 : 0x40;
 	int sitre = 0, a_speed	= 7 << (drive->dn * 4);
 	int u_speed = 0, u_flag = 1 << drive->dn;
 	u16			reg4042, reg44, reg48, reg4a;
+	const u8 speed		= drive->dma_mode;
 
 	pci_read_config_word(dev, maslave, &reg4042);
 	sitre = (reg4042 & 0x4000) ? 1 : 0;
@@ -98,7 +100,6 @@ static void slc90e66_set_dma_mode(ide_drive_t *drive, const u8 speed)
 		}
 	} else {
 		const u8 mwdma_to_pio[] = { 0, 3, 4 };
-		u8 pio;
 
 		if (reg48 & u_flag)
 			pci_write_config_word(dev, 0x48, reg48 & ~u_flag);
@@ -106,11 +107,12 @@ static void slc90e66_set_dma_mode(ide_drive_t *drive, const u8 speed)
 			pci_write_config_word(dev, 0x4a, reg4a & ~a_speed);
 
 		if (speed >= XFER_MW_DMA_0)
-			pio = mwdma_to_pio[speed - XFER_MW_DMA_0];
+			drive->pio_mode =
+				mwdma_to_pio[speed - XFER_MW_DMA_0] + XFER_PIO_0;
 		else
-			pio = 2; /* only SWDMA2 is allowed */
+			drive->pio_mode = XFER_PIO_2; /* for SWDMA2 */
 
-		slc90e66_set_pio_mode(drive, pio);
+		slc90e66_set_pio_mode(hwif, drive);
 	}
 }
 
@@ -131,7 +133,7 @@ static const struct ide_port_ops slc90e66_port_ops = {
 	.cable_detect		= slc90e66_cable_detect,
 };
 
-static const struct ide_port_info slc90e66_chipset __devinitdata = {
+static const struct ide_port_info slc90e66_chipset = {
 	.name		= DRV_NAME,
 	.enablebits	= { {0x41, 0x80, 0x80}, {0x43, 0x80, 0x80} },
 	.port_ops	= &slc90e66_port_ops,
@@ -141,7 +143,8 @@ static const struct ide_port_info slc90e66_chipset __devinitdata = {
 	.udma_mask	= ATA_UDMA4,
 };
 
-static int __devinit slc90e66_init_one(struct pci_dev *dev, const struct pci_device_id *id)
+static int slc90e66_init_one(struct pci_dev *dev,
+			     const struct pci_device_id *id)
 {
 	return ide_pci_init_one(dev, &slc90e66_chipset, NULL);
 }

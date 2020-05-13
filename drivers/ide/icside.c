@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 1996-2004 Russell King.
  *
@@ -65,6 +66,8 @@ static struct cardinfo icside_cardinfo_v6_2 = {
 };
 
 struct icside_state {
+	unsigned int channel;
+	unsigned int enabled;
 	void __iomem *irq_port;
 	void __iomem *ioc_base;
 	unsigned int sel;
@@ -114,11 +117,18 @@ static void icside_irqenable_arcin_v6 (struct expansion_card *ec, int irqnr)
 	struct icside_state *state = ec->irq_data;
 	void __iomem *base = state->irq_port;
 
-	writeb(0, base + ICS_ARCIN_V6_INTROFFSET_1);
-	readb(base + ICS_ARCIN_V6_INTROFFSET_2);
+	state->enabled = 1;
 
-	writeb(0, base + ICS_ARCIN_V6_INTROFFSET_2);
-	readb(base + ICS_ARCIN_V6_INTROFFSET_1);
+	switch (state->channel) {
+	case 0:
+		writeb(0, base + ICS_ARCIN_V6_INTROFFSET_1);
+		readb(base + ICS_ARCIN_V6_INTROFFSET_2);
+		break;
+	case 1:
+		writeb(0, base + ICS_ARCIN_V6_INTROFFSET_2);
+		readb(base + ICS_ARCIN_V6_INTROFFSET_1);
+		break;
+	}
 }
 
 /* Prototype: icside_irqdisable_arcin_v6 (struct expansion_card *ec, int irqnr)
@@ -127,6 +137,8 @@ static void icside_irqenable_arcin_v6 (struct expansion_card *ec, int irqnr)
 static void icside_irqdisable_arcin_v6 (struct expansion_card *ec, int irqnr)
 {
 	struct icside_state *state = ec->irq_data;
+
+	state->enabled = 0;
 
 	readb(state->irq_port + ICS_ARCIN_V6_INTROFFSET_1);
 	readb(state->irq_port + ICS_ARCIN_V6_INTROFFSET_2);
@@ -147,6 +159,44 @@ static const expansioncard_ops_t icside_ops_arcin_v6 = {
 	.irqenable	= icside_irqenable_arcin_v6,
 	.irqdisable	= icside_irqdisable_arcin_v6,
 	.irqpending	= icside_irqpending_arcin_v6,
+};
+
+/*
+ * Handle routing of interrupts.  This is called before
+ * we write the command to the drive.
+ */
+static void icside_maskproc(ide_drive_t *drive, int mask)
+{
+	ide_hwif_t *hwif = drive->hwif;
+	struct expansion_card *ec = ECARD_DEV(hwif->dev);
+	struct icside_state *state = ecard_get_drvdata(ec);
+	unsigned long flags;
+
+	local_irq_save(flags);
+
+	state->channel = hwif->channel;
+
+	if (state->enabled && !mask) {
+		switch (hwif->channel) {
+		case 0:
+			writeb(0, state->irq_port + ICS_ARCIN_V6_INTROFFSET_1);
+			readb(state->irq_port + ICS_ARCIN_V6_INTROFFSET_2);
+			break;
+		case 1:
+			writeb(0, state->irq_port + ICS_ARCIN_V6_INTROFFSET_2);
+			readb(state->irq_port + ICS_ARCIN_V6_INTROFFSET_1);
+			break;
+		}
+	} else {
+		readb(state->irq_port + ICS_ARCIN_V6_INTROFFSET_2);
+		readb(state->irq_port + ICS_ARCIN_V6_INTROFFSET_1);
+	}
+
+	local_irq_restore(flags);
+}
+
+static const struct ide_port_ops icside_v6_no_dma_port_ops = {
+	.maskproc		= icside_maskproc,
 };
 
 #ifdef CONFIG_BLK_DEV_IDEDMA_ICS
@@ -185,10 +235,11 @@ static const expansioncard_ops_t icside_ops_arcin_v6 = {
  *	MW1	80	50	50	150	C
  *	MW2	70	25	25	120	C
  */
-static void icside_set_dma_mode(ide_drive_t *drive, const u8 xfer_mode)
+static void icside_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
-	unsigned long cycle_time;
+	unsigned long cycle_time = 0;
 	int use_dma_info = 0;
+	const u8 xfer_mode = drive->dma_mode;
 
 	switch (xfer_mode) {
 	case XFER_MW_DMA_2:
@@ -221,13 +272,14 @@ static void icside_set_dma_mode(ide_drive_t *drive, const u8 xfer_mode)
 
 	ide_set_drivedata(drive, (void *)cycle_time);
 
-	printk("%s: %s selected (peak %dMB/s)\n", drive->name,
-		ide_xfer_verbose(xfer_mode),
-		2000 / (unsigned long)ide_get_drivedata(drive));
+	printk(KERN_INFO "%s: %s selected (peak %luMB/s)\n",
+	       drive->name, ide_xfer_verbose(xfer_mode),
+	       2000 / (cycle_time ? cycle_time : (unsigned long) -1));
 }
 
 static const struct ide_port_ops icside_v6_port_ops = {
 	.set_dma_mode		= icside_set_dma_mode,
+	.maskproc		= icside_maskproc,
 };
 
 static void icside_dma_host_set(ide_drive_t *drive, int on)
@@ -270,6 +322,11 @@ static int icside_dma_setup(ide_drive_t *drive, struct ide_cmd *cmd)
 	 * We can not enable DMA on both channels.
 	 */
 	BUG_ON(dma_channel_active(ec->dma));
+
+	/*
+	 * Ensure that we have the right interrupt routed.
+	 */
+	icside_maskproc(drive, 0);
 
 	/*
 	 * Route the DMA signals to the correct interface.
@@ -319,8 +376,6 @@ static const struct ide_dma_ops icside_v6_dma_ops = {
 	.dma_test_irq		= icside_dma_test_irq,
 	.dma_lost_irq		= ide_dma_lost_irq,
 };
-#else
-#define icside_v6_dma_ops NULL
 #endif
 
 static int icside_dma_off_init(ide_hwif_t *hwif, const struct ide_port_info *d)
@@ -352,8 +407,8 @@ static const struct ide_port_info icside_v5_port_info = {
 	.chipset		= ide_acorn,
 };
 
-static int __devinit
-icside_register_v5(struct icside_state *state, struct expansion_card *ec)
+static int icside_register_v5(struct icside_state *state,
+			      struct expansion_card *ec)
 {
 	void __iomem *base;
 	struct ide_host *host;
@@ -397,17 +452,17 @@ err_free:
 	return ret;
 }
 
-static const struct ide_port_info icside_v6_port_info __initdata = {
+static const struct ide_port_info icside_v6_port_info = {
 	.init_dma		= icside_dma_off_init,
-	.dma_ops		= &icside_v6_dma_ops,
+	.port_ops		= &icside_v6_no_dma_port_ops,
 	.host_flags		= IDE_HFLAG_SERIALIZE | IDE_HFLAG_MMIO,
 	.mwdma_mask		= ATA_MWDMA2,
 	.swdma_mask		= ATA_SWDMA2,
 	.chipset		= ide_acorn,
 };
 
-static int __devinit
-icside_register_v6(struct icside_state *state, struct expansion_card *ec)
+static int icside_register_v6(struct icside_state *state,
+			      struct expansion_card *ec)
 {
 	void __iomem *ioc_base, *easi_base;
 	struct ide_host *host;
@@ -461,11 +516,13 @@ icside_register_v6(struct icside_state *state, struct expansion_card *ec)
 
 	ecard_set_drvdata(ec, state);
 
+#ifdef CONFIG_BLK_DEV_IDEDMA_ICS
 	if (ec->dma != NO_DMA && !request_dma(ec->dma, DRV_NAME)) {
 		d.init_dma = icside_dma_init;
 		d.port_ops = &icside_v6_port_ops;
-		d.dma_ops = NULL;
+		d.dma_ops  = &icside_v6_dma_ops;
 	}
+#endif
 
 	ret = ide_host_register(host, &d, hws);
 	if (ret)
@@ -481,8 +538,7 @@ out:
 	return ret;
 }
 
-static int __devinit
-icside_probe(struct expansion_card *ec, const struct ecard_id *id)
+static int icside_probe(struct expansion_card *ec, const struct ecard_id *id)
 {
 	struct icside_state *state;
 	void __iomem *idmem;
@@ -548,7 +604,7 @@ icside_probe(struct expansion_card *ec, const struct ecard_id *id)
 	return ret;
 }
 
-static void __devexit icside_remove(struct expansion_card *ec)
+static void icside_remove(struct expansion_card *ec)
 {
 	struct icside_state *state = ecard_get_drvdata(ec);
 
@@ -610,7 +666,7 @@ static const struct ecard_id icside_ids[] = {
 
 static struct ecard_driver icside_driver = {
 	.probe		= icside_probe,
-	.remove		= __devexit_p(icside_remove),
+	.remove		= icside_remove,
 	.shutdown	= icside_shutdown,
 	.id_table	= icside_ids,
 	.drv = {

@@ -1,27 +1,16 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * phonet.c -- USB CDC Phonet host driver
  *
  * Copyright (C) 2008-2009 Nokia Corporation. All rights reserved.
  *
  * Author: Rémi Denis-Courmont
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
  */
 
 #include <linux/kernel.h>
+#include <linux/mm.h>
 #include <linux/module.h>
+#include <linux/gfp.h>
 #include <linux/usb.h>
 #include <linux/usb/cdc.h>
 #include <linux/netdevice.h>
@@ -47,7 +36,7 @@ struct usbpn_dev {
 
 	spinlock_t		rx_lock;
 	struct sk_buff		*rx_skb;
-	struct urb		*urbs[0];
+	struct urb		*urbs[];
 };
 
 static void tx_complete(struct urb *req);
@@ -96,8 +85,10 @@ static void tx_complete(struct urb *req)
 	struct sk_buff *skb = req->context;
 	struct net_device *dev = skb->dev;
 	struct usbpn_dev *pnd = netdev_priv(dev);
+	int status = req->status;
+	unsigned long flags;
 
-	switch (req->status) {
+	switch (status) {
 	case 0:
 		dev->stats.tx_bytes += skb->len;
 		break;
@@ -106,16 +97,17 @@ static void tx_complete(struct urb *req)
 	case -ECONNRESET:
 	case -ESHUTDOWN:
 		dev->stats.tx_aborted_errors++;
+		/* fall through */
 	default:
 		dev->stats.tx_errors++;
-		dev_dbg(&dev->dev, "TX error (%d)\n", req->status);
+		dev_dbg(&dev->dev, "TX error (%d)\n", status);
 	}
 	dev->stats.tx_packets++;
 
-	spin_lock(&pnd->tx_lock);
+	spin_lock_irqsave(&pnd->tx_lock, flags);
 	pnd->tx_queue--;
 	netif_wake_queue(dev);
-	spin_unlock(&pnd->tx_lock);
+	spin_unlock_irqrestore(&pnd->tx_lock, flags);
 
 	dev_kfree_skb_any(skb);
 	usb_free_urb(req);
@@ -127,7 +119,7 @@ static int rx_submit(struct usbpn_dev *pnd, struct urb *req, gfp_t gfp_flags)
 	struct page *page;
 	int err;
 
-	page = __netdev_alloc_page(dev, gfp_flags);
+	page = __dev_alloc_page(gfp_flags | __GFP_NOMEMALLOC);
 	if (!page)
 		return -ENOMEM;
 
@@ -137,7 +129,7 @@ static int rx_submit(struct usbpn_dev *pnd, struct urb *req, gfp_t gfp_flags)
 	err = usb_submit_urb(req, gfp_flags);
 	if (unlikely(err)) {
 		dev_dbg(&dev->dev, "RX submit error (%d)\n", err);
-		netdev_free_page(dev, page);
+		put_page(page);
 	}
 	return err;
 }
@@ -149,8 +141,9 @@ static void rx_complete(struct urb *req)
 	struct page *page = virt_to_page(req->transfer_buffer);
 	struct sk_buff *skb;
 	unsigned long flags;
+	int status = req->status;
 
-	switch (req->status) {
+	switch (status) {
 	case 0:
 		spin_lock_irqsave(&pnd->rx_lock, flags);
 		skb = pnd->rx_skb;
@@ -158,14 +151,16 @@ static void rx_complete(struct urb *req)
 			skb = pnd->rx_skb = netdev_alloc_skb(dev, 12);
 			if (likely(skb)) {
 				/* Can't use pskb_pull() on page in IRQ */
-				memcpy(skb_put(skb, 1), page_address(page), 1);
+				skb_put_data(skb, page_address(page), 1);
 				skb_add_rx_frag(skb, skb_shinfo(skb)->nr_frags,
-						page, 1, req->actual_length);
+						page, 1, req->actual_length,
+						PAGE_SIZE);
 				page = NULL;
 			}
 		} else {
 			skb_add_rx_frag(skb, skb_shinfo(skb)->nr_frags,
-					page, 0, req->actual_length);
+					page, 0, req->actual_length,
+					PAGE_SIZE);
 			page = NULL;
 		}
 		if (req->actual_length < PAGE_SIZE)
@@ -204,7 +199,7 @@ static void rx_complete(struct urb *req)
 	dev->stats.rx_errors++;
 resubmit:
 	if (page)
-		netdev_free_page(dev, page);
+		put_page(page);
 	if (req)
 		rx_submit(pnd, req, GFP_ATOMIC);
 }
@@ -226,6 +221,7 @@ static int usbpn_open(struct net_device *dev)
 		struct urb *req = usb_alloc_urb(0, GFP_KERNEL);
 
 		if (!req || rx_submit(pnd, req, GFP_KERNEL)) {
+			usb_free_urb(req);
 			usbpn_close(dev);
 			return -ENOMEM;
 		}
@@ -269,21 +265,11 @@ static int usbpn_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 	return -ENOIOCTLCMD;
 }
 
-static int usbpn_set_mtu(struct net_device *dev, int new_mtu)
-{
-	if ((new_mtu < PHONET_MIN_MTU) || (new_mtu > PHONET_MAX_MTU))
-		return -EINVAL;
-
-	dev->mtu = new_mtu;
-	return 0;
-}
-
 static const struct net_device_ops usbpn_ops = {
 	.ndo_open	= usbpn_open,
 	.ndo_stop	= usbpn_close,
 	.ndo_start_xmit = usbpn_xmit,
 	.ndo_do_ioctl	= usbpn_ioctl,
-	.ndo_change_mtu = usbpn_set_mtu,
 };
 
 static void usbpn_setup(struct net_device *dev)
@@ -294,18 +280,20 @@ static void usbpn_setup(struct net_device *dev)
 	dev->type		= ARPHRD_PHONET;
 	dev->flags		= IFF_POINTOPOINT | IFF_NOARP;
 	dev->mtu		= PHONET_MAX_MTU;
+	dev->min_mtu		= PHONET_MIN_MTU;
+	dev->max_mtu		= PHONET_MAX_MTU;
 	dev->hard_header_len	= 1;
 	dev->dev_addr[0]	= PN_MEDIA_USB;
 	dev->addr_len		= 1;
 	dev->tx_queue_len	= 3;
 
-	dev->destructor		= free_netdev;
+	dev->needs_free_netdev	= true;
 }
 
 /*
  * USB driver callbacks
  */
-static struct usb_device_id usbpn_ids[] = {
+static const struct usb_device_id usbpn_ids[] = {
 	{
 		.match_flags = USB_DEVICE_ID_MATCH_VENDOR
 			| USB_DEVICE_ID_MATCH_INT_CLASS
@@ -321,7 +309,7 @@ MODULE_DEVICE_TABLE(usb, usbpn_ids);
 
 static struct usb_driver usbpn_driver;
 
-int usbpn_probe(struct usb_interface *intf, const struct usb_device_id *id)
+static int usbpn_probe(struct usb_interface *intf, const struct usb_device_id *id)
 {
 	static const char ifname[] = "usbpn%d";
 	const struct usb_cdc_union_desc *union_header = NULL;
@@ -333,32 +321,13 @@ int usbpn_probe(struct usb_interface *intf, const struct usb_device_id *id)
 	u8 *data;
 	int phonet = 0;
 	int len, err;
+	struct usb_cdc_parsed_header hdr;
 
 	data = intf->altsetting->extra;
 	len = intf->altsetting->extralen;
-	while (len >= 3) {
-		u8 dlen = data[0];
-		if (dlen < 3)
-			return -EINVAL;
-
-		/* bDescriptorType */
-		if (data[1] == USB_DT_CS_INTERFACE) {
-			/* bDescriptorSubType */
-			switch (data[2]) {
-			case USB_CDC_UNION_TYPE:
-				if (union_header || dlen < 5)
-					break;
-				union_header =
-					(struct usb_cdc_union_desc *)data;
-				break;
-			case 0xAB:
-				phonet = 1;
-				break;
-			}
-		}
-		data += dlen;
-		len -= dlen;
-	}
+	cdc_parse_cdc_header(&hdr, intf, data, len);
+	union_header = hdr.usb_cdc_union_desc;
+	phonet = hdr.phonet_magic_present;
 
 	if (!union_header || !phonet)
 		return -EINVAL;
@@ -369,27 +338,26 @@ int usbpn_probe(struct usb_interface *intf, const struct usb_device_id *id)
 	/* Data interface has one inactive and one active setting */
 	if (data_intf->num_altsetting != 2)
 		return -EINVAL;
-	if (data_intf->altsetting[0].desc.bNumEndpoints == 0
-	 && data_intf->altsetting[1].desc.bNumEndpoints == 2)
+	if (data_intf->altsetting[0].desc.bNumEndpoints == 0 &&
+	    data_intf->altsetting[1].desc.bNumEndpoints == 2)
 		data_desc = data_intf->altsetting + 1;
 	else
-	if (data_intf->altsetting[0].desc.bNumEndpoints == 2
-	 && data_intf->altsetting[1].desc.bNumEndpoints == 0)
+	if (data_intf->altsetting[0].desc.bNumEndpoints == 2 &&
+	    data_intf->altsetting[1].desc.bNumEndpoints == 0)
 		data_desc = data_intf->altsetting;
 	else
 		return -EINVAL;
 
-	dev = alloc_netdev(sizeof(*pnd) + sizeof(pnd->urbs[0]) * rxq_size,
-				ifname, usbpn_setup);
+	dev = alloc_netdev(struct_size(pnd, urbs, rxq_size), ifname,
+			   NET_NAME_UNKNOWN, usbpn_setup);
 	if (!dev)
 		return -ENOMEM;
 
 	pnd = netdev_priv(dev);
 	SET_NETDEV_DEV(dev, &intf->dev);
-	netif_stop_queue(dev);
 
 	pnd->dev = dev;
-	pnd->usb = usb_get_dev(usbdev);
+	pnd->usb = usbdev;
 	pnd->intf = intf;
 	pnd->data_intf = data_intf;
 	spin_lock_init(&pnd->tx_lock);
@@ -435,7 +403,6 @@ out:
 static void usbpn_disconnect(struct usb_interface *intf)
 {
 	struct usbpn_dev *pnd = usb_get_intfdata(intf);
-	struct usb_device *usb = pnd->usb;
 
 	if (pnd->disconnected)
 		return;
@@ -444,7 +411,6 @@ static void usbpn_disconnect(struct usb_interface *intf)
 	usb_driver_release_interface(&usbpn_driver,
 			(pnd->intf == intf) ? pnd->data_intf : pnd->intf);
 	unregister_netdev(pnd->dev);
-	usb_put_dev(usb);
 }
 
 static struct usb_driver usbpn_driver = {
@@ -452,20 +418,10 @@ static struct usb_driver usbpn_driver = {
 	.probe =	usbpn_probe,
 	.disconnect =	usbpn_disconnect,
 	.id_table =	usbpn_ids,
+	.disable_hub_initiated_lpm = 1,
 };
 
-static int __init usbpn_init(void)
-{
-	return usb_register(&usbpn_driver);
-}
-
-static void __exit usbpn_exit(void)
-{
-	usb_deregister(&usbpn_driver);
-}
-
-module_init(usbpn_init);
-module_exit(usbpn_exit);
+module_usb_driver(usbpn_driver);
 
 MODULE_AUTHOR("Remi Denis-Courmont");
 MODULE_DESCRIPTION("USB CDC Phonet host interface");

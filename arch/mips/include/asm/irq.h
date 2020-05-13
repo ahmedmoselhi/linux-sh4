@@ -11,10 +11,38 @@
 
 #include <linux/linkage.h>
 #include <linux/smp.h>
+#include <linux/irqdomain.h>
 
 #include <asm/mipsmtregs.h>
 
 #include <irq.h>
+
+#define IRQ_STACK_SIZE			THREAD_SIZE
+#define IRQ_STACK_START			(IRQ_STACK_SIZE - 16)
+
+extern void *irq_stack[NR_CPUS];
+
+/*
+ * The highest address on the IRQ stack contains a dummy frame put down in
+ * genex.S (handle_int & except_vec_vi_handler) which is structured as follows:
+ *
+ *   top ------------
+ *       | task sp  | <- irq_stack[cpu] + IRQ_STACK_START
+ *       ------------
+ *       |          | <- First frame of IRQ context
+ *       ------------
+ *
+ * task sp holds a copy of the task stack pointer where the struct pt_regs
+ * from exception entry can be found.
+ */
+
+static inline bool on_irq_stack(int cpu, unsigned long sp)
+{
+	unsigned long low = (unsigned long)irq_stack[cpu];
+	unsigned long high = low + IRQ_STACK_SIZE;
+
+	return (low <= sp && sp <= high);
+}
 
 #ifdef CONFIG_I8259
 static inline int irq_canonicalize(int irq)
@@ -25,126 +53,9 @@ static inline int irq_canonicalize(int irq)
 #define irq_canonicalize(irq) (irq)	/* Sane hardware, sane code ... */
 #endif
 
-#ifdef CONFIG_MIPS_MT_SMTC
+asmlinkage void plat_irq_dispatch(void);
 
-struct irqaction;
-
-extern unsigned long irq_hwmask[];
-extern int setup_irq_smtc(unsigned int irq, struct irqaction * new,
-                          unsigned long hwmask);
-
-static inline void smtc_im_ack_irq(unsigned int irq)
-{
-	if (irq_hwmask[irq] & ST0_IM)
-		set_c0_status(irq_hwmask[irq] & ST0_IM);
-}
-
-#else
-
-static inline void smtc_im_ack_irq(unsigned int irq)
-{
-}
-
-#endif /* CONFIG_MIPS_MT_SMTC */
-
-#ifdef CONFIG_MIPS_MT_SMTC_IRQAFF
-#include <linux/cpumask.h>
-
-extern int plat_set_irq_affinity(unsigned int irq,
-				  const struct cpumask *affinity);
-extern void smtc_forward_irq(unsigned int irq);
-
-/*
- * IRQ affinity hook invoked at the beginning of interrupt dispatch
- * if option is enabled.
- *
- * Up through Linux 2.6.22 (at least) cpumask operations are very
- * inefficient on MIPS.  Initial prototypes of SMTC IRQ affinity
- * used a "fast path" per-IRQ-descriptor cache of affinity information
- * to reduce latency.  As there is a project afoot to optimize the
- * cpumask implementations, this version is optimistically assuming
- * that cpumask.h macro overhead is reasonable during interrupt dispatch.
- */
-#define IRQ_AFFINITY_HOOK(irq)						\
-do {									\
-    if (!cpumask_test_cpu(smp_processor_id(), irq_desc[irq].affinity)) {\
-	smtc_forward_irq(irq);						\
-	irq_exit();							\
-	return;								\
-    }									\
-} while (0)
-
-#else /* Not doing SMTC affinity */
-
-#define IRQ_AFFINITY_HOOK(irq) do { } while (0)
-
-#endif /* CONFIG_MIPS_MT_SMTC_IRQAFF */
-
-#ifdef CONFIG_MIPS_MT_SMTC_IM_BACKSTOP
-
-/*
- * Clear interrupt mask handling "backstop" if irq_hwmask
- * entry so indicates. This implies that the ack() or end()
- * functions will take over re-enabling the low-level mask.
- * Otherwise it will be done on return from exception.
- */
-#define __DO_IRQ_SMTC_HOOK(irq)						\
-do {									\
-	IRQ_AFFINITY_HOOK(irq);						\
-	if (irq_hwmask[irq] & 0x0000ff00)				\
-		write_c0_tccontext(read_c0_tccontext() &		\
-				   ~(irq_hwmask[irq] & 0x0000ff00));	\
-} while (0)
-
-#define __NO_AFFINITY_IRQ_SMTC_HOOK(irq)				\
-do {									\
-	if (irq_hwmask[irq] & 0x0000ff00)                               \
-		write_c0_tccontext(read_c0_tccontext() &		\
-				   ~(irq_hwmask[irq] & 0x0000ff00));	\
-} while (0)
-
-#else
-
-#define __DO_IRQ_SMTC_HOOK(irq)						\
-do {									\
-	IRQ_AFFINITY_HOOK(irq);						\
-} while (0)
-#define __NO_AFFINITY_IRQ_SMTC_HOOK(irq) do { } while (0)
-
-#endif
-
-/*
- * do_IRQ handles all normal device IRQ's (the special
- * SMP cross-CPU interrupts have their own specific
- * handlers).
- *
- * Ideally there should be away to get this into kernel/irq/handle.c to
- * avoid the overhead of a call for just a tiny function ...
- */
-#define do_IRQ(irq)							\
-do {									\
-	irq_enter();							\
-	__DO_IRQ_SMTC_HOOK(irq);					\
-	generic_handle_irq(irq);					\
-	irq_exit();							\
-} while (0)
-
-#ifdef CONFIG_MIPS_MT_SMTC_IRQAFF
-/*
- * To avoid inefficient and in some cases pathological re-checking of
- * IRQ affinity, we have this variant that skips the affinity check.
- */
-
-
-#define do_IRQ_no_affinity(irq)						\
-do {									\
-	irq_enter();							\
-	__NO_AFFINITY_IRQ_SMTC_HOOK(irq);				\
-	generic_handle_irq(irq);					\
-	irq_exit();							\
-} while (0)
-
-#endif /* CONFIG_MIPS_MT_SMTC_IRQAFF */
+extern void do_IRQ(unsigned int irq);
 
 extern void arch_init_irq(void);
 extern void spurious_interrupt(void);
@@ -155,11 +66,20 @@ extern void free_irqno(unsigned int irq);
 
 /*
  * Before R2 the timer and performance counter interrupts were both fixed to
- * IE7.  Since R2 their number has to be read from the c0_intctl register.
+ * IE7.	 Since R2 their number has to be read from the c0_intctl register.
  */
 #define CP0_LEGACY_COMPARE_IRQ 7
+#define CP0_LEGACY_PERFCNT_IRQ 7
 
 extern int cp0_compare_irq;
+extern int cp0_compare_irq_shift;
 extern int cp0_perfcount_irq;
+extern int cp0_fdc_irq;
+
+extern int get_c0_fdc_int(void);
+
+void arch_trigger_cpumask_backtrace(const struct cpumask *mask,
+				    bool exclude_self);
+#define arch_trigger_cpumask_backtrace arch_trigger_cpumask_backtrace
 
 #endif /* _ASM_IRQ_H */

@@ -1,21 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * pata-cs5530.c 	- CS5530 PATA for new ATA layer
  *			  (C) 2005 Red Hat Inc
  *
  * based upon cs5530.c by Mark Lord.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
  * Loosely based on the piix & svwks drivers.
  *
@@ -26,7 +14,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
-#include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <scsi/scsi_host.h>
@@ -156,7 +143,7 @@ static unsigned int cs5530_qc_issue(struct ata_queued_cmd *qc)
 		    	cs5530_set_dmamode(ap, adev);
 	}
 
-	return ata_sff_qc_issue(qc);
+	return ata_bmdma_qc_issue(qc);
 }
 
 static struct scsi_host_template cs5530_sht = {
@@ -167,7 +154,7 @@ static struct scsi_host_template cs5530_sht = {
 static struct ata_port_operations cs5530_port_ops = {
 	.inherits	= &ata_bmdma_port_ops,
 
-	.qc_prep 	= ata_sff_dumb_qc_prep,
+	.qc_prep 	= ata_bmdma_dumb_qc_prep,
 	.qc_issue	= cs5530_qc_issue,
 
 	.cable_detect	= ata_cable_40wire,
@@ -277,10 +264,8 @@ static int cs5530_init_chip(void)
 	pci_dev_put(cs5530_0);
 	return 0;
 fail_put:
-	if (master_0)
-		pci_dev_put(master_0);
-	if (cs5530_0)
-		pci_dev_put(cs5530_0);
+	pci_dev_put(master_0);
+	pci_dev_put(cs5530_0);
 	return -ENODEV;
 }
 
@@ -324,13 +309,13 @@ static int cs5530_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 		ppi[1] = &info_palmax_secondary;
 
 	/* Now kick off ATA set up */
-	return ata_pci_sff_init_one(pdev, ppi, &cs5530_sht, NULL);
+	return ata_pci_bmdma_init_one(pdev, ppi, &cs5530_sht, NULL, 0);
 }
 
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 static int cs5530_reinit_one(struct pci_dev *pdev)
 {
-	struct ata_host *host = dev_get_drvdata(&pdev->dev);
+	struct ata_host *host = pci_get_drvdata(pdev);
 	int rc;
 
 	rc = ata_pci_device_do_resume(pdev);
@@ -344,7 +329,7 @@ static int cs5530_reinit_one(struct pci_dev *pdev)
 	ata_host_resume(host);
 	return 0;
 }
-#endif /* CONFIG_PM */
+#endif /* CONFIG_PM_SLEEP */
 
 static const struct pci_device_id cs5530[] = {
 	{ PCI_VDEVICE(CYRIX, PCI_DEVICE_ID_CYRIX_5530_IDE), },
@@ -357,27 +342,16 @@ static struct pci_driver cs5530_pci_driver = {
 	.id_table	= cs5530,
 	.probe 		= cs5530_init_one,
 	.remove		= ata_pci_remove_one,
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend	= ata_pci_device_suspend,
 	.resume		= cs5530_reinit_one,
 #endif
 };
 
-static int __init cs5530_init(void)
-{
-	return pci_register_driver(&cs5530_pci_driver);
-}
-
-static void __exit cs5530_exit(void)
-{
-	pci_unregister_driver(&cs5530_pci_driver);
-}
+module_pci_driver(cs5530_pci_driver);
 
 MODULE_AUTHOR("Alan Cox");
 MODULE_DESCRIPTION("low-level driver for the Cyrix/NS/AMD 5530");
 MODULE_LICENSE("GPL");
 MODULE_DEVICE_TABLE(pci, cs5530);
 MODULE_VERSION(DRV_VERSION);
-
-module_init(cs5530_init);
-module_exit(cs5530_exit);

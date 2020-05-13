@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* -*- mode: c; c-basic-offset: 8; -*-
  * vim: noexpandtab sw=8 ts=8 sts=0:
  *
@@ -6,15 +7,6 @@
  * Checksum and ECC codes for the OCFS2 userspace library.
  *
  * Copyright (C) 2006, 2008 Oracle.  All rights reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public
- * License, version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
  */
 
 #include <linux/kernel.h>
@@ -47,7 +39,7 @@
  * Calculate the bit offset in the hamming code buffer based on the bit's
  * offset in the data buffer.  Since the hamming code reserves all
  * power-of-two bits for parity, the data bit number and the code bit
- * number are offest by all the parity bits beforehand.
+ * number are offset by all the parity bits beforehand.
  *
  * Recall that bit numbers in hamming code are 1-based.  This function
  * takes the 0-based data bit from the caller.
@@ -239,68 +231,36 @@ static int blockcheck_u64_get(void *data, u64 *val)
 }
 DEFINE_SIMPLE_ATTRIBUTE(blockcheck_fops, blockcheck_u64_get, NULL, "%llu\n");
 
-static struct dentry *blockcheck_debugfs_create(const char *name,
-						struct dentry *parent,
-						u64 *value)
-{
-	return debugfs_create_file(name, S_IFREG | S_IRUSR, parent, value,
-				   &blockcheck_fops);
-}
-
 static void ocfs2_blockcheck_debug_remove(struct ocfs2_blockcheck_stats *stats)
 {
 	if (stats) {
-		debugfs_remove(stats->b_debug_check);
-		stats->b_debug_check = NULL;
-		debugfs_remove(stats->b_debug_failure);
-		stats->b_debug_failure = NULL;
-		debugfs_remove(stats->b_debug_recover);
-		stats->b_debug_recover = NULL;
-		debugfs_remove(stats->b_debug_dir);
+		debugfs_remove_recursive(stats->b_debug_dir);
 		stats->b_debug_dir = NULL;
 	}
 }
 
-static int ocfs2_blockcheck_debug_install(struct ocfs2_blockcheck_stats *stats,
-					  struct dentry *parent)
+static void ocfs2_blockcheck_debug_install(struct ocfs2_blockcheck_stats *stats,
+					   struct dentry *parent)
 {
-	int rc = -EINVAL;
+	struct dentry *dir;
 
-	if (!stats)
-		goto out;
+	dir = debugfs_create_dir("blockcheck", parent);
+	stats->b_debug_dir = dir;
 
-	stats->b_debug_dir = debugfs_create_dir("blockcheck", parent);
-	if (!stats->b_debug_dir)
-		goto out;
+	debugfs_create_file("blocks_checked", S_IFREG | S_IRUSR, dir,
+			    &stats->b_check_count, &blockcheck_fops);
 
-	stats->b_debug_check =
-		blockcheck_debugfs_create("blocks_checked",
-					  stats->b_debug_dir,
-					  &stats->b_check_count);
+	debugfs_create_file("checksums_failed", S_IFREG | S_IRUSR, dir,
+			    &stats->b_failure_count, &blockcheck_fops);
 
-	stats->b_debug_failure =
-		blockcheck_debugfs_create("checksums_failed",
-					  stats->b_debug_dir,
-					  &stats->b_failure_count);
+	debugfs_create_file("ecc_recoveries", S_IFREG | S_IRUSR, dir,
+			    &stats->b_recover_count, &blockcheck_fops);
 
-	stats->b_debug_recover =
-		blockcheck_debugfs_create("ecc_recoveries",
-					  stats->b_debug_dir,
-					  &stats->b_recover_count);
-	if (stats->b_debug_check && stats->b_debug_failure &&
-	    stats->b_debug_recover)
-		rc = 0;
-
-out:
-	if (rc)
-		ocfs2_blockcheck_debug_remove(stats);
-	return rc;
 }
 #else
-static inline int ocfs2_blockcheck_debug_install(struct ocfs2_blockcheck_stats *stats,
-						 struct dentry *parent)
+static inline void ocfs2_blockcheck_debug_install(struct ocfs2_blockcheck_stats *stats,
+						  struct dentry *parent)
 {
-	return 0;
 }
 
 static inline void ocfs2_blockcheck_debug_remove(struct ocfs2_blockcheck_stats *stats)
@@ -309,10 +269,10 @@ static inline void ocfs2_blockcheck_debug_remove(struct ocfs2_blockcheck_stats *
 #endif  /* CONFIG_DEBUG_FS */
 
 /* Always-called wrappers for starting and stopping the debugfs files */
-int ocfs2_blockcheck_stats_debugfs_install(struct ocfs2_blockcheck_stats *stats,
-					   struct dentry *parent)
+void ocfs2_blockcheck_stats_debugfs_install(struct ocfs2_blockcheck_stats *stats,
+					    struct dentry *parent)
 {
-	return ocfs2_blockcheck_debug_install(stats, parent);
+	ocfs2_blockcheck_debug_install(stats, parent);
 }
 
 void ocfs2_blockcheck_stats_debugfs_remove(struct ocfs2_blockcheck_stats *stats)
@@ -403,7 +363,7 @@ void ocfs2_block_check_compute(void *data, size_t blocksize,
 	 * No ecc'd ocfs2 structure is larger than 4K, so ecc will be no
 	 * larger than 16 bits.
 	 */
-	BUG_ON(ecc > USHORT_MAX);
+	BUG_ON(ecc > USHRT_MAX);
 
 	bc->bc_crc32e = cpu_to_le32(crc);
 	bc->bc_ecc = cpu_to_le16((u16)ecc);
@@ -422,45 +382,46 @@ int ocfs2_block_check_validate(void *data, size_t blocksize,
 			       struct ocfs2_blockcheck_stats *stats)
 {
 	int rc = 0;
-	struct ocfs2_block_check check;
+	u32 bc_crc32e;
+	u16 bc_ecc;
 	u32 crc, ecc;
 
 	ocfs2_blockcheck_inc_check(stats);
 
-	check.bc_crc32e = le32_to_cpu(bc->bc_crc32e);
-	check.bc_ecc = le16_to_cpu(bc->bc_ecc);
+	bc_crc32e = le32_to_cpu(bc->bc_crc32e);
+	bc_ecc = le16_to_cpu(bc->bc_ecc);
 
 	memset(bc, 0, sizeof(struct ocfs2_block_check));
 
 	/* Fast path - if the crc32 validates, we're good to go */
 	crc = crc32_le(~0, data, blocksize);
-	if (crc == check.bc_crc32e)
+	if (crc == bc_crc32e)
 		goto out;
 
 	ocfs2_blockcheck_inc_failure(stats);
 	mlog(ML_ERROR,
-	     "CRC32 failed: stored: %u, computed %u.  Applying ECC.\n",
-	     (unsigned int)check.bc_crc32e, (unsigned int)crc);
+	     "CRC32 failed: stored: 0x%x, computed 0x%x. Applying ECC.\n",
+	     (unsigned int)bc_crc32e, (unsigned int)crc);
 
 	/* Ok, try ECC fixups */
 	ecc = ocfs2_hamming_encode_block(data, blocksize);
-	ocfs2_hamming_fix_block(data, blocksize, ecc ^ check.bc_ecc);
+	ocfs2_hamming_fix_block(data, blocksize, ecc ^ bc_ecc);
 
 	/* And check the crc32 again */
 	crc = crc32_le(~0, data, blocksize);
-	if (crc == check.bc_crc32e) {
+	if (crc == bc_crc32e) {
 		ocfs2_blockcheck_inc_recover(stats);
 		goto out;
 	}
 
-	mlog(ML_ERROR, "Fixed CRC32 failed: stored: %u, computed %u\n",
-	     (unsigned int)check.bc_crc32e, (unsigned int)crc);
+	mlog(ML_ERROR, "Fixed CRC32 failed: stored: 0x%x, computed 0x%x\n",
+	     (unsigned int)bc_crc32e, (unsigned int)crc);
 
 	rc = -EIO;
 
 out:
-	bc->bc_crc32e = cpu_to_le32(check.bc_crc32e);
-	bc->bc_ecc = cpu_to_le16(check.bc_ecc);
+	bc->bc_crc32e = cpu_to_le32(bc_crc32e);
+	bc->bc_ecc = cpu_to_le16(bc_ecc);
 
 	return rc;
 }
@@ -508,7 +469,7 @@ void ocfs2_block_check_compute_bhs(struct buffer_head **bhs, int nr,
 	 * No ecc'd ocfs2 structure is larger than 4K, so ecc will be no
 	 * larger than 16 bits.
 	 */
-	BUG_ON(ecc > USHORT_MAX);
+	BUG_ON(ecc > USHRT_MAX);
 
 	bc->bc_crc32e = cpu_to_le32(crc);
 	bc->bc_ecc = cpu_to_le16((u16)ecc);
@@ -528,7 +489,8 @@ int ocfs2_block_check_validate_bhs(struct buffer_head **bhs, int nr,
 				   struct ocfs2_blockcheck_stats *stats)
 {
 	int i, rc = 0;
-	struct ocfs2_block_check check;
+	u32 bc_crc32e;
+	u16 bc_ecc;
 	u32 crc, ecc, fix;
 
 	BUG_ON(nr < 0);
@@ -538,21 +500,21 @@ int ocfs2_block_check_validate_bhs(struct buffer_head **bhs, int nr,
 
 	ocfs2_blockcheck_inc_check(stats);
 
-	check.bc_crc32e = le32_to_cpu(bc->bc_crc32e);
-	check.bc_ecc = le16_to_cpu(bc->bc_ecc);
+	bc_crc32e = le32_to_cpu(bc->bc_crc32e);
+	bc_ecc = le16_to_cpu(bc->bc_ecc);
 
 	memset(bc, 0, sizeof(struct ocfs2_block_check));
 
 	/* Fast path - if the crc32 validates, we're good to go */
 	for (i = 0, crc = ~0; i < nr; i++)
 		crc = crc32_le(crc, bhs[i]->b_data, bhs[i]->b_size);
-	if (crc == check.bc_crc32e)
+	if (crc == bc_crc32e)
 		goto out;
 
 	ocfs2_blockcheck_inc_failure(stats);
 	mlog(ML_ERROR,
 	     "CRC32 failed: stored: %u, computed %u.  Applying ECC.\n",
-	     (unsigned int)check.bc_crc32e, (unsigned int)crc);
+	     (unsigned int)bc_crc32e, (unsigned int)crc);
 
 	/* Ok, try ECC fixups */
 	for (i = 0, ecc = 0; i < nr; i++) {
@@ -565,7 +527,7 @@ int ocfs2_block_check_validate_bhs(struct buffer_head **bhs, int nr,
 						bhs[i]->b_size * 8,
 						bhs[i]->b_size * 8 * i);
 	}
-	fix = ecc ^ check.bc_ecc;
+	fix = ecc ^ bc_ecc;
 	for (i = 0; i < nr; i++) {
 		/*
 		 * Try the fix against each buffer.  It will only affect
@@ -578,19 +540,19 @@ int ocfs2_block_check_validate_bhs(struct buffer_head **bhs, int nr,
 	/* And check the crc32 again */
 	for (i = 0, crc = ~0; i < nr; i++)
 		crc = crc32_le(crc, bhs[i]->b_data, bhs[i]->b_size);
-	if (crc == check.bc_crc32e) {
+	if (crc == bc_crc32e) {
 		ocfs2_blockcheck_inc_recover(stats);
 		goto out;
 	}
 
 	mlog(ML_ERROR, "Fixed CRC32 failed: stored: %u, computed %u\n",
-	     (unsigned int)check.bc_crc32e, (unsigned int)crc);
+	     (unsigned int)bc_crc32e, (unsigned int)crc);
 
 	rc = -EIO;
 
 out:
-	bc->bc_crc32e = cpu_to_le32(check.bc_crc32e);
-	bc->bc_ecc = cpu_to_le16(check.bc_ecc);
+	bc->bc_crc32e = cpu_to_le32(bc_crc32e);
+	bc->bc_ecc = cpu_to_le16(bc_ecc);
 
 	return rc;
 }

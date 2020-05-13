@@ -15,8 +15,8 @@
  *  May be copied or modified under the terms of the GNU General Public License
  *  Based in part on the ITE vendor provided SCSI driver.
  *
- *  Documentation available from
- * 	http://www.ite.com.tw/pc/IT8212F_V04.pdf
+ *  Documentation available from IT8212F_V04.pdf
+ * 	http://www.ite.com.tw/EN/products_more.aspx?CategoryID=3&ID=5,91
  *  Some other documents are NDA.
  *
  *  The ITE8212 isn't exactly a standard IDE controller. It has two
@@ -72,9 +72,9 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
-#include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>
+#include <linux/slab.h>
 #include <scsi/scsi_host.h>
 #include <linux/libata.h>
 
@@ -429,7 +429,7 @@ static unsigned int it821x_smart_qc_issue(struct ata_queued_cmd *qc)
 		case 0xFC:	/* Internal 'report rebuild state' */
 		/* Arguably should just no-op this one */
 		case ATA_CMD_SET_FEATURES:
-			return ata_sff_qc_issue(qc);
+			return ata_bmdma_qc_issue(qc);
 	}
 	printk(KERN_DEBUG "it821x: can't process command 0x%02X\n", qc->tf.command);
 	return AC_ERR_DEV;
@@ -447,7 +447,7 @@ static unsigned int it821x_smart_qc_issue(struct ata_queued_cmd *qc)
 static unsigned int it821x_passthru_qc_issue(struct ata_queued_cmd *qc)
 {
 	it821x_passthru_dev_select(qc->ap, qc->dev->devno);
-	return ata_sff_qc_issue(qc);
+	return ata_bmdma_qc_issue(qc);
 }
 
 /**
@@ -472,12 +472,12 @@ static int it821x_smart_set_mode(struct ata_link *link, struct ata_device **unus
 		/* We do need the right mode information for DMA or PIO
 		   and this comes from the current configuration flags */
 		if (ata_id_has_dma(dev->id)) {
-			ata_dev_printk(dev, KERN_INFO, "configured for DMA\n");
+			ata_dev_info(dev, "configured for DMA\n");
 			dev->xfer_mode = XFER_MW_DMA_0;
 			dev->xfer_shift = ATA_SHIFT_MWDMA;
 			dev->flags &= ~ATA_DFLAG_PIO;
 		} else {
-			ata_dev_printk(dev, KERN_INFO, "configured for PIO\n");
+			ata_dev_info(dev, "configured for PIO\n");
 			dev->xfer_mode = XFER_PIO_0;
 			dev->xfer_shift = ATA_SHIFT_PIO;
 			dev->flags |= ATA_DFLAG_PIO;
@@ -507,12 +507,12 @@ static void it821x_dev_config(struct ata_device *adev)
 
 	if (strstr(model_num, "Integrated Technology Express")) {
 		/* RAID mode */
-		ata_dev_printk(adev, KERN_INFO, "%sRAID%d volume",
-			adev->id[147]?"Bootable ":"",
-			adev->id[129]);
+		ata_dev_info(adev, "%sRAID%d volume",
+			     adev->id[147] ? "Bootable " : "",
+			     adev->id[129]);
 		if (adev->id[129] != 1)
-			printk("(%dK stripe)", adev->id[146]);
-		printk(".\n");
+			pr_cont("(%dK stripe)", adev->id[146]);
+		pr_cont("\n");
 	}
 	/* This is a controller firmware triggered funny, don't
 	   report the drive faulty! */
@@ -604,18 +604,18 @@ static void it821x_display_disk(int n, u8 *buf)
 {
 	unsigned char id[41];
 	int mode = 0;
-	char *mtype = "";
+	const char *mtype = "";
 	char mbuf[8];
-	char *cbl = "(40 wire cable)";
+	const char *cbl = "(40 wire cable)";
 
 	static const char *types[5] = {
-		"RAID0", "RAID1" "RAID 0+1", "JBOD", "DISK"
+		"RAID0", "RAID1", "RAID 0+1", "JBOD", "DISK"
 	};
 
 	if (buf[52] > 4)	/* No Disk */
 		return;
 
-	ata_id_c_string((u16 *)buf, id, 0, 41); 
+	ata_id_c_string((u16 *)buf, id, 0, 41);
 
 	if (buf[51]) {
 		mode = ffs(buf[51]);
@@ -658,10 +658,10 @@ static u8 *it821x_firmware_command(struct ata_port *ap, u8 cmd, int len)
 	u8 status;
 	int n = 0;
 	u16 *buf = kmalloc(len, GFP_KERNEL);
-	if (buf == NULL) {
-		printk(KERN_ERR "it821x_firmware_command: Out of memory\n");
+
+	if (!buf)
 		return NULL;
-	}
+
 	/* This isn't quite a normal ATA command as we are talking to the
 	   firmware not the drives */
 	ap->ctl |= ATA_NIEN;
@@ -683,7 +683,7 @@ static u8 *it821x_firmware_command(struct ata_port *ap, u8 cmd, int len)
 			ioread16_rep(ap->ioaddr.data_addr, buf, len/2);
 			return (u8 *)buf;
 		}
-		mdelay(1);
+		usleep_range(500, 1000);
 	}
 	kfree(buf);
 	printk(KERN_ERR "it821x_firmware_command: timeout\n");
@@ -738,7 +738,7 @@ static int it821x_port_start(struct ata_port *ap)
 	struct it821x_dev *itdev;
 	u8 conf;
 
-	int ret = ata_sff_port_start(ap);
+	int ret = ata_bmdma_port_start(ap);
 	if (ret < 0)
 		return ret;
 
@@ -903,13 +903,13 @@ static int it821x_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 	};
 
 	const struct ata_port_info *ppi[] = { NULL, NULL };
-	static char *mode[2] = { "pass through", "smart" };
+	static const char *mode[2] = { "pass through", "smart" };
 	int rc;
 
 	rc = pcim_enable_device(pdev);
 	if (rc)
 		return rc;
-		
+
 	if (pdev->vendor == PCI_VENDOR_ID_RDC) {
 		/* Deal with Vortex86SX */
 		if (pdev->revision == 0x11)
@@ -932,13 +932,13 @@ static int it821x_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 		else
 			ppi[0] = &info_smart;
 	}
-	return ata_pci_sff_init_one(pdev, ppi, &it821x_sht, NULL);
+	return ata_pci_bmdma_init_one(pdev, ppi, &it821x_sht, NULL, 0);
 }
 
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 static int it821x_reinit_one(struct pci_dev *pdev)
 {
-	struct ata_host *host = dev_get_drvdata(&pdev->dev);
+	struct ata_host *host = pci_get_drvdata(pdev);
 	int rc;
 
 	rc = ata_pci_device_do_resume(pdev);
@@ -955,7 +955,7 @@ static int it821x_reinit_one(struct pci_dev *pdev)
 static const struct pci_device_id it821x[] = {
 	{ PCI_VDEVICE(ITE, PCI_DEVICE_ID_ITE_8211), },
 	{ PCI_VDEVICE(ITE, PCI_DEVICE_ID_ITE_8212), },
-	{ PCI_VDEVICE(RDC, 0x1010), },
+	{ PCI_VDEVICE(RDC, PCI_DEVICE_ID_RDC_D1010), },
 
 	{ },
 };
@@ -965,21 +965,13 @@ static struct pci_driver it821x_pci_driver = {
 	.id_table	= it821x,
 	.probe 		= it821x_init_one,
 	.remove		= ata_pci_remove_one,
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend	= ata_pci_device_suspend,
 	.resume		= it821x_reinit_one,
 #endif
 };
 
-static int __init it821x_init(void)
-{
-	return pci_register_driver(&it821x_pci_driver);
-}
-
-static void __exit it821x_exit(void)
-{
-	pci_unregister_driver(&it821x_pci_driver);
-}
+module_pci_driver(it821x_pci_driver);
 
 MODULE_AUTHOR("Alan Cox");
 MODULE_DESCRIPTION("low-level driver for the IT8211/IT8212 IDE RAID controller");
@@ -987,9 +979,5 @@ MODULE_LICENSE("GPL");
 MODULE_DEVICE_TABLE(pci, it821x);
 MODULE_VERSION(DRV_VERSION);
 
-
 module_param_named(noraid, it8212_noraid, int, S_IRUGO);
 MODULE_PARM_DESC(noraid, "Force card into bypass mode");
-
-module_init(it821x_init);
-module_exit(it821x_exit);

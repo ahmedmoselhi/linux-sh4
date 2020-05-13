@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 1999-2002	Andre Hedrick <andre@linux-ide.org>
  * Copyright (C) 2007		MontaVista Software, Inc. <source@mvista.com>
@@ -81,15 +82,15 @@ static u8 pci_bus_clock_list_ultra (u8 speed, struct chipset_bus_clock_list_entr
 	return chipset_table->ultra_settings;
 }
 
-static void aec6210_set_mode(ide_drive_t *drive, const u8 speed)
+static void aec6210_set_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
-	ide_hwif_t *hwif	= drive->hwif;
 	struct pci_dev *dev	= to_pci_dev(hwif->dev);
 	struct ide_host *host	= pci_get_drvdata(dev);
 	struct chipset_bus_clock_list_entry *bus_clock = host->host_priv;
 	u16 d_conf		= 0;
 	u8 ultra = 0, ultra_conf = 0;
 	u8 tmp0 = 0, tmp1 = 0, tmp2 = 0;
+	const u8 speed = drive->dma_mode;
 	unsigned long flags;
 
 	local_irq_save(flags);
@@ -109,15 +110,15 @@ static void aec6210_set_mode(ide_drive_t *drive, const u8 speed)
 	local_irq_restore(flags);
 }
 
-static void aec6260_set_mode(ide_drive_t *drive, const u8 speed)
+static void aec6260_set_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
-	ide_hwif_t *hwif	= drive->hwif;
 	struct pci_dev *dev	= to_pci_dev(hwif->dev);
 	struct ide_host *host	= pci_get_drvdata(dev);
 	struct chipset_bus_clock_list_entry *bus_clock = host->host_priv;
 	u8 unit			= drive->dn & 1;
 	u8 tmp1 = 0, tmp2 = 0;
 	u8 ultra = 0, drive_conf = 0, ultra_conf = 0;
+	const u8 speed = drive->dma_mode;
 	unsigned long flags;
 
 	local_irq_save(flags);
@@ -134,9 +135,10 @@ static void aec6260_set_mode(ide_drive_t *drive, const u8 speed)
 	local_irq_restore(flags);
 }
 
-static void aec_set_pio_mode(ide_drive_t *drive, const u8 pio)
+static void aec_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
-	drive->hwif->port_ops->set_dma_mode(drive, pio + XFER_PIO_0);
+	drive->dma_mode = drive->pio_mode;
+	hwif->port_ops->set_dma_mode(hwif, drive);
 }
 
 static int init_chipset_aec62xx(struct pci_dev *dev)
@@ -180,7 +182,7 @@ static const struct ide_port_ops atp86x_port_ops = {
 	.cable_detect		= atp86x_cable_detect,
 };
 
-static const struct ide_port_info aec62xx_chipsets[] __devinitdata = {
+static const struct ide_port_info aec62xx_chipsets[] = {
 	{	/* 0: AEC6210 */
 		.name		= DRV_NAME,
 		.init_chipset	= init_chipset_aec62xx,
@@ -250,7 +252,7 @@ static const struct ide_port_info aec62xx_chipsets[] __devinitdata = {
  *	chips, pass a local copy of 'struct ide_port_info' down the call chain.
  */
 
-static int __devinit aec62xx_init_one(struct pci_dev *dev, const struct pci_device_id *id)
+static int aec62xx_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 {
 	const struct chipset_bus_clock_list_entry *bus_clock;
 	struct ide_port_info d;
@@ -286,7 +288,7 @@ static int __devinit aec62xx_init_one(struct pci_dev *dev, const struct pci_devi
 	return err;
 }
 
-static void __devexit aec62xx_remove(struct pci_dev *dev)
+static void aec62xx_remove(struct pci_dev *dev)
 {
 	ide_pci_remove(dev);
 	pci_disable_device(dev);
@@ -306,7 +308,7 @@ static struct pci_driver aec62xx_pci_driver = {
 	.name		= "AEC62xx_IDE",
 	.id_table	= aec62xx_pci_tbl,
 	.probe		= aec62xx_init_one,
-	.remove		= __devexit_p(aec62xx_remove),
+	.remove		= aec62xx_remove,
 	.suspend	= ide_pci_suspend,
 	.resume		= ide_pci_resume,
 };

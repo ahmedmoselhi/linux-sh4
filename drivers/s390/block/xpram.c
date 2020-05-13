@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Xpram.c -- the S/390 expanded memory RAM-disk
  *           
@@ -33,15 +34,15 @@
 #include <linux/ctype.h>  /* isdigit, isxdigit */
 #include <linux/errno.h>
 #include <linux/init.h>
-#include <linux/slab.h>
 #include <linux/blkdev.h>
 #include <linux/blkpg.h>
 #include <linux/hdreg.h>  /* HDIO_GETGEO */
-#include <linux/sysdev.h>
+#include <linux/device.h>
 #include <linux/bio.h>
 #include <linux/suspend.h>
 #include <linux/platform_device.h>
-#include <asm/uaccess.h>
+#include <linux/gfp.h>
+#include <linux/uaccess.h>
 
 #define XPRAM_NAME	"xpram"
 #define XPRAM_DEVS	1	/* one partition */
@@ -62,8 +63,8 @@ static int xpram_devs;
 /*
  * Parameter parsing functions.
  */
-static int __initdata devs = XPRAM_DEVS;
-static char __initdata *sizes[XPRAM_MAX_DEVS];
+static int devs = XPRAM_DEVS;
+static char *sizes[XPRAM_MAX_DEVS];
 
 module_param(devs, int, 0);
 module_param_array(sizes, charp, NULL, 0);
@@ -181,28 +182,31 @@ static unsigned long xpram_highest_page_index(void)
 /*
  * Block device make request function.
  */
-static int xpram_make_request(struct request_queue *q, struct bio *bio)
+static blk_qc_t xpram_make_request(struct request_queue *q, struct bio *bio)
 {
-	xpram_device_t *xdev = bio->bi_bdev->bd_disk->private_data;
-	struct bio_vec *bvec;
+	xpram_device_t *xdev = bio->bi_disk->private_data;
+	struct bio_vec bvec;
+	struct bvec_iter iter;
 	unsigned int index;
 	unsigned long page_addr;
 	unsigned long bytes;
-	int i;
 
-	if ((bio->bi_sector & 7) != 0 || (bio->bi_size & 4095) != 0)
+	blk_queue_split(q, &bio);
+
+	if ((bio->bi_iter.bi_sector & 7) != 0 ||
+	    (bio->bi_iter.bi_size & 4095) != 0)
 		/* Request is not page-aligned. */
 		goto fail;
-	if ((bio->bi_size >> 12) > xdev->size)
+	if ((bio->bi_iter.bi_size >> 12) > xdev->size)
 		/* Request size is no page-aligned. */
 		goto fail;
-	if ((bio->bi_sector >> 3) > 0xffffffffU - xdev->offset)
+	if ((bio->bi_iter.bi_sector >> 3) > 0xffffffffU - xdev->offset)
 		goto fail;
-	index = (bio->bi_sector >> 3) + xdev->offset;
-	bio_for_each_segment(bvec, bio, i) {
+	index = (bio->bi_iter.bi_sector >> 3) + xdev->offset;
+	bio_for_each_segment(bvec, bio, iter) {
 		page_addr = (unsigned long)
-			kmap(bvec->bv_page) + bvec->bv_offset;
-		bytes = bvec->bv_len;
+			kmap(bvec.bv_page) + bvec.bv_offset;
+		bytes = bvec.bv_len;
 		if ((page_addr & 4095) != 0 || (bytes & 4095) != 0)
 			/* More paranoia. */
 			goto fail;
@@ -219,12 +223,11 @@ static int xpram_make_request(struct request_queue *q, struct bio *bio)
 			index++;
 		}
 	}
-	set_bit(BIO_UPTODATE, &bio->bi_flags);
-	bio_endio(bio, 0);
-	return 0;
+	bio_endio(bio);
+	return BLK_QC_T_NONE;
 fail:
 	bio_io_error(bio);
-	return 0;
+	return BLK_QC_T_NONE;
 }
 
 static int xpram_getgeo(struct block_device *bdev, struct hd_geometry *geo)
@@ -258,6 +261,7 @@ static int __init xpram_setup_sizes(unsigned long pages)
 	unsigned long mem_needed;
 	unsigned long mem_auto;
 	unsigned long long size;
+	char *sizes_end;
 	int mem_auto_no;
 	int i;
 
@@ -276,8 +280,8 @@ static int __init xpram_setup_sizes(unsigned long pages)
 	mem_auto_no = 0;
 	for (i = 0; i < xpram_devs; i++) {
 		if (sizes[i]) {
-			size = simple_strtoull(sizes[i], &sizes[i], 0);
-			switch (sizes[i][0]) {
+			size = simple_strtoull(sizes[i], &sizes_end, 0);
+			switch (*sizes_end) {
 			case 'g':
 			case 'G':
 				size <<= 20;
@@ -339,12 +343,14 @@ static int __init xpram_setup_blkdev(void)
 		xpram_disks[i] = alloc_disk(1);
 		if (!xpram_disks[i])
 			goto out;
-		xpram_queues[i] = blk_alloc_queue(GFP_KERNEL);
+		xpram_queues[i] = blk_alloc_queue(xpram_make_request,
+				NUMA_NO_NODE);
 		if (!xpram_queues[i]) {
 			put_disk(xpram_disks[i]);
 			goto out;
 		}
-		blk_queue_make_request(xpram_queues[i], xpram_make_request);
+		blk_queue_flag_set(QUEUE_FLAG_NONROT, xpram_queues[i]);
+		blk_queue_flag_clear(QUEUE_FLAG_ADD_RANDOM, xpram_queues[i]);
 		blk_queue_logical_block_size(xpram_queues[i], 4096);
 	}
 
@@ -407,14 +413,13 @@ static int xpram_restore(struct device *dev)
 	return 0;
 }
 
-static struct dev_pm_ops xpram_pm_ops = {
+static const struct dev_pm_ops xpram_pm_ops = {
 	.restore	= xpram_restore,
 };
 
 static struct platform_driver xpram_pdrv = {
 	.driver = {
 		.name	= XPRAM_NAME,
-		.owner	= THIS_MODULE,
 		.pm	= &xpram_pm_ops,
 	},
 };

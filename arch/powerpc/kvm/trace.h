@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #if !defined(_TRACE_KVM_H) || defined(TRACE_HEADER_MULTI_READ)
 #define _TRACE_KVM_H
 
@@ -5,15 +6,13 @@
 
 #undef TRACE_SYSTEM
 #define TRACE_SYSTEM kvm
-#define TRACE_INCLUDE_PATH .
-#define TRACE_INCLUDE_FILE trace
 
 /*
  * Tracepoint for guest mode entry.
  */
 TRACE_EVENT(kvm_ppc_instr,
-	TP_PROTO(unsigned int inst, unsigned long pc, unsigned int emulate),
-	TP_ARGS(inst, pc, emulate),
+	TP_PROTO(unsigned int inst, unsigned long _pc, unsigned int emulate),
+	TP_ARGS(inst, _pc, emulate),
 
 	TP_STRUCT__entry(
 		__field(	unsigned int,	inst		)
@@ -23,7 +22,7 @@ TRACE_EVENT(kvm_ppc_instr,
 
 	TP_fast_assign(
 		__entry->inst		= inst;
-		__entry->pc		= pc;
+		__entry->pc		= _pc;
 		__entry->emulate	= emulate;
 	),
 
@@ -98,7 +97,31 @@ TRACE_EVENT(kvm_gtlb_write,
 		__entry->word1, __entry->word2)
 );
 
+TRACE_EVENT(kvm_check_requests,
+	TP_PROTO(struct kvm_vcpu *vcpu),
+	TP_ARGS(vcpu),
+
+	TP_STRUCT__entry(
+		__field(	__u32,	cpu_nr		)
+		__field(	__u32,	requests	)
+	),
+
+	TP_fast_assign(
+		__entry->cpu_nr		= vcpu->vcpu_id;
+		__entry->requests	= vcpu->requests;
+	),
+
+	TP_printk("vcpu=%x requests=%x",
+		__entry->cpu_nr, __entry->requests)
+);
+
 #endif /* _TRACE_KVM_H */
 
 /* This part must be outside protection */
+#undef TRACE_INCLUDE_PATH
+#undef TRACE_INCLUDE_FILE
+
+#define TRACE_INCLUDE_PATH .
+#define TRACE_INCLUDE_FILE trace
+
 #include <trace/define_trace.h>

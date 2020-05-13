@@ -1,12 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  *  Definitions for use by exception code on Book3-E
  *
  *  Copyright (C) 2008 Ben. Herrenschmidt (benh@kernel.crashing.org), IBM Corp.
- *
- *  This program is free software; you can redistribute it and/or
- *  modify it under the terms of the GNU General Public License
- *  as published by the Free Software Foundation; either version
- *  2 of the License, or (at your option) any later version.
  */
 #ifndef _ASM_POWERPC_EXCEPTION_64E_H
 #define _ASM_POWERPC_EXCEPTION_64E_H
@@ -37,6 +33,7 @@
  * critical data
  */
 
+#define PACA_EXGDBELL PACA_EXGEN
 
 /* We are out of SPRGs so we save some things in the PACA. The normal
  * exception frame is smaller than the CRIT or MC one though
@@ -48,30 +45,34 @@
 #define EX_R14		(4 * 8)
 #define EX_R15		(5 * 8)
 
-/* The TLB miss exception uses different slots */
+/*
+ * The TLB miss exception uses different slots.
+ *
+ * The bolted variant uses only the first six fields,
+ * which in combination with pgd and kernel_pgd fits in
+ * one 64-byte cache line.
+ */
 
 #define EX_TLB_R10	( 0 * 8)
 #define EX_TLB_R11	( 1 * 8)
-#define EX_TLB_R12	( 2 * 8)
-#define EX_TLB_R13	( 3 * 8)
-#define EX_TLB_R14	( 4 * 8)
-#define EX_TLB_R15	( 5 * 8)
-#define EX_TLB_R16	( 6 * 8)
-#define EX_TLB_CR	( 7 * 8)
+#define EX_TLB_R14	( 2 * 8)
+#define EX_TLB_R15	( 3 * 8)
+#define EX_TLB_R16	( 4 * 8)
+#define EX_TLB_CR	( 5 * 8)
+#define EX_TLB_R12	( 6 * 8)
+#define EX_TLB_R13	( 7 * 8)
 #define EX_TLB_DEAR	( 8 * 8) /* Level 0 and 2 only */
 #define EX_TLB_ESR	( 9 * 8) /* Level 0 and 2 only */
 #define EX_TLB_SRR0	(10 * 8)
 #define EX_TLB_SRR1	(11 * 8)
-#define EX_TLB_MMUCR0	(12 * 8) /* Level 0 */
-#define EX_TLB_MAS1	(12 * 8) /* Level 0 */
-#define EX_TLB_MAS2	(13 * 8) /* Level 0 */
+#define EX_TLB_R7	(12 * 8)
 #ifdef CONFIG_BOOK3E_MMU_TLB_STATS
-#define EX_TLB_R8	(14 * 8)
-#define EX_TLB_R9	(15 * 8)
-#define EX_TLB_LR	(16 * 8)
-#define EX_TLB_SIZE	(17 * 8)
+#define EX_TLB_R8	(13 * 8)
+#define EX_TLB_R9	(14 * 8)
+#define EX_TLB_LR	(15 * 8)
+#define EX_TLB_SIZE	(16 * 8)
 #else
-#define EX_TLB_SIZE	(14 * 8)
+#define EX_TLB_SIZE	(13 * 8)
 #endif
 
 #define	START_EXCEPTION(label)						\
@@ -170,10 +171,10 @@ exc_##label##_book3e:
 	mtlr	r16;
 #define TLB_MISS_STATS_D(name)						    \
 	addi	r9,r13,MMSTAT_DSTATS+name;				    \
-	bl	.tlb_stat_inc;
+	bl	tlb_stat_inc;
 #define TLB_MISS_STATS_I(name)						    \
 	addi	r9,r13,MMSTAT_ISTATS+name;				    \
-	bl	.tlb_stat_inc;
+	bl	tlb_stat_inc;
 #define TLB_MISS_STATS_X(name)						    \
 	ld	r8,PACA_EXTLB+EX_TLB_ESR(r13);				    \
 	cmpdi	cr2,r8,-1;						    \
@@ -181,25 +182,34 @@ exc_##label##_book3e:
 	addi	r9,r13,MMSTAT_DSTATS+name;				    \
 	b	62f;							    \
 61:	addi	r9,r13,MMSTAT_ISTATS+name;				    \
-62:	bl	.tlb_stat_inc;
+62:	bl	tlb_stat_inc;
 #define TLB_MISS_STATS_SAVE_INFO					    \
-	std	r14,EX_TLB_ESR(r12);	/* save ESR */			    \
-
-
+	std	r14,EX_TLB_ESR(r12);	/* save ESR */
+#define TLB_MISS_STATS_SAVE_INFO_BOLTED					    \
+	std	r14,PACA_EXTLB+EX_TLB_ESR(r13);	/* save ESR */
 #else
 #define TLB_MISS_PROLOG_STATS
 #define TLB_MISS_RESTORE_STATS
+#define TLB_MISS_PROLOG_STATS_BOLTED
+#define TLB_MISS_RESTORE_STATS_BOLTED
 #define TLB_MISS_STATS_D(name)
 #define TLB_MISS_STATS_I(name)
 #define TLB_MISS_STATS_X(name)
 #define TLB_MISS_STATS_Y(name)
 #define TLB_MISS_STATS_SAVE_INFO
+#define TLB_MISS_STATS_SAVE_INFO_BOLTED
 #endif
 
 #define SET_IVOR(vector_number, vector_offset)	\
-	li	r3,vector_offset@l; 		\
-	ori	r3,r3,interrupt_base_book3e@l;	\
+	LOAD_REG_ADDR(r3,interrupt_base_book3e);\
+	ori	r3,r3,vector_offset@l;		\
 	mtspr	SPRN_IVOR##vector_number,r3;
+
+#define RFI_TO_KERNEL							\
+	rfi
+
+#define RFI_TO_USER							\
+	rfi
 
 #endif /* _ASM_POWERPC_EXCEPTION_64E_H */
 

@@ -1,26 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Wistron laptop button driver
  * Copyright (C) 2005 Miloslav Trmac <mitr@volny.cz>
  * Copyright (C) 2005 Bernhard Rosenkraenzer <bero@arklinux.org>
  * Copyright (C) 2005 Dmitry Torokhov <dtor@mail.ru>
- *
- * You can redistribute and/or modify this program under the terms of the
- * GNU General Public License version 2 as published by the Free Software
- * Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General
- * Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 59 Temple Place Suite 330, Boston, MA 02111-1307, USA.
  */
 #include <linux/io.h>
 #include <linux/dmi.h>
 #include <linux/init.h>
-#include <linux/input-polldev.h>
+#include <linux/input.h>
+#include <linux/input/sparse-keymap.h>
 #include <linux/interrupt.h>
 #include <linux/jiffies.h>
 #include <linux/kernel.h>
@@ -28,6 +17,7 @@
 #include <linux/module.h>
 #include <linux/preempt.h>
 #include <linux/string.h>
+#include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/platform_device.h>
 #include <linux/leds.h>
@@ -44,9 +34,8 @@
 MODULE_AUTHOR("Miloslav Trmac <mitr@volny.cz>");
 MODULE_DESCRIPTION("Wistron laptop button driver");
 MODULE_LICENSE("GPL v2");
-MODULE_VERSION("0.3");
 
-static int force; /* = 0; */
+static bool force; /* = 0; */
 module_param(force, bool, 0);
 MODULE_PARM_DESC(force, "Load even if computer is not in database");
 
@@ -168,7 +157,7 @@ static u16 bios_pop_queue(void)
 	return regs.eax;
 }
 
-static void __devinit bios_attach(void)
+static void bios_attach(void)
 {
 	struct regs regs;
 
@@ -188,7 +177,7 @@ static void bios_detach(void)
 	call_bios(&regs);
 }
 
-static u8 __devinit bios_get_cmos_address(void)
+static u8 bios_get_cmos_address(void)
 {
 	struct regs regs;
 
@@ -200,7 +189,7 @@ static u8 __devinit bios_get_cmos_address(void)
 	return regs.ecx;
 }
 
-static u16 __devinit bios_get_default_setting(u8 subsys)
+static u16 bios_get_default_setting(u8 subsys)
 {
 	struct regs regs;
 
@@ -224,19 +213,8 @@ static void bios_set_state(u8 subsys, int enable)
 
 /* Hardware database */
 
-struct key_entry {
-	char type;		/* See KE_* below */
-	u8 code;
-	union {
-		u16 keycode;		/* For KE_KEY */
-		struct {		/* For KE_SW */
-			u8 code;
-			u8 value;
-		} sw;
-	};
-};
-
-enum { KE_END, KE_KEY, KE_SW, KE_WIFI, KE_BLUETOOTH };
+#define KE_WIFI		(KE_LAST + 1)
+#define KE_BLUETOOTH	(KE_LAST + 2)
 
 #define FE_MAIL_LED 0x01
 #define FE_WIFI_LED 0x02
@@ -283,8 +261,18 @@ static struct key_entry keymap_fs_amilo_pro_v3505[] __initdata = {
 	{ KE_BLUETOOTH, 0x30 },                      /* Fn+F10 */
 	{ KE_KEY,       0x31, {KEY_MAIL} },          /* mail button */
 	{ KE_KEY,       0x36, {KEY_WWW} },           /* www button */
-	{ KE_WIFI,      0x78 },                      /* satelite dish button */
+	{ KE_WIFI,      0x78 },                      /* satellite dish button */
 	{ KE_END,       0 }
+};
+
+static struct key_entry keymap_fs_amilo_pro_v8210[] __initdata = {
+	{ KE_KEY,       0x01, {KEY_HELP} },          /* Fn+F1 */
+	{ KE_KEY,       0x06, {KEY_DISPLAYTOGGLE} }, /* Fn+F4 */
+	{ KE_BLUETOOTH, 0x30 },                      /* Fn+F10 */
+	{ KE_KEY,       0x31, {KEY_MAIL} },          /* mail button */
+	{ KE_KEY,       0x36, {KEY_WWW} },           /* www button */
+	{ KE_WIFI,      0x78 },                      /* satelite dish button */
+	{ KE_END,       FE_WIFI_LED }
 };
 
 static struct key_entry keymap_fujitsu_n3510[] __initdata = {
@@ -572,7 +560,7 @@ static struct key_entry keymap_wistron_md96500[] __initdata = {
 	{ KE_KEY, 0x36, {KEY_WWW} },
 	{ KE_WIFI, 0x30 },
 	{ KE_BLUETOOTH, 0x44 },
-	{ KE_END, FE_UNTESTED }
+	{ KE_END, 0 }
 };
 
 static struct key_entry keymap_wistron_generic[] __initdata = {
@@ -644,10 +632,10 @@ static struct key_entry keymap_prestigio[] __initdata = {
  * a list of buttons and their key codes (reported when loading this module
  * with force=1) and the output of dmidecode to $MODULE_AUTHOR.
  */
-static struct dmi_system_id dmi_ids[] __initdata = {
+static const struct dmi_system_id dmi_ids[] __initconst = {
 	{
+		/* Fujitsu-Siemens Amilo Pro V2000 */
 		.callback = dmi_matched,
-		.ident = "Fujitsu-Siemens Amilo Pro V2000",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "FUJITSU SIEMENS"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "AMILO Pro V2000"),
@@ -655,8 +643,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_fs_amilo_pro_v2000
 	},
 	{
+		/* Fujitsu-Siemens Amilo Pro Edition V3505 */
 		.callback = dmi_matched,
-		.ident = "Fujitsu-Siemens Amilo Pro Edition V3505",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "FUJITSU SIEMENS"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "AMILO Pro Edition V3505"),
@@ -664,8 +652,17 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_fs_amilo_pro_v3505
 	},
 	{
+		/* Fujitsu-Siemens Amilo Pro Edition V8210 */
 		.callback = dmi_matched,
-		.ident = "Fujitsu-Siemens Amilo M7400",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "FUJITSU SIEMENS"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "AMILO Pro Series V8210"),
+		},
+		.driver_data = keymap_fs_amilo_pro_v8210
+	},
+	{
+		/* Fujitsu-Siemens Amilo M7400 */
+		.callback = dmi_matched,
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "FUJITSU SIEMENS"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "AMILO M        "),
@@ -673,8 +670,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_fs_amilo_pro_v2000
 	},
 	{
+		/* Maxdata Pro 7000 DX */
 		.callback = dmi_matched,
-		.ident = "Maxdata Pro 7000 DX",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "MAXDATA"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "Pro 7000"),
@@ -682,8 +679,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_fs_amilo_pro_v2000
 	},
 	{
+		/* Fujitsu N3510 */
 		.callback = dmi_matched,
-		.ident = "Fujitsu N3510",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "FUJITSU"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "N3510"),
@@ -691,8 +688,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_fujitsu_n3510
 	},
 	{
+		/* Acer Aspire 1500 */
 		.callback = dmi_matched,
-		.ident = "Acer Aspire 1500",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "Aspire 1500"),
@@ -700,8 +697,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_acer_aspire_1500
 	},
 	{
+		/* Acer Aspire 1600 */
 		.callback = dmi_matched,
-		.ident = "Acer Aspire 1600",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "Aspire 1600"),
@@ -709,8 +706,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_acer_aspire_1600
 	},
 	{
+		/* Acer Aspire 3020 */
 		.callback = dmi_matched,
-		.ident = "Acer Aspire 3020",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "Aspire 3020"),
@@ -718,8 +715,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_acer_aspire_5020
 	},
 	{
+		/* Acer Aspire 5020 */
 		.callback = dmi_matched,
-		.ident = "Acer Aspire 5020",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "Aspire 5020"),
@@ -727,8 +724,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_acer_aspire_5020
 	},
 	{
+		/* Acer TravelMate 2100 */
 		.callback = dmi_matched,
-		.ident = "Acer TravelMate 2100",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "TravelMate 2100"),
@@ -736,8 +733,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_acer_aspire_5020
 	},
 	{
+		/* Acer TravelMate 2410 */
 		.callback = dmi_matched,
-		.ident = "Acer TravelMate 2410",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "TravelMate 2410"),
@@ -745,8 +742,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_acer_travelmate_2410
 	},
 	{
+		/* Acer TravelMate C300 */
 		.callback = dmi_matched,
-		.ident = "Acer TravelMate C300",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "TravelMate C300"),
@@ -754,8 +751,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_acer_travelmate_300
 	},
 	{
+		/* Acer TravelMate C100 */
 		.callback = dmi_matched,
-		.ident = "Acer TravelMate C100",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "TravelMate C100"),
@@ -763,8 +760,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_acer_travelmate_300
 	},
 	{
+		/* Acer TravelMate C110 */
 		.callback = dmi_matched,
-		.ident = "Acer TravelMate C110",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "TravelMate C110"),
@@ -772,8 +769,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_acer_travelmate_110
 	},
 	{
+		/* Acer TravelMate 380 */
 		.callback = dmi_matched,
-		.ident = "Acer TravelMate 380",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "TravelMate 380"),
@@ -781,8 +778,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_acer_travelmate_380
 	},
 	{
+		/* Acer TravelMate 370 */
 		.callback = dmi_matched,
-		.ident = "Acer TravelMate 370",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "TravelMate 370"),
@@ -790,8 +787,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_acer_travelmate_380 /* keyboard minus 1 key */
 	},
 	{
+		/* Acer TravelMate 220 */
 		.callback = dmi_matched,
-		.ident = "Acer TravelMate 220",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "TravelMate 220"),
@@ -799,8 +796,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_acer_travelmate_220
 	},
 	{
+		/* Acer TravelMate 260 */
 		.callback = dmi_matched,
-		.ident = "Acer TravelMate 260",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "TravelMate 260"),
@@ -808,8 +805,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_acer_travelmate_220
 	},
 	{
+		/* Acer TravelMate 230 */
 		.callback = dmi_matched,
-		.ident = "Acer TravelMate 230",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "TravelMate 230"),
@@ -818,8 +815,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_acer_travelmate_230
 	},
 	{
+		/* Acer TravelMate 280 */
 		.callback = dmi_matched,
-		.ident = "Acer TravelMate 280",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "TravelMate 280"),
@@ -827,8 +824,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_acer_travelmate_230
 	},
 	{
+		/* Acer TravelMate 240 */
 		.callback = dmi_matched,
-		.ident = "Acer TravelMate 240",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "TravelMate 240"),
@@ -836,8 +833,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_acer_travelmate_240
 	},
 	{
+		/* Acer TravelMate 250 */
 		.callback = dmi_matched,
-		.ident = "Acer TravelMate 250",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "TravelMate 250"),
@@ -845,8 +842,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_acer_travelmate_240
 	},
 	{
+		/* Acer TravelMate 2424NWXCi */
 		.callback = dmi_matched,
-		.ident = "Acer TravelMate 2424NWXCi",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "TravelMate 2420"),
@@ -854,8 +851,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_acer_travelmate_240
 	},
 	{
+		/* Acer TravelMate 350 */
 		.callback = dmi_matched,
-		.ident = "Acer TravelMate 350",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "TravelMate 350"),
@@ -863,8 +860,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_acer_travelmate_350
 	},
 	{
+		/* Acer TravelMate 360 */
 		.callback = dmi_matched,
-		.ident = "Acer TravelMate 360",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "TravelMate 360"),
@@ -872,8 +869,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_acer_travelmate_360
 	},
 	{
+		/* Acer TravelMate 610 */
 		.callback = dmi_matched,
-		.ident = "Acer TravelMate 610",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "ACER"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "TravelMate 610"),
@@ -881,8 +878,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_acer_travelmate_610
 	},
 	{
+		/* Acer TravelMate 620 */
 		.callback = dmi_matched,
-		.ident = "Acer TravelMate 620",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "TravelMate 620"),
@@ -890,8 +887,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_acer_travelmate_630
 	},
 	{
+		/* Acer TravelMate 630 */
 		.callback = dmi_matched,
-		.ident = "Acer TravelMate 630",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "TravelMate 630"),
@@ -899,8 +896,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_acer_travelmate_630
 	},
 	{
+		/* AOpen 1559AS */
 		.callback = dmi_matched,
-		.ident = "AOpen 1559AS",
 		.matches = {
 			DMI_MATCH(DMI_PRODUCT_NAME, "E2U"),
 			DMI_MATCH(DMI_BOARD_NAME, "E2U"),
@@ -908,8 +905,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_aopen_1559as
 	},
 	{
+		/* Medion MD 9783 */
 		.callback = dmi_matched,
-		.ident = "Medion MD 9783",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "MEDIONNB"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "MD 9783"),
@@ -917,8 +914,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_wistron_ms2111
 	},
 	{
+		/* Medion MD 40100 */
 		.callback = dmi_matched,
-		.ident = "Medion MD 40100",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "MEDIONNB"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "WID2000"),
@@ -926,8 +923,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_wistron_md40100
 	},
 	{
+		/* Medion MD 2900 */
 		.callback = dmi_matched,
-		.ident = "Medion MD 2900",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "MEDIONNB"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "WIM 2000"),
@@ -935,8 +932,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_wistron_md2900
 	},
 	{
+		/* Medion MD 42200 */
 		.callback = dmi_matched,
-		.ident = "Medion MD 42200",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Medion"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "WIM 2030"),
@@ -944,8 +941,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_fs_amilo_pro_v2000
 	},
 	{
+		/* Medion MD 96500 */
 		.callback = dmi_matched,
-		.ident = "Medion MD 96500",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "MEDIONPC"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "WIM 2040"),
@@ -953,8 +950,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_wistron_md96500
 	},
 	{
+		/* Medion MD 95400 */
 		.callback = dmi_matched,
-		.ident = "Medion MD 95400",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "MEDIONPC"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "WIM 2050"),
@@ -962,8 +959,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_wistron_md96500
 	},
 	{
+		/* Fujitsu Siemens Amilo D7820 */
 		.callback = dmi_matched,
-		.ident = "Fujitsu Siemens Amilo D7820",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "FUJITSU SIEMENS"), /* not sure */
 			DMI_MATCH(DMI_PRODUCT_NAME, "Amilo D"),
@@ -971,8 +968,8 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 		.driver_data = keymap_fs_amilo_d88x0
 	},
 	{
+		/* Fujitsu Siemens Amilo D88x0 */
 		.callback = dmi_matched,
-		.ident = "Fujitsu Siemens Amilo D88x0",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "FUJITSU SIEMENS"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "AMILO D"),
@@ -981,6 +978,7 @@ static struct dmi_system_id dmi_ids[] __initdata = {
 	},
 	{ NULL, }
 };
+MODULE_DEVICE_TABLE(dmi, dmi_ids);
 
 /* Copy the good keymap, as the original ones are free'd */
 static int __init copy_keymap(void)
@@ -992,11 +990,11 @@ static int __init copy_keymap(void)
 	for (key = keymap; key->type != KE_END; key++)
 		length++;
 
-	new_keymap = kmalloc(length * sizeof(struct key_entry), GFP_KERNEL);
+	new_keymap = kmemdup(keymap, length * sizeof(struct key_entry),
+			     GFP_KERNEL);
 	if (!new_keymap)
 		return -ENOMEM;
 
-	memcpy(new_keymap, keymap, length * sizeof(struct key_entry));
 	keymap = new_keymap;
 
 	return 0;
@@ -1032,25 +1030,10 @@ static int __init select_keymap(void)
 
  /* Input layer interface */
 
-static struct input_polled_dev *wistron_idev;
+static struct input_dev *wistron_idev;
 static unsigned long jiffies_last_press;
 static bool wifi_enabled;
 static bool bluetooth_enabled;
-
-static void report_key(struct input_dev *dev, unsigned int keycode)
-{
-	input_report_key(dev, keycode, 1);
-	input_sync(dev);
-	input_report_key(dev, keycode, 0);
-	input_sync(dev);
-}
-
-static void report_switch(struct input_dev *dev, unsigned int code, int value)
-{
-	input_report_switch(dev, code, value);
-	input_sync(dev);
-}
-
 
  /* led management */
 static void wistron_mail_led_set(struct led_classdev *led_cdev,
@@ -1076,7 +1059,7 @@ static struct led_classdev wistron_wifi_led = {
 	.brightness_set		= wistron_wifi_led_set,
 };
 
-static void __devinit wistron_led_init(struct device *parent)
+static void wistron_led_init(struct device *parent)
 {
 	if (leds_present & FE_WIFI_LED) {
 		u16 wifi = bios_get_default_setting(WIFI);
@@ -1101,7 +1084,7 @@ static void __devinit wistron_led_init(struct device *parent)
 	}
 }
 
-static void __devexit wistron_led_remove(void)
+static void wistron_led_remove(void)
 {
 	if (leds_present & FE_MAIL_LED)
 		led_classdev_unregister(&wistron_mail_led);
@@ -1128,43 +1111,13 @@ static inline void wistron_led_resume(void)
 		led_classdev_resume(&wistron_wifi_led);
 }
 
-static struct key_entry *wistron_get_entry_by_scancode(int code)
-{
-	struct key_entry *key;
-
-	for (key = keymap; key->type != KE_END; key++)
-		if (code == key->code)
-			return key;
-
-	return NULL;
-}
-
-static struct key_entry *wistron_get_entry_by_keycode(int keycode)
-{
-	struct key_entry *key;
-
-	for (key = keymap; key->type != KE_END; key++)
-		if (key->type == KE_KEY && keycode == key->keycode)
-			return key;
-
-	return NULL;
-}
-
 static void handle_key(u8 code)
 {
-	const struct key_entry *key = wistron_get_entry_by_scancode(code);
+	const struct key_entry *key =
+		sparse_keymap_entry_from_scancode(wistron_idev, code);
 
 	if (key) {
 		switch (key->type) {
-		case KE_KEY:
-			report_key(wistron_idev->input, key->keycode);
-			break;
-
-		case KE_SW:
-			report_switch(wistron_idev->input,
-				      key->sw.code, key->sw.value);
-			break;
-
 		case KE_WIFI:
 			if (have_wifi) {
 				wifi_enabled = !wifi_enabled;
@@ -1180,12 +1133,14 @@ static void handle_key(u8 code)
 			break;
 
 		default:
-			BUG();
+			sparse_keymap_report_entry(wistron_idev, key, 1, true);
+			break;
 		}
 		jiffies_last_press = jiffies;
-	} else
+	} else {
 		printk(KERN_NOTICE
 			"wistron_btns: Unknown key code %02X\n", code);
+	}
 }
 
 static void poll_bios(bool discard)
@@ -1203,131 +1158,95 @@ static void poll_bios(bool discard)
 	}
 }
 
-static void wistron_flush(struct input_polled_dev *dev)
+static int wistron_flush(struct input_dev *dev)
 {
 	/* Flush stale event queue */
 	poll_bios(true);
+
+	return 0;
 }
 
-static void wistron_poll(struct input_polled_dev *dev)
+static void wistron_poll(struct input_dev *dev)
 {
 	poll_bios(false);
 
 	/* Increase poll frequency if user is currently pressing keys (< 2s ago) */
 	if (time_before(jiffies, jiffies_last_press + 2 * HZ))
-		dev->poll_interval = POLL_INTERVAL_BURST;
+		input_set_poll_interval(dev, POLL_INTERVAL_BURST);
 	else
-		dev->poll_interval = POLL_INTERVAL_DEFAULT;
+		input_set_poll_interval(dev, POLL_INTERVAL_DEFAULT);
 }
 
-static int wistron_getkeycode(struct input_dev *dev, int scancode, int *keycode)
+static int wistron_setup_keymap(struct input_dev *dev,
+					  struct key_entry *entry)
 {
-	const struct key_entry *key = wistron_get_entry_by_scancode(scancode);
+	switch (entry->type) {
 
-	if (key && key->type == KE_KEY) {
-		*keycode = key->keycode;
-		return 0;
-	}
-
-	return -EINVAL;
-}
-
-static int wistron_setkeycode(struct input_dev *dev, int scancode, int keycode)
-{
-	struct key_entry *key;
-	int old_keycode;
-
-	if (keycode < 0 || keycode > KEY_MAX)
-		return -EINVAL;
-
-	key = wistron_get_entry_by_scancode(scancode);
-	if (key && key->type == KE_KEY) {
-		old_keycode = key->keycode;
-		key->keycode = keycode;
-		set_bit(keycode, dev->keybit);
-		if (!wistron_get_entry_by_keycode(old_keycode))
-			clear_bit(old_keycode, dev->keybit);
-		return 0;
-	}
-
-	return -EINVAL;
-}
-
-static int __devinit setup_input_dev(void)
-{
-	struct key_entry *key;
-	struct input_dev *input_dev;
-	int error;
-
-	wistron_idev = input_allocate_polled_device();
-	if (!wistron_idev)
-		return -ENOMEM;
-
-	wistron_idev->flush = wistron_flush;
-	wistron_idev->poll = wistron_poll;
-	wistron_idev->poll_interval = POLL_INTERVAL_DEFAULT;
-
-	input_dev = wistron_idev->input;
-	input_dev->name = "Wistron laptop buttons";
-	input_dev->phys = "wistron/input0";
-	input_dev->id.bustype = BUS_HOST;
-	input_dev->dev.parent = &wistron_device->dev;
-
-	input_dev->getkeycode = wistron_getkeycode;
-	input_dev->setkeycode = wistron_setkeycode;
-
-	for (key = keymap; key->type != KE_END; key++) {
-		switch (key->type) {
-			case KE_KEY:
-				set_bit(EV_KEY, input_dev->evbit);
-				set_bit(key->keycode, input_dev->keybit);
-				break;
-
-			case KE_SW:
-				set_bit(EV_SW, input_dev->evbit);
-				set_bit(key->sw.code, input_dev->swbit);
-				break;
-
-			/* if wifi or bluetooth are not available, create normal keys */
-			case KE_WIFI:
-				if (!have_wifi) {
-					key->type = KE_KEY;
-					key->keycode = KEY_WLAN;
-					key--;
-				}
-				break;
-
-			case KE_BLUETOOTH:
-				if (!have_bluetooth) {
-					key->type = KE_KEY;
-					key->keycode = KEY_BLUETOOTH;
-					key--;
-				}
-				break;
-
-			default:
-				break;
+	/* if wifi or bluetooth are not available, create normal keys */
+	case KE_WIFI:
+		if (!have_wifi) {
+			entry->type = KE_KEY;
+			entry->keycode = KEY_WLAN;
 		}
-	}
+		break;
 
-	/* reads information flags on KE_END */
-	if (key->code & FE_UNTESTED)
-		printk(KERN_WARNING "Untested laptop multimedia keys, "
-			"please report success or failure to eric.piel"
-			"@tremplin-utc.net\n");
+	case KE_BLUETOOTH:
+		if (!have_bluetooth) {
+			entry->type = KE_KEY;
+			entry->keycode = KEY_BLUETOOTH;
+		}
+		break;
 
-	error = input_register_polled_device(wistron_idev);
-	if (error) {
-		input_free_polled_device(wistron_idev);
-		return error;
+	case KE_END:
+		if (entry->code & FE_UNTESTED)
+			printk(KERN_WARNING "Untested laptop multimedia keys, "
+				"please report success or failure to "
+				"eric.piel@tremplin-utc.net\n");
+		break;
 	}
 
 	return 0;
 }
 
+static int setup_input_dev(void)
+{
+	int error;
+
+	wistron_idev = input_allocate_device();
+	if (!wistron_idev)
+		return -ENOMEM;
+
+	wistron_idev->name = "Wistron laptop buttons";
+	wistron_idev->phys = "wistron/input0";
+	wistron_idev->id.bustype = BUS_HOST;
+	wistron_idev->dev.parent = &wistron_device->dev;
+
+	wistron_idev->open = wistron_flush;
+
+	error = sparse_keymap_setup(wistron_idev, keymap, wistron_setup_keymap);
+	if (error)
+		goto err_free_dev;
+
+	error = input_setup_polling(wistron_idev, wistron_poll);
+	if (error)
+		goto err_free_dev;
+
+	input_set_poll_interval(wistron_idev, POLL_INTERVAL_DEFAULT);
+
+	error = input_register_device(wistron_idev);
+	if (error)
+		goto err_free_dev;
+
+	return 0;
+
+ err_free_dev:
+	input_free_device(wistron_idev);
+	return error;
+}
+
 /* Driver core */
 
-static int __devinit wistron_probe(struct platform_device *dev)
+static int wistron_probe(struct platform_device *dev)
 {
 	int err;
 
@@ -1367,11 +1286,10 @@ static int __devinit wistron_probe(struct platform_device *dev)
 	return 0;
 }
 
-static int __devexit wistron_remove(struct platform_device *dev)
+static int wistron_remove(struct platform_device *dev)
 {
 	wistron_led_remove();
-	input_unregister_polled_device(wistron_idev);
-	input_free_polled_device(wistron_idev);
+	input_unregister_device(wistron_idev);
 	bios_detach();
 
 	return 0;
@@ -1417,13 +1335,12 @@ static const struct dev_pm_ops wistron_pm_ops = {
 static struct platform_driver wistron_driver = {
 	.driver		= {
 		.name	= "wistron-bios",
-		.owner	= THIS_MODULE,
-#if CONFIG_PM
+#ifdef CONFIG_PM
 		.pm	= &wistron_pm_ops,
 #endif
 	},
 	.probe		= wistron_probe,
-	.remove		= __devexit_p(wistron_remove),
+	.remove		= wistron_remove,
 };
 
 static int __init wb_module_init(void)
@@ -1436,7 +1353,7 @@ static int __init wb_module_init(void)
 
 	err = map_bios();
 	if (err)
-		return err;
+		goto err_free_keymap;
 
 	err = platform_driver_register(&wistron_driver);
 	if (err)
@@ -1460,6 +1377,8 @@ static int __init wb_module_init(void)
 	platform_driver_unregister(&wistron_driver);
  err_unmap_bios:
 	unmap_bios();
+ err_free_keymap:
+	kfree(keymap);
 
 	return err;
 }

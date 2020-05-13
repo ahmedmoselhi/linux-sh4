@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * linux/arch/arm/mach-omap1/board-palmtt.c
  *
@@ -5,13 +6,10 @@
  *
  * Modified and amended for Palm Tungsten|T
  * by Marek Vasut <marek.vasut@gmail.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/delay.h>
+#include <linux/gpio.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/platform_device.h>
@@ -21,27 +19,28 @@
 #include <linux/interrupt.h>
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
+#include <linux/mtd/physmap.h>
 #include <linux/leds.h>
+#include <linux/omapfb.h>
+#include <linux/spi/spi.h>
+#include <linux/spi/ads7846.h>
+#include <linux/platform_data/omap1_bl.h>
+#include <linux/platform_data/leds-omap.h>
 
-#include <mach/hardware.h>
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
-#include <asm/mach/flash.h>
 
-#include <mach/led.h>
-#include <mach/gpio.h>
+#include "flash.h"
 #include <mach/mux.h>
-#include <mach/usb.h>
-#include <mach/dma.h>
+#include <linux/omap-dma.h>
 #include <mach/tc.h>
-#include <mach/board.h>
-#include <mach/irda.h>
-#include <mach/keypad.h>
-#include <mach/common.h>
+#include <linux/platform_data/keypad-omap.h>
 
-#include <linux/spi/spi.h>
-#include <linux/spi/ads7846.h>
+#include <mach/hardware.h>
+#include <mach/usb.h>
+
+#include "common.h"
 
 #define PALMTT_USBDETECT_GPIO	0
 #define PALMTT_CABLE_GPIO	1
@@ -50,19 +49,18 @@
 #define PALMTT_MMC_WP_GPIO	8
 #define PALMTT_HDQ_GPIO		11
 
-static int palmtt_keymap[] = {
+static const unsigned int palmtt_keymap[] = {
 	KEY(0, 0, KEY_ESC),
-	KEY(0, 1, KEY_SPACE),
-	KEY(0, 2, KEY_LEFTCTRL),
-	KEY(0, 3, KEY_TAB),
-	KEY(0, 4, KEY_ENTER),
-	KEY(1, 0, KEY_LEFT),
+	KEY(1, 0, KEY_SPACE),
+	KEY(2, 0, KEY_LEFTCTRL),
+	KEY(3, 0, KEY_TAB),
+	KEY(4, 0, KEY_ENTER),
+	KEY(0, 1, KEY_LEFT),
 	KEY(1, 1, KEY_DOWN),
-	KEY(1, 2, KEY_UP),
-	KEY(1, 3, KEY_RIGHT),
-	KEY(2, 0, KEY_SLEEP),
-	KEY(2, 4, KEY_Y),
-	0
+	KEY(2, 1, KEY_UP),
+	KEY(3, 1, KEY_RIGHT),
+	KEY(0, 2, KEY_SLEEP),
+	KEY(4, 2, KEY_Y),
 };
 
 static struct mtd_partition palmtt_partitions[] = {
@@ -104,9 +102,9 @@ static struct mtd_partition palmtt_partitions[] = {
 	}
 };
 
-static struct flash_platform_data palmtt_flash_data = {
-	.map_name	= "cfi_probe",
+static struct physmap_flash_data palmtt_flash_data = {
 	.width		= 2,
+	.set_vpp	= omap1_set_vpp,
 	.parts		= palmtt_partitions,
 	.nr_parts	= ARRAY_SIZE(palmtt_partitions),
 };
@@ -118,7 +116,7 @@ static struct resource palmtt_flash_resource = {
 };
 
 static struct platform_device palmtt_flash_device = {
-	.name		= "omapflash",
+	.name		= "physmap-flash",
 	.id		= 0,
 	.dev		= {
 		.platform_data	= &palmtt_flash_data,
@@ -135,10 +133,15 @@ static struct resource palmtt_kp_resources[] = {
 	},
 };
 
+static const struct matrix_keymap_data palmtt_keymap_data = {
+	.keymap		= palmtt_keymap,
+	.keymap_size	= ARRAY_SIZE(palmtt_keymap),
+};
+
 static struct omap_kp_platform_data palmtt_kp_data = {
 	.rows	= 6,
 	.cols	= 3,
-	.keymap = palmtt_keymap,
+	.keymap_data = &palmtt_keymap_data,
 };
 
 static struct platform_device palmtt_kp_device = {
@@ -154,33 +157,6 @@ static struct platform_device palmtt_kp_device = {
 static struct platform_device palmtt_lcd_device = {
 	.name		= "lcd_palmtt",
 	.id		= -1,
-};
-static struct omap_irda_config palmtt_irda_config = {
-	.transceiver_cap	= IR_SIRMODE,
-	.rx_channel		= OMAP_DMA_UART3_RX,
-	.tx_channel		= OMAP_DMA_UART3_TX,
-	.dest_start		= UART3_THR,
-	.src_start		= UART3_RHR,
-	.tx_trigger		= 0,
-	.rx_trigger		= 0,
-};
-
-static struct resource palmtt_irda_resources[] = {
-	[0]	= {
-		.start	= INT_UART3,
-		.end	= INT_UART3,
-		.flags	= IORESOURCE_IRQ,
-	},
-};
-
-static struct platform_device palmtt_irda_device = {
-	.name		= "omapirda",
-	.id		= -1,
-	.dev		= {
-		.platform_data	= &palmtt_irda_config,
-	},
-	.num_resources	= ARRAY_SIZE(palmtt_irda_resources),
-	.resource	= palmtt_irda_resources,
 };
 
 static struct platform_device palmtt_spi_device = {
@@ -226,7 +202,6 @@ static struct platform_device *palmtt_devices[] __initdata = {
 	&palmtt_flash_device,
 	&palmtt_kp_device,
 	&palmtt_lcd_device,
-	&palmtt_irda_device,
 	&palmtt_spi_device,
 	&palmtt_backlight_device,
 	&palmtt_led_device,
@@ -250,7 +225,6 @@ static struct spi_board_info __initdata palmtt_boardinfo[] = {
 		/* MicroWire (bus 2) CS0 has an ads7846e */
 		.modalias	= "ads7846",
 		.platform_data	= &palmtt_ts_info,
-		.irq		= OMAP_GPIO_IRQ(6),
 		.max_speed_hz	= 120000	/* max sample rate at 3V */
 					* 26	/* command + data + overhead */,
 		.bus_num	= 2,
@@ -258,24 +232,14 @@ static struct spi_board_info __initdata palmtt_boardinfo[] = {
 	}
 };
 
-static void __init omap_palmtt_init_irq(void)
-{
-	omap1_init_common_hw();
-	omap_init_irq();
-}
-
 static struct omap_usb_config palmtt_usb_config __initdata = {
 	.register_dev	= 1,
 	.hmc_mode	= 0,
 	.pins[0]	= 2,
 };
 
-static struct omap_lcd_config palmtt_lcd_config __initdata = {
+static const struct omap_lcd_config palmtt_lcd_config __initconst = {
 	.ctrl_name	= "internal",
-};
-
-static struct omap_board_config_kernel palmtt_config[] __initdata = {
-	{ OMAP_TAG_LCD,		&palmtt_lcd_config	},
 };
 
 static void __init omap_mpu_wdt_mode(int mode) {
@@ -299,28 +263,25 @@ static void __init omap_palmtt_init(void)
 
 	omap_mpu_wdt_mode(0);
 
-	omap_board_config = palmtt_config;
-	omap_board_config_size = ARRAY_SIZE(palmtt_config);
-
 	platform_add_devices(palmtt_devices, ARRAY_SIZE(palmtt_devices));
 
+	palmtt_boardinfo[0].irq = gpio_to_irq(6);
 	spi_register_board_info(palmtt_boardinfo,ARRAY_SIZE(palmtt_boardinfo));
 	omap_serial_init();
-	omap_usb_init(&palmtt_usb_config);
+	omap1_usb_init(&palmtt_usb_config);
 	omap_register_i2c_bus(1, 100, NULL, 0);
-}
 
-static void __init omap_palmtt_map_io(void)
-{
-	omap1_map_common_io();
+	omapfb_set_lcd_config(&palmtt_lcd_config);
 }
 
 MACHINE_START(OMAP_PALMTT, "OMAP1510 based Palm Tungsten|T")
-	.phys_io	= 0xfff00000,
-	.io_pg_offst	= ((0xfef00000) >> 18) & 0xfffc,
-	.boot_params	= 0x10000100,
-	.map_io		= omap_palmtt_map_io,
-	.init_irq	= omap_palmtt_init_irq,
+	.atag_offset	= 0x100,
+	.map_io		= omap15xx_map_io,
+	.init_early     = omap1_init_early,
+	.init_irq	= omap1_init_irq,
+	.handle_irq	= omap1_handle_irq,
 	.init_machine	= omap_palmtt_init,
-	.timer		= &omap_timer,
+	.init_late	= omap1_init_late,
+	.init_time	= omap1_timer_init,
+	.restart	= omap1_restart,
 MACHINE_END

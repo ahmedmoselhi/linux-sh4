@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Hardware definitions for HP iPAQ h5xxx Handheld Computers
  *
@@ -5,11 +6,6 @@
  * Copyright 2002       Jamey Hicks <jamey.hicks@hp.com>
  * Copyright 2004-2005  Phil Blundell <pb@handhelds.org>
  * Copyright 2007-2008  Anton Vorontsov <cbouatmailru@gmail.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  *
  * COMPAQ COMPUTER CORPORATION MAKES NO WARRANTIES, EXPRESSED OR IMPLIED,
  * AS TO THE USEFULNESS OR CORRECTNESS OF THIS CODE OR ITS
@@ -28,10 +24,12 @@
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
+#include <asm/irq.h>
 
-#include <mach/pxa25x.h>
-#include <mach/h5000.h>
-#include <mach/udc.h>
+#include "pxa25x.h"
+#include "h5000.h"
+#include "udc.h"
+#include <mach/smemc.h>
 
 #include "generic.h"
 
@@ -172,11 +170,11 @@ static unsigned long h5000_pin_config[] __initdata = {
 
 static void fix_msc(void)
 {
-	MSC0 = 0x129c24f2;
-	MSC1 = 0x7ff424fa;
-	MSC2 = 0x7ff47ff4;
+	__raw_writel(0x129c24f2, MSC0);
+	__raw_writel(0x7ff424fa, MSC1);
+	__raw_writel(0x7ff47ff4, MSC2);
 
-	MDREFR |= 0x02080000;
+	__raw_writel(__raw_readl(MDREFR) | 0x02080000, MDREFR);
 }
 
 /*
@@ -193,16 +191,20 @@ static void __init h5000_init(void)
 	fix_msc();
 
 	pxa2xx_mfp_config(ARRAY_AND_SIZE(h5000_pin_config));
+	pxa_set_ffuart_info(NULL);
+	pxa_set_btuart_info(NULL);
+	pxa_set_stuart_info(NULL);
 	pxa_set_udc_info(&h5000_udc_mach_info);
 	platform_add_devices(ARRAY_AND_SIZE(devices));
 }
 
 MACHINE_START(H5400, "HP iPAQ H5000")
-	.phys_io = 0x40000000,
-	.io_pg_offst = (io_p2v(0x40000000) >> 18) & 0xfffc,
-	.boot_params = 0xa0000100,
-	.map_io = pxa_map_io,
+	.atag_offset = 0x100,
+	.map_io = pxa25x_map_io,
+	.nr_irqs = PXA_NR_IRQS,
 	.init_irq = pxa25x_init_irq,
-	.timer = &pxa_timer,
+	.handle_irq = pxa25x_handle_irq,
+	.init_time	= pxa_timer_init,
 	.init_machine = h5000_init,
+	.restart	= pxa_restart,
 MACHINE_END

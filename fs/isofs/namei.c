@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/fs/isofs/namei.c
  *
@@ -6,7 +7,7 @@
  *  (C) 1991  Linus Torvalds - minix filesystem
  */
 
-#include <linux/smp_lock.h>
+#include <linux/gfp.h>
 #include "isofs.h"
 
 /*
@@ -18,26 +19,11 @@ static int
 isofs_cmp(struct dentry *dentry, const char *compare, int dlen)
 {
 	struct qstr qstr;
-
-	if (!compare)
-		return 1;
-
-	/* check special "." and ".." files */
-	if (dlen == 1) {
-		/* "." */
-		if (compare[0] == 0) {
-			if (!dentry->d_name.len)
-				return 0;
-			compare = ".";
-		} else if (compare[0] == 1) {
-			compare = "..";
-			dlen = 2;
-		}
-	}
-
 	qstr.name = compare;
 	qstr.len = dlen;
-	return dentry->d_op->d_compare(dentry, &dentry->d_name, &qstr);
+	if (likely(!dentry->d_op))
+		return dentry->d_name.len != dlen || memcmp(dentry->d_name.name, compare, dlen);
+	return dentry->d_op->d_compare(NULL, dentry->d_name.len, dentry->d_name.name, &qstr);
 }
 
 /*
@@ -146,7 +132,8 @@ isofs_find_entry(struct inode *dir, struct dentry *dentry,
 				(!(de->flags[-sbi->s_high_sierra] & 1))) &&
 			(sbi->s_showassoc ||
 				(!(de->flags[-sbi->s_high_sierra] & 4)))) {
-			match = (isofs_cmp(dentry, dpnt, dlen) == 0);
+			if (dpnt && (dlen > 1 || dpnt[0] > 1))
+				match = (isofs_cmp(dentry, dpnt, dlen) == 0);
 		}
 		if (match) {
 			isofs_normalize_block_and_offset(de,
@@ -162,7 +149,7 @@ isofs_find_entry(struct inode *dir, struct dentry *dentry,
 	return 0;
 }
 
-struct dentry *isofs_lookup(struct inode *dir, struct dentry *dentry, struct nameidata *nd)
+struct dentry *isofs_lookup(struct inode *dir, struct dentry *dentry, unsigned int flags)
 {
 	int found;
 	unsigned long uninitialized_var(block);
@@ -170,27 +157,17 @@ struct dentry *isofs_lookup(struct inode *dir, struct dentry *dentry, struct nam
 	struct inode *inode;
 	struct page *page;
 
-	dentry->d_op = dir->i_sb->s_root->d_op;
-
 	page = alloc_page(GFP_USER);
 	if (!page)
 		return ERR_PTR(-ENOMEM);
 
-	lock_kernel();
 	found = isofs_find_entry(dir, dentry,
 				&block, &offset,
 				page_address(page),
 				1024 + page_address(page));
 	__free_page(page);
 
-	inode = NULL;
-	if (found) {
-		inode = isofs_iget(dir->i_sb, block, offset);
-		if (IS_ERR(inode)) {
-			unlock_kernel();
-			return ERR_CAST(inode);
-		}
-	}
-	unlock_kernel();
+	inode = found ? isofs_iget(dir->i_sb, block, offset) : NULL;
+
 	return d_splice_alias(inode, dentry);
 }

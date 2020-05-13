@@ -30,15 +30,15 @@
  *
  */
 
+#include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/interrupt.h>
-#include <linux/module.h>
+#include <linux/export.h>
+#include <linux/syscore_ops.h>
 #include <asm/mach-au1x00/au1000.h>
 #include <asm/mach-au1x00/au1xxx_dbdma.h>
-
-#if defined(CONFIG_SOC_AU1550) || defined(CONFIG_SOC_AU1200)
 
 /*
  * The Descriptor Based DMA supports up to 16 channels.
@@ -56,128 +56,144 @@ static DEFINE_SPINLOCK(au1xxx_dbdma_spin_lock);
 /* I couldn't find a macro that did this... */
 #define ALIGN_ADDR(x, a)	((((u32)(x)) + (a-1)) & ~(a-1))
 
-static dbdma_global_t *dbdma_gptr = (dbdma_global_t *)DDMA_GLOBAL_BASE;
+static dbdma_global_t *dbdma_gptr =
+			(dbdma_global_t *)KSEG1ADDR(AU1550_DBDMA_CONF_PHYS_ADDR);
 static int dbdma_initialized;
-static void au1xxx_dbdma_init(void);
 
-static dbdev_tab_t dbdev_tab[] = {
-#ifdef CONFIG_SOC_AU1550
+static dbdev_tab_t *dbdev_tab;
+
+static dbdev_tab_t au1550_dbdev_tab[] __initdata = {
 	/* UARTS */
-	{ DSCR_CMD0_UART0_TX, DEV_FLAGS_OUT, 0, 8, 0x11100004, 0, 0 },
-	{ DSCR_CMD0_UART0_RX, DEV_FLAGS_IN, 0, 8, 0x11100000, 0, 0 },
-	{ DSCR_CMD0_UART3_TX, DEV_FLAGS_OUT, 0, 8, 0x11400004, 0, 0 },
-	{ DSCR_CMD0_UART3_RX, DEV_FLAGS_IN, 0, 8, 0x11400000, 0, 0 },
+	{ AU1550_DSCR_CMD0_UART0_TX, DEV_FLAGS_OUT, 0, 8, 0x11100004, 0, 0 },
+	{ AU1550_DSCR_CMD0_UART0_RX, DEV_FLAGS_IN,  0, 8, 0x11100000, 0, 0 },
+	{ AU1550_DSCR_CMD0_UART3_TX, DEV_FLAGS_OUT, 0, 8, 0x11400004, 0, 0 },
+	{ AU1550_DSCR_CMD0_UART3_RX, DEV_FLAGS_IN,  0, 8, 0x11400000, 0, 0 },
 
 	/* EXT DMA */
-	{ DSCR_CMD0_DMA_REQ0, 0, 0, 0, 0x00000000, 0, 0 },
-	{ DSCR_CMD0_DMA_REQ1, 0, 0, 0, 0x00000000, 0, 0 },
-	{ DSCR_CMD0_DMA_REQ2, 0, 0, 0, 0x00000000, 0, 0 },
-	{ DSCR_CMD0_DMA_REQ3, 0, 0, 0, 0x00000000, 0, 0 },
+	{ AU1550_DSCR_CMD0_DMA_REQ0, 0, 0, 0, 0x00000000, 0, 0 },
+	{ AU1550_DSCR_CMD0_DMA_REQ1, 0, 0, 0, 0x00000000, 0, 0 },
+	{ AU1550_DSCR_CMD0_DMA_REQ2, 0, 0, 0, 0x00000000, 0, 0 },
+	{ AU1550_DSCR_CMD0_DMA_REQ3, 0, 0, 0, 0x00000000, 0, 0 },
 
 	/* USB DEV */
-	{ DSCR_CMD0_USBDEV_RX0, DEV_FLAGS_IN, 4, 8, 0x10200000, 0, 0 },
-	{ DSCR_CMD0_USBDEV_TX0, DEV_FLAGS_OUT, 4, 8, 0x10200004, 0, 0 },
-	{ DSCR_CMD0_USBDEV_TX1, DEV_FLAGS_OUT, 4, 8, 0x10200008, 0, 0 },
-	{ DSCR_CMD0_USBDEV_TX2, DEV_FLAGS_OUT, 4, 8, 0x1020000c, 0, 0 },
-	{ DSCR_CMD0_USBDEV_RX3, DEV_FLAGS_IN, 4, 8, 0x10200010, 0, 0 },
-	{ DSCR_CMD0_USBDEV_RX4, DEV_FLAGS_IN, 4, 8, 0x10200014, 0, 0 },
+	{ AU1550_DSCR_CMD0_USBDEV_RX0, DEV_FLAGS_IN,  4, 8, 0x10200000, 0, 0 },
+	{ AU1550_DSCR_CMD0_USBDEV_TX0, DEV_FLAGS_OUT, 4, 8, 0x10200004, 0, 0 },
+	{ AU1550_DSCR_CMD0_USBDEV_TX1, DEV_FLAGS_OUT, 4, 8, 0x10200008, 0, 0 },
+	{ AU1550_DSCR_CMD0_USBDEV_TX2, DEV_FLAGS_OUT, 4, 8, 0x1020000c, 0, 0 },
+	{ AU1550_DSCR_CMD0_USBDEV_RX3, DEV_FLAGS_IN,  4, 8, 0x10200010, 0, 0 },
+	{ AU1550_DSCR_CMD0_USBDEV_RX4, DEV_FLAGS_IN,  4, 8, 0x10200014, 0, 0 },
 
-	/* PSC 0 */
-	{ DSCR_CMD0_PSC0_TX, DEV_FLAGS_OUT, 0, 0, 0x11a0001c, 0, 0 },
-	{ DSCR_CMD0_PSC0_RX, DEV_FLAGS_IN, 0, 0, 0x11a0001c, 0, 0 },
+	/* PSCs */
+	{ AU1550_DSCR_CMD0_PSC0_TX, DEV_FLAGS_OUT, 0, 0, 0x11a0001c, 0, 0 },
+	{ AU1550_DSCR_CMD0_PSC0_RX, DEV_FLAGS_IN,  0, 0, 0x11a0001c, 0, 0 },
+	{ AU1550_DSCR_CMD0_PSC1_TX, DEV_FLAGS_OUT, 0, 0, 0x11b0001c, 0, 0 },
+	{ AU1550_DSCR_CMD0_PSC1_RX, DEV_FLAGS_IN,  0, 0, 0x11b0001c, 0, 0 },
+	{ AU1550_DSCR_CMD0_PSC2_TX, DEV_FLAGS_OUT, 0, 0, 0x10a0001c, 0, 0 },
+	{ AU1550_DSCR_CMD0_PSC2_RX, DEV_FLAGS_IN,  0, 0, 0x10a0001c, 0, 0 },
+	{ AU1550_DSCR_CMD0_PSC3_TX, DEV_FLAGS_OUT, 0, 0, 0x10b0001c, 0, 0 },
+	{ AU1550_DSCR_CMD0_PSC3_RX, DEV_FLAGS_IN,  0, 0, 0x10b0001c, 0, 0 },
 
-	/* PSC 1 */
-	{ DSCR_CMD0_PSC1_TX, DEV_FLAGS_OUT, 0, 0, 0x11b0001c, 0, 0 },
-	{ DSCR_CMD0_PSC1_RX, DEV_FLAGS_IN, 0, 0, 0x11b0001c, 0, 0 },
-
-	/* PSC 2 */
-	{ DSCR_CMD0_PSC2_TX, DEV_FLAGS_OUT, 0, 0, 0x10a0001c, 0, 0 },
-	{ DSCR_CMD0_PSC2_RX, DEV_FLAGS_IN, 0, 0, 0x10a0001c, 0, 0 },
-
-	/* PSC 3 */
-	{ DSCR_CMD0_PSC3_TX, DEV_FLAGS_OUT, 0, 0, 0x10b0001c, 0, 0 },
-	{ DSCR_CMD0_PSC3_RX, DEV_FLAGS_IN, 0, 0, 0x10b0001c, 0, 0 },
-
-	{ DSCR_CMD0_PCI_WRITE, 0, 0, 0, 0x00000000, 0, 0 },	/* PCI */
-	{ DSCR_CMD0_NAND_FLASH, 0, 0, 0, 0x00000000, 0, 0 },	/* NAND */
+	{ AU1550_DSCR_CMD0_PCI_WRITE,  0, 0, 0, 0x00000000, 0, 0 },  /* PCI */
+	{ AU1550_DSCR_CMD0_NAND_FLASH, 0, 0, 0, 0x00000000, 0, 0 }, /* NAND */
 
 	/* MAC 0 */
-	{ DSCR_CMD0_MAC0_RX, DEV_FLAGS_IN, 0, 0, 0x00000000, 0, 0 },
-	{ DSCR_CMD0_MAC0_TX, DEV_FLAGS_OUT, 0, 0, 0x00000000, 0, 0 },
+	{ AU1550_DSCR_CMD0_MAC0_RX, DEV_FLAGS_IN,  0, 0, 0x00000000, 0, 0 },
+	{ AU1550_DSCR_CMD0_MAC0_TX, DEV_FLAGS_OUT, 0, 0, 0x00000000, 0, 0 },
 
 	/* MAC 1 */
-	{ DSCR_CMD0_MAC1_RX, DEV_FLAGS_IN, 0, 0, 0x00000000, 0, 0 },
-	{ DSCR_CMD0_MAC1_TX, DEV_FLAGS_OUT, 0, 0, 0x00000000, 0, 0 },
-
-#endif /* CONFIG_SOC_AU1550 */
-
-#ifdef CONFIG_SOC_AU1200
-	{ DSCR_CMD0_UART0_TX, DEV_FLAGS_OUT, 0, 8, 0x11100004, 0, 0 },
-	{ DSCR_CMD0_UART0_RX, DEV_FLAGS_IN, 0, 8, 0x11100000, 0, 0 },
-	{ DSCR_CMD0_UART1_TX, DEV_FLAGS_OUT, 0, 8, 0x11200004, 0, 0 },
-	{ DSCR_CMD0_UART1_RX, DEV_FLAGS_IN, 0, 8, 0x11200000, 0, 0 },
-
-	{ DSCR_CMD0_DMA_REQ0, 0, 0, 0, 0x00000000, 0, 0 },
-	{ DSCR_CMD0_DMA_REQ1, 0, 0, 0, 0x00000000, 0, 0 },
-
-	{ DSCR_CMD0_MAE_BE, DEV_FLAGS_ANYUSE, 0, 0, 0x00000000, 0, 0 },
-	{ DSCR_CMD0_MAE_FE, DEV_FLAGS_ANYUSE, 0, 0, 0x00000000, 0, 0 },
-	{ DSCR_CMD0_MAE_BOTH, DEV_FLAGS_ANYUSE, 0, 0, 0x00000000, 0, 0 },
-	{ DSCR_CMD0_LCD, DEV_FLAGS_ANYUSE, 0, 0, 0x00000000, 0, 0 },
-
-	{ DSCR_CMD0_SDMS_TX0, DEV_FLAGS_OUT, 4, 8, 0x10600000, 0, 0 },
-	{ DSCR_CMD0_SDMS_RX0, DEV_FLAGS_IN, 4, 8, 0x10600004, 0, 0 },
-	{ DSCR_CMD0_SDMS_TX1, DEV_FLAGS_OUT, 4, 8, 0x10680000, 0, 0 },
-	{ DSCR_CMD0_SDMS_RX1, DEV_FLAGS_IN, 4, 8, 0x10680004, 0, 0 },
-
-	{ DSCR_CMD0_AES_RX, DEV_FLAGS_IN , 4, 32, 0x10300008, 0, 0 },
-	{ DSCR_CMD0_AES_TX, DEV_FLAGS_OUT, 4, 32, 0x10300004, 0, 0 },
-
-	{ DSCR_CMD0_PSC0_TX, DEV_FLAGS_OUT, 0, 16, 0x11a0001c, 0, 0 },
-	{ DSCR_CMD0_PSC0_RX, DEV_FLAGS_IN, 0, 16, 0x11a0001c, 0, 0 },
-	{ DSCR_CMD0_PSC0_SYNC, DEV_FLAGS_ANYUSE, 0, 0, 0x00000000, 0, 0 },
-
-	{ DSCR_CMD0_PSC1_TX, DEV_FLAGS_OUT, 0, 16, 0x11b0001c, 0, 0 },
-	{ DSCR_CMD0_PSC1_RX, DEV_FLAGS_IN, 0, 16, 0x11b0001c, 0, 0 },
-	{ DSCR_CMD0_PSC1_SYNC, DEV_FLAGS_ANYUSE, 0, 0, 0x00000000, 0, 0 },
-
-	{ DSCR_CMD0_CIM_RXA, DEV_FLAGS_IN, 0, 32, 0x14004020, 0, 0 },
-	{ DSCR_CMD0_CIM_RXB, DEV_FLAGS_IN, 0, 32, 0x14004040, 0, 0 },
-	{ DSCR_CMD0_CIM_RXC, DEV_FLAGS_IN, 0, 32, 0x14004060, 0, 0 },
-	{ DSCR_CMD0_CIM_SYNC, DEV_FLAGS_ANYUSE, 0, 0, 0x00000000, 0, 0 },
-
-	{ DSCR_CMD0_NAND_FLASH, DEV_FLAGS_IN, 0, 0, 0x00000000, 0, 0 },
-
-#endif /* CONFIG_SOC_AU1200 */
+	{ AU1550_DSCR_CMD0_MAC1_RX, DEV_FLAGS_IN,  0, 0, 0x00000000, 0, 0 },
+	{ AU1550_DSCR_CMD0_MAC1_TX, DEV_FLAGS_OUT, 0, 0, 0x00000000, 0, 0 },
 
 	{ DSCR_CMD0_THROTTLE, DEV_FLAGS_ANYUSE, 0, 0, 0x00000000, 0, 0 },
-	{ DSCR_CMD0_ALWAYS, DEV_FLAGS_ANYUSE, 0, 0, 0x00000000, 0, 0 },
-
-	/* Provide 16 user definable device types */
-	{ ~0, 0, 0, 0, 0, 0, 0 },
-	{ ~0, 0, 0, 0, 0, 0, 0 },
-	{ ~0, 0, 0, 0, 0, 0, 0 },
-	{ ~0, 0, 0, 0, 0, 0, 0 },
-	{ ~0, 0, 0, 0, 0, 0, 0 },
-	{ ~0, 0, 0, 0, 0, 0, 0 },
-	{ ~0, 0, 0, 0, 0, 0, 0 },
-	{ ~0, 0, 0, 0, 0, 0, 0 },
-	{ ~0, 0, 0, 0, 0, 0, 0 },
-	{ ~0, 0, 0, 0, 0, 0, 0 },
-	{ ~0, 0, 0, 0, 0, 0, 0 },
-	{ ~0, 0, 0, 0, 0, 0, 0 },
-	{ ~0, 0, 0, 0, 0, 0, 0 },
-	{ ~0, 0, 0, 0, 0, 0, 0 },
-	{ ~0, 0, 0, 0, 0, 0, 0 },
-	{ ~0, 0, 0, 0, 0, 0, 0 },
+	{ DSCR_CMD0_ALWAYS,   DEV_FLAGS_ANYUSE, 0, 0, 0x00000000, 0, 0 },
 };
 
-#define DBDEV_TAB_SIZE	ARRAY_SIZE(dbdev_tab)
+static dbdev_tab_t au1200_dbdev_tab[] __initdata = {
+	{ AU1200_DSCR_CMD0_UART0_TX, DEV_FLAGS_OUT, 0, 8, 0x11100004, 0, 0 },
+	{ AU1200_DSCR_CMD0_UART0_RX, DEV_FLAGS_IN,  0, 8, 0x11100000, 0, 0 },
+	{ AU1200_DSCR_CMD0_UART1_TX, DEV_FLAGS_OUT, 0, 8, 0x11200004, 0, 0 },
+	{ AU1200_DSCR_CMD0_UART1_RX, DEV_FLAGS_IN,  0, 8, 0x11200000, 0, 0 },
 
-#ifdef CONFIG_PM
-static u32 au1xxx_dbdma_pm_regs[NUM_DBDMA_CHANS + 1][6];
-#endif
+	{ AU1200_DSCR_CMD0_DMA_REQ0, 0, 0, 0, 0x00000000, 0, 0 },
+	{ AU1200_DSCR_CMD0_DMA_REQ1, 0, 0, 0, 0x00000000, 0, 0 },
 
+	{ AU1200_DSCR_CMD0_MAE_BE, DEV_FLAGS_ANYUSE, 0, 0, 0x00000000, 0, 0 },
+	{ AU1200_DSCR_CMD0_MAE_FE, DEV_FLAGS_ANYUSE, 0, 0, 0x00000000, 0, 0 },
+	{ AU1200_DSCR_CMD0_MAE_BOTH, DEV_FLAGS_ANYUSE, 0, 0, 0x00000000, 0, 0 },
+	{ AU1200_DSCR_CMD0_LCD, DEV_FLAGS_ANYUSE, 0, 0, 0x00000000, 0, 0 },
+
+	{ AU1200_DSCR_CMD0_SDMS_TX0, DEV_FLAGS_OUT, 4, 8, 0x10600000, 0, 0 },
+	{ AU1200_DSCR_CMD0_SDMS_RX0, DEV_FLAGS_IN,  4, 8, 0x10600004, 0, 0 },
+	{ AU1200_DSCR_CMD0_SDMS_TX1, DEV_FLAGS_OUT, 4, 8, 0x10680000, 0, 0 },
+	{ AU1200_DSCR_CMD0_SDMS_RX1, DEV_FLAGS_IN,  4, 8, 0x10680004, 0, 0 },
+
+	{ AU1200_DSCR_CMD0_AES_RX, DEV_FLAGS_IN , 4, 32, 0x10300008, 0, 0 },
+	{ AU1200_DSCR_CMD0_AES_TX, DEV_FLAGS_OUT, 4, 32, 0x10300004, 0, 0 },
+
+	{ AU1200_DSCR_CMD0_PSC0_TX,   DEV_FLAGS_OUT, 0, 16, 0x11a0001c, 0, 0 },
+	{ AU1200_DSCR_CMD0_PSC0_RX,   DEV_FLAGS_IN,  0, 16, 0x11a0001c, 0, 0 },
+	{ AU1200_DSCR_CMD0_PSC0_SYNC, DEV_FLAGS_ANYUSE, 0, 0, 0x00000000, 0, 0 },
+	{ AU1200_DSCR_CMD0_PSC1_TX,   DEV_FLAGS_OUT, 0, 16, 0x11b0001c, 0, 0 },
+	{ AU1200_DSCR_CMD0_PSC1_RX,   DEV_FLAGS_IN,  0, 16, 0x11b0001c, 0, 0 },
+	{ AU1200_DSCR_CMD0_PSC1_SYNC, DEV_FLAGS_ANYUSE, 0, 0, 0x00000000, 0, 0 },
+
+	{ AU1200_DSCR_CMD0_CIM_RXA,  DEV_FLAGS_IN, 0, 32, 0x14004020, 0, 0 },
+	{ AU1200_DSCR_CMD0_CIM_RXB,  DEV_FLAGS_IN, 0, 32, 0x14004040, 0, 0 },
+	{ AU1200_DSCR_CMD0_CIM_RXC,  DEV_FLAGS_IN, 0, 32, 0x14004060, 0, 0 },
+	{ AU1200_DSCR_CMD0_CIM_SYNC, DEV_FLAGS_ANYUSE, 0, 0, 0x00000000, 0, 0 },
+
+	{ AU1200_DSCR_CMD0_NAND_FLASH, DEV_FLAGS_IN, 0, 0, 0x00000000, 0, 0 },
+
+	{ DSCR_CMD0_THROTTLE, DEV_FLAGS_ANYUSE, 0, 0, 0x00000000, 0, 0 },
+	{ DSCR_CMD0_ALWAYS,   DEV_FLAGS_ANYUSE, 0, 0, 0x00000000, 0, 0 },
+};
+
+static dbdev_tab_t au1300_dbdev_tab[] __initdata = {
+	{ AU1300_DSCR_CMD0_UART0_TX, DEV_FLAGS_OUT, 0, 8,  0x10100004, 0, 0 },
+	{ AU1300_DSCR_CMD0_UART0_RX, DEV_FLAGS_IN,  0, 8,  0x10100000, 0, 0 },
+	{ AU1300_DSCR_CMD0_UART1_TX, DEV_FLAGS_OUT, 0, 8,  0x10101004, 0, 0 },
+	{ AU1300_DSCR_CMD0_UART1_RX, DEV_FLAGS_IN,  0, 8,  0x10101000, 0, 0 },
+	{ AU1300_DSCR_CMD0_UART2_TX, DEV_FLAGS_OUT, 0, 8,  0x10102004, 0, 0 },
+	{ AU1300_DSCR_CMD0_UART2_RX, DEV_FLAGS_IN,  0, 8,  0x10102000, 0, 0 },
+	{ AU1300_DSCR_CMD0_UART3_TX, DEV_FLAGS_OUT, 0, 8,  0x10103004, 0, 0 },
+	{ AU1300_DSCR_CMD0_UART3_RX, DEV_FLAGS_IN,  0, 8,  0x10103000, 0, 0 },
+
+	{ AU1300_DSCR_CMD0_SDMS_TX0, DEV_FLAGS_OUT, 4, 8,  0x10600000, 0, 0 },
+	{ AU1300_DSCR_CMD0_SDMS_RX0, DEV_FLAGS_IN,  4, 8,  0x10600004, 0, 0 },
+	{ AU1300_DSCR_CMD0_SDMS_TX1, DEV_FLAGS_OUT, 8, 8,  0x10601000, 0, 0 },
+	{ AU1300_DSCR_CMD0_SDMS_RX1, DEV_FLAGS_IN,  8, 8,  0x10601004, 0, 0 },
+
+	{ AU1300_DSCR_CMD0_AES_RX, DEV_FLAGS_IN ,   4, 32, 0x10300008, 0, 0 },
+	{ AU1300_DSCR_CMD0_AES_TX, DEV_FLAGS_OUT,   4, 32, 0x10300004, 0, 0 },
+
+	{ AU1300_DSCR_CMD0_PSC0_TX, DEV_FLAGS_OUT,  0, 16, 0x10a0001c, 0, 0 },
+	{ AU1300_DSCR_CMD0_PSC0_RX, DEV_FLAGS_IN,   0, 16, 0x10a0001c, 0, 0 },
+	{ AU1300_DSCR_CMD0_PSC1_TX, DEV_FLAGS_OUT,  0, 16, 0x10a0101c, 0, 0 },
+	{ AU1300_DSCR_CMD0_PSC1_RX, DEV_FLAGS_IN,   0, 16, 0x10a0101c, 0, 0 },
+	{ AU1300_DSCR_CMD0_PSC2_TX, DEV_FLAGS_OUT,  0, 16, 0x10a0201c, 0, 0 },
+	{ AU1300_DSCR_CMD0_PSC2_RX, DEV_FLAGS_IN,   0, 16, 0x10a0201c, 0, 0 },
+	{ AU1300_DSCR_CMD0_PSC3_TX, DEV_FLAGS_OUT,  0, 16, 0x10a0301c, 0, 0 },
+	{ AU1300_DSCR_CMD0_PSC3_RX, DEV_FLAGS_IN,   0, 16, 0x10a0301c, 0, 0 },
+
+	{ AU1300_DSCR_CMD0_LCD, DEV_FLAGS_ANYUSE,   0, 0,  0x00000000, 0, 0 },
+	{ AU1300_DSCR_CMD0_NAND_FLASH, DEV_FLAGS_IN, 0, 0, 0x00000000, 0, 0 },
+
+	{ AU1300_DSCR_CMD0_SDMS_TX2, DEV_FLAGS_OUT, 4, 8,  0x10602000, 0, 0 },
+	{ AU1300_DSCR_CMD0_SDMS_RX2, DEV_FLAGS_IN,  4, 8,  0x10602004, 0, 0 },
+
+	{ AU1300_DSCR_CMD0_CIM_SYNC, DEV_FLAGS_ANYUSE, 0, 0, 0x00000000, 0, 0 },
+
+	{ AU1300_DSCR_CMD0_UDMA, DEV_FLAGS_ANYUSE,  0, 32, 0x14001810, 0, 0 },
+
+	{ AU1300_DSCR_CMD0_DMA_REQ0, 0, 0, 0, 0x00000000, 0, 0 },
+	{ AU1300_DSCR_CMD0_DMA_REQ1, 0, 0, 0, 0x00000000, 0, 0 },
+
+	{ DSCR_CMD0_THROTTLE, DEV_FLAGS_ANYUSE, 0, 0, 0x00000000, 0, 0 },
+	{ DSCR_CMD0_ALWAYS,   DEV_FLAGS_ANYUSE, 0, 0, 0x00000000, 0, 0 },
+};
+
+/* 32 predefined plus 32 custom */
+#define DBDEV_TAB_SIZE		64
 
 static chan_tab_t *chan_tab_ptr[NUM_DBDMA_CHANS];
 
@@ -236,8 +252,8 @@ EXPORT_SYMBOL(au1xxx_ddma_del_device);
 u32 au1xxx_dbdma_chan_alloc(u32 srcid, u32 destid,
        void (*callback)(int, void *), void *callparam)
 {
-	unsigned long   flags;
-	u32		used, chan, rv;
+	unsigned long	flags;
+	u32		used, chan;
 	u32		dcp;
 	int		i;
 	dbdev_tab_t	*stp, *dtp;
@@ -245,13 +261,12 @@ u32 au1xxx_dbdma_chan_alloc(u32 srcid, u32 destid,
 	au1x_dma_chan_t *cp;
 
 	/*
-	 * We do the intialization on the first channel allocation.
+	 * We do the initialization on the first channel allocation.
 	 * We have to wait because of the interrupt handler initialization
 	 * which can't be done successfully during board set up.
 	 */
 	if (!dbdma_initialized)
-		au1xxx_dbdma_init();
-	dbdma_initialized = 1;
+		return 0;
 
 	stp = find_dbdev_id(srcid);
 	if (stp == NULL)
@@ -261,7 +276,6 @@ u32 au1xxx_dbdma_chan_alloc(u32 srcid, u32 destid,
 		return 0;
 
 	used = 0;
-	rv = 0;
 
 	/* Check to see if we can get both channels. */
 	spin_lock_irqsave(&au1xxx_dbdma_spin_lock, flags);
@@ -282,63 +296,65 @@ u32 au1xxx_dbdma_chan_alloc(u32 srcid, u32 destid,
 		used++;
 	spin_unlock_irqrestore(&au1xxx_dbdma_spin_lock, flags);
 
-	if (!used) {
-		/* Let's see if we can allocate a channel for it. */
-		ctp = NULL;
-		chan = 0;
-		spin_lock_irqsave(&au1xxx_dbdma_spin_lock, flags);
-		for (i = 0; i < NUM_DBDMA_CHANS; i++)
-			if (chan_tab_ptr[i] == NULL) {
-				/*
-				 * If kmalloc fails, it is caught below same
-				 * as a channel not available.
-				 */
-				ctp = kmalloc(sizeof(chan_tab_t), GFP_ATOMIC);
-				chan_tab_ptr[i] = ctp;
-				break;
-			}
-		spin_unlock_irqrestore(&au1xxx_dbdma_spin_lock, flags);
+	if (used)
+		return 0;
 
-		if (ctp != NULL) {
-			memset(ctp, 0, sizeof(chan_tab_t));
-			ctp->chan_index = chan = i;
-			dcp = DDMA_CHANNEL_BASE;
-			dcp += (0x0100 * chan);
-			ctp->chan_ptr = (au1x_dma_chan_t *)dcp;
-			cp = (au1x_dma_chan_t *)dcp;
-			ctp->chan_src = stp;
-			ctp->chan_dest = dtp;
-			ctp->chan_callback = callback;
-			ctp->chan_callparam = callparam;
-
-			/* Initialize channel configuration. */
-			i = 0;
-			if (stp->dev_intlevel)
-				i |= DDMA_CFG_SED;
-			if (stp->dev_intpolarity)
-				i |= DDMA_CFG_SP;
-			if (dtp->dev_intlevel)
-				i |= DDMA_CFG_DED;
-			if (dtp->dev_intpolarity)
-				i |= DDMA_CFG_DP;
-			if ((stp->dev_flags & DEV_FLAGS_SYNC) ||
-				(dtp->dev_flags & DEV_FLAGS_SYNC))
-					i |= DDMA_CFG_SYNC;
-			cp->ddma_cfg = i;
-			au_sync();
-
-			/* Return a non-zero value that can be used to
-			 * find the channel information in subsequent
-			 * operations.
+	/* Let's see if we can allocate a channel for it. */
+	ctp = NULL;
+	chan = 0;
+	spin_lock_irqsave(&au1xxx_dbdma_spin_lock, flags);
+	for (i = 0; i < NUM_DBDMA_CHANS; i++)
+		if (chan_tab_ptr[i] == NULL) {
+			/*
+			 * If kmalloc fails, it is caught below same
+			 * as a channel not available.
 			 */
-			rv = (u32)(&chan_tab_ptr[chan]);
-		} else {
-			/* Release devices */
-			stp->dev_flags &= ~DEV_FLAGS_INUSE;
-			dtp->dev_flags &= ~DEV_FLAGS_INUSE;
+			ctp = kmalloc(sizeof(chan_tab_t), GFP_ATOMIC);
+			chan_tab_ptr[i] = ctp;
+			break;
 		}
+	spin_unlock_irqrestore(&au1xxx_dbdma_spin_lock, flags);
+
+	if (ctp != NULL) {
+		memset(ctp, 0, sizeof(chan_tab_t));
+		ctp->chan_index = chan = i;
+		dcp = KSEG1ADDR(AU1550_DBDMA_PHYS_ADDR);
+		dcp += (0x0100 * chan);
+		ctp->chan_ptr = (au1x_dma_chan_t *)dcp;
+		cp = (au1x_dma_chan_t *)dcp;
+		ctp->chan_src = stp;
+		ctp->chan_dest = dtp;
+		ctp->chan_callback = callback;
+		ctp->chan_callparam = callparam;
+
+		/* Initialize channel configuration. */
+		i = 0;
+		if (stp->dev_intlevel)
+			i |= DDMA_CFG_SED;
+		if (stp->dev_intpolarity)
+			i |= DDMA_CFG_SP;
+		if (dtp->dev_intlevel)
+			i |= DDMA_CFG_DED;
+		if (dtp->dev_intpolarity)
+			i |= DDMA_CFG_DP;
+		if ((stp->dev_flags & DEV_FLAGS_SYNC) ||
+			(dtp->dev_flags & DEV_FLAGS_SYNC))
+				i |= DDMA_CFG_SYNC;
+		cp->ddma_cfg = i;
+		wmb(); /* drain writebuffer */
+
+		/*
+		 * Return a non-zero value that can be used to find the channel
+		 * information in subsequent operations.
+		 */
+		return (u32)(&chan_tab_ptr[chan]);
 	}
-	return rv;
+
+	/* Release devices */
+	stp->dev_flags &= ~DEV_FLAGS_INUSE;
+	dtp->dev_flags &= ~DEV_FLAGS_INUSE;
+
+	return 0;
 }
 EXPORT_SYMBOL(au1xxx_dbdma_chan_alloc);
 
@@ -395,8 +411,8 @@ u32 au1xxx_dbdma_ring_alloc(u32 chanid, int entries)
 	 * and if we try that first we are likely to not waste larger
 	 * slabs of memory.
 	 */
-	desc_base = (u32)kmalloc(entries * sizeof(au1x_ddma_desc_t),
-				 GFP_KERNEL|GFP_DMA);
+	desc_base = (u32)kmalloc_array(entries, sizeof(au1x_ddma_desc_t),
+				       GFP_KERNEL|GFP_DMA);
 	if (desc_base == 0)
 		return 0;
 
@@ -412,8 +428,11 @@ u32 au1xxx_dbdma_ring_alloc(u32 chanid, int entries)
 		if (desc_base == 0)
 			return 0;
 
+		ctp->cdb_membase = desc_base;
 		desc_base = ALIGN_ADDR(desc_base, sizeof(au1x_ddma_desc_t));
-	}
+	} else
+		ctp->cdb_membase = desc_base;
+
 	dp = (au1x_ddma_desc_t *)desc_base;
 
 	/* Keep track of the base descriptor. */
@@ -493,7 +512,7 @@ u32 au1xxx_dbdma_ring_alloc(u32 chanid, int entries)
 		break;
 	}
 
-	/* If source input is FIFO, set static address.	*/
+	/* If source input is FIFO, set static address. */
 	if (stp->dev_flags & DEV_FLAGS_IN) {
 		if (stp->dev_flags & DEV_FLAGS_BURSTABLE)
 			src1 |= DSCR_SRC1_SAM(DSCR_xAM_BURST);
@@ -569,7 +588,7 @@ EXPORT_SYMBOL(au1xxx_dbdma_ring_alloc);
  * This updates the source pointer and byte count.  Normally used
  * for memory to fifo transfers.
  */
-u32 _au1xxx_dbdma_put_source(u32 chanid, void *buf, int nbytes, u32 flags)
+u32 au1xxx_dbdma_put_source(u32 chanid, dma_addr_t buf, int nbytes, u32 flags)
 {
 	chan_tab_t		*ctp;
 	au1x_ddma_desc_t	*dp;
@@ -595,7 +614,7 @@ u32 _au1xxx_dbdma_put_source(u32 chanid, void *buf, int nbytes, u32 flags)
 		return 0;
 
 	/* Load up buffer address and byte count. */
-	dp->dscr_source0 = virt_to_phys(buf);
+	dp->dscr_source0 = buf & ~0UL;
 	dp->dscr_cmd1 = nbytes;
 	/* Check flags */
 	if (flags & DDMA_FLAGS_IE)
@@ -612,24 +631,23 @@ u32 _au1xxx_dbdma_put_source(u32 chanid, void *buf, int nbytes, u32 flags)
 	 */
 	dma_cache_wback_inv((unsigned long)buf, nbytes);
 	dp->dscr_cmd0 |= DSCR_CMD0_V;	/* Let it rip */
-	au_sync();
-	dma_cache_wback_inv((unsigned long)dp, sizeof(dp));
+	wmb(); /* drain writebuffer */
+	dma_cache_wback_inv((unsigned long)dp, sizeof(*dp));
 	ctp->chan_ptr->ddma_dbell = 0;
 
-	/* Get next descriptor pointer.	*/
+	/* Get next descriptor pointer. */
 	ctp->put_ptr = phys_to_virt(DSCR_GET_NXTPTR(dp->dscr_nxtptr));
 
 	/* Return something non-zero. */
 	return nbytes;
 }
-EXPORT_SYMBOL(_au1xxx_dbdma_put_source);
+EXPORT_SYMBOL(au1xxx_dbdma_put_source);
 
 /* Put a destination buffer into the DMA ring.
  * This updates the destination pointer and byte count.  Normally used
  * to place an empty buffer into the ring for fifo to memory transfers.
  */
-u32
-_au1xxx_dbdma_put_dest(u32 chanid, void *buf, int nbytes, u32 flags)
+u32 au1xxx_dbdma_put_dest(u32 chanid, dma_addr_t buf, int nbytes, u32 flags)
 {
 	chan_tab_t		*ctp;
 	au1x_ddma_desc_t	*dp;
@@ -659,7 +677,7 @@ _au1xxx_dbdma_put_dest(u32 chanid, void *buf, int nbytes, u32 flags)
 	if (flags & DDMA_FLAGS_NOIE)
 		dp->dscr_cmd0 &= ~DSCR_CMD0_IE;
 
-	dp->dscr_dest0 = virt_to_phys(buf);
+	dp->dscr_dest0 = buf & ~0UL;
 	dp->dscr_cmd1 = nbytes;
 #if 0
 	printk(KERN_DEBUG "cmd0:%x cmd1:%x source0:%x source1:%x dest0:%x dest1:%x\n",
@@ -675,17 +693,17 @@ _au1xxx_dbdma_put_dest(u32 chanid, void *buf, int nbytes, u32 flags)
 	 */
 	dma_cache_inv((unsigned long)buf, nbytes);
 	dp->dscr_cmd0 |= DSCR_CMD0_V;	/* Let it rip */
-	au_sync();
-	dma_cache_wback_inv((unsigned long)dp, sizeof(dp));
+	wmb(); /* drain writebuffer */
+	dma_cache_wback_inv((unsigned long)dp, sizeof(*dp));
 	ctp->chan_ptr->ddma_dbell = 0;
 
-	/* Get next descriptor pointer.	*/
+	/* Get next descriptor pointer. */
 	ctp->put_ptr = phys_to_virt(DSCR_GET_NXTPTR(dp->dscr_nxtptr));
 
 	/* Return something non-zero. */
 	return nbytes;
 }
-EXPORT_SYMBOL(_au1xxx_dbdma_put_dest);
+EXPORT_SYMBOL(au1xxx_dbdma_put_dest);
 
 /*
  * Get a destination buffer into the DMA ring.
@@ -724,7 +742,7 @@ u32 au1xxx_dbdma_get_dest(u32 chanid, void **buf, int *nbytes)
 	*nbytes = dp->dscr_cmd1;
 	rv = dp->dscr_stat;
 
-	/* Get next descriptor pointer.	*/
+	/* Get next descriptor pointer. */
 	ctp->get_ptr = phys_to_virt(DSCR_GET_NXTPTR(dp->dscr_nxtptr));
 
 	/* Return something non-zero. */
@@ -742,7 +760,7 @@ void au1xxx_dbdma_stop(u32 chanid)
 
 	cp = ctp->chan_ptr;
 	cp->ddma_cfg &= ~DDMA_CFG_EN;	/* Disable channel */
-	au_sync();
+	wmb(); /* drain writebuffer */
 	while (!(cp->ddma_stat & DDMA_STAT_H)) {
 		udelay(1);
 		halt_timeout++;
@@ -753,7 +771,7 @@ void au1xxx_dbdma_stop(u32 chanid)
 	}
 	/* clear current desc valid and doorbell */
 	cp->ddma_stat |= (DDMA_STAT_DB | DDMA_STAT_V);
-	au_sync();
+	wmb(); /* drain writebuffer */
 }
 EXPORT_SYMBOL(au1xxx_dbdma_stop);
 
@@ -771,9 +789,9 @@ void au1xxx_dbdma_start(u32 chanid)
 	cp = ctp->chan_ptr;
 	cp->ddma_desptr = virt_to_phys(ctp->cur_ptr);
 	cp->ddma_cfg |= DDMA_CFG_EN;	/* Enable channel */
-	au_sync();
+	wmb(); /* drain writebuffer */
 	cp->ddma_dbell = 0;
-	au_sync();
+	wmb(); /* drain writebuffer */
 }
 EXPORT_SYMBOL(au1xxx_dbdma_start);
 
@@ -814,7 +832,7 @@ u32 au1xxx_get_dma_residue(u32 chanid)
 
 	/* This is only valid if the channel is stopped. */
 	rv = cp->ddma_bytecnt;
-	au_sync();
+	wmb(); /* drain writebuffer */
 
 	return rv;
 }
@@ -831,7 +849,7 @@ void au1xxx_dbdma_chan_free(u32 chanid)
 
 	au1xxx_dbdma_stop(chanid);
 
-	kfree((void *)ctp->chan_desc_base);
+	kfree((void *)ctp->cdb_membase);
 
 	stp->dev_flags &= ~DEV_FLAGS_INUSE;
 	dtp->dev_flags &= ~DEV_FLAGS_INUSE;
@@ -850,7 +868,7 @@ static irqreturn_t dbdma_interrupt(int irq, void *dev_id)
 	au1x_dma_chan_t *cp;
 
 	intstat = dbdma_gptr->ddma_intstat;
-	au_sync();
+	wmb(); /* drain writebuffer */
 	chan_index = __ffs(intstat);
 
 	ctp = chan_tab_ptr[chan_index];
@@ -859,7 +877,7 @@ static irqreturn_t dbdma_interrupt(int irq, void *dev_id)
 
 	/* Reset interrupt. */
 	cp->ddma_irq = 0;
-	au_sync();
+	wmb(); /* drain writebuffer */
 
 	if (ctp->chan_callback)
 		ctp->chan_callback(irq, ctp->chan_callparam);
@@ -868,34 +886,12 @@ static irqreturn_t dbdma_interrupt(int irq, void *dev_id)
 	return IRQ_RETVAL(1);
 }
 
-static void au1xxx_dbdma_init(void)
-{
-	int irq_nr;
-
-	dbdma_gptr->ddma_config = 0;
-	dbdma_gptr->ddma_throttle = 0;
-	dbdma_gptr->ddma_inten = 0xffff;
-	au_sync();
-
-#if defined(CONFIG_SOC_AU1550)
-	irq_nr = AU1550_DDMA_INT;
-#elif defined(CONFIG_SOC_AU1200)
-	irq_nr = AU1200_DDMA_INT;
-#else
-	#error Unknown Au1x00 SOC
-#endif
-
-	if (request_irq(irq_nr, dbdma_interrupt, IRQF_DISABLED,
-			"Au1xxx dbdma", (void *)dbdma_gptr))
-		printk(KERN_ERR "Can't get 1550 dbdma irq");
-}
-
 void au1xxx_dbdma_dump(u32 chanid)
 {
 	chan_tab_t	 *ctp;
 	au1x_ddma_desc_t *dp;
 	dbdev_tab_t	 *stp, *dtp;
-	au1x_dma_chan_t  *cp;
+	au1x_dma_chan_t	 *cp;
 	u32 i		 = 0;
 
 	ctp = *((chan_tab_t **)chanid);
@@ -903,7 +899,7 @@ void au1xxx_dbdma_dump(u32 chanid)
 	dtp = ctp->chan_dest;
 	cp = ctp->chan_ptr;
 
-	printk(KERN_DEBUG "Chan %x, stp %x (dev %d)  dtp %x (dev %d) \n",
+	printk(KERN_DEBUG "Chan %x, stp %x (dev %d)  dtp %x (dev %d)\n",
 			  (u32)ctp, (u32)stp, stp - dbdev_tab, (u32)dtp,
 			  dtp - dbdev_tab);
 	printk(KERN_DEBUG "desc base %x, get %x, put %x, cur %x\n",
@@ -968,74 +964,126 @@ u32 au1xxx_dbdma_put_dscr(u32 chanid, au1x_ddma_desc_t *dscr)
 	dp->dscr_source1 = dscr->dscr_source1;
 	dp->dscr_cmd1 = dscr->dscr_cmd1;
 	nbytes = dscr->dscr_cmd1;
-	/* Allow the caller to specifiy if an interrupt is generated */
+	/* Allow the caller to specify if an interrupt is generated */
 	dp->dscr_cmd0 &= ~DSCR_CMD0_IE;
 	dp->dscr_cmd0 |= dscr->dscr_cmd0 | DSCR_CMD0_V;
 	ctp->chan_ptr->ddma_dbell = 0;
 
-	/* Get next descriptor pointer.	*/
+	/* Get next descriptor pointer. */
 	ctp->put_ptr = phys_to_virt(DSCR_GET_NXTPTR(dp->dscr_nxtptr));
 
 	/* Return something non-zero. */
 	return nbytes;
 }
 
-#ifdef CONFIG_PM
-void au1xxx_dbdma_suspend(void)
+
+static unsigned long alchemy_dbdma_pm_data[NUM_DBDMA_CHANS + 1][6];
+
+static int alchemy_dbdma_suspend(void)
 {
 	int i;
-	u32 addr;
+	void __iomem *addr;
 
-	addr = DDMA_GLOBAL_BASE;
-	au1xxx_dbdma_pm_regs[0][0] = au_readl(addr + 0x00);
-	au1xxx_dbdma_pm_regs[0][1] = au_readl(addr + 0x04);
-	au1xxx_dbdma_pm_regs[0][2] = au_readl(addr + 0x08);
-	au1xxx_dbdma_pm_regs[0][3] = au_readl(addr + 0x0c);
+	addr = (void __iomem *)KSEG1ADDR(AU1550_DBDMA_CONF_PHYS_ADDR);
+	alchemy_dbdma_pm_data[0][0] = __raw_readl(addr + 0x00);
+	alchemy_dbdma_pm_data[0][1] = __raw_readl(addr + 0x04);
+	alchemy_dbdma_pm_data[0][2] = __raw_readl(addr + 0x08);
+	alchemy_dbdma_pm_data[0][3] = __raw_readl(addr + 0x0c);
 
 	/* save channel configurations */
-	for (i = 1, addr = DDMA_CHANNEL_BASE; i <= NUM_DBDMA_CHANS; i++) {
-		au1xxx_dbdma_pm_regs[i][0] = au_readl(addr + 0x00);
-		au1xxx_dbdma_pm_regs[i][1] = au_readl(addr + 0x04);
-		au1xxx_dbdma_pm_regs[i][2] = au_readl(addr + 0x08);
-		au1xxx_dbdma_pm_regs[i][3] = au_readl(addr + 0x0c);
-		au1xxx_dbdma_pm_regs[i][4] = au_readl(addr + 0x10);
-		au1xxx_dbdma_pm_regs[i][5] = au_readl(addr + 0x14);
+	addr = (void __iomem *)KSEG1ADDR(AU1550_DBDMA_PHYS_ADDR);
+	for (i = 1; i <= NUM_DBDMA_CHANS; i++) {
+		alchemy_dbdma_pm_data[i][0] = __raw_readl(addr + 0x00);
+		alchemy_dbdma_pm_data[i][1] = __raw_readl(addr + 0x04);
+		alchemy_dbdma_pm_data[i][2] = __raw_readl(addr + 0x08);
+		alchemy_dbdma_pm_data[i][3] = __raw_readl(addr + 0x0c);
+		alchemy_dbdma_pm_data[i][4] = __raw_readl(addr + 0x10);
+		alchemy_dbdma_pm_data[i][5] = __raw_readl(addr + 0x14);
 
 		/* halt channel */
-		au_writel(au1xxx_dbdma_pm_regs[i][0] & ~1, addr + 0x00);
-		au_sync();
-		while (!(au_readl(addr + 0x14) & 1))
-			au_sync();
+		__raw_writel(alchemy_dbdma_pm_data[i][0] & ~1, addr + 0x00);
+		wmb();
+		while (!(__raw_readl(addr + 0x14) & 1))
+			wmb();
 
 		addr += 0x100;	/* next channel base */
 	}
 	/* disable channel interrupts */
-	au_writel(0, DDMA_GLOBAL_BASE + 0x0c);
-	au_sync();
+	addr = (void __iomem *)KSEG1ADDR(AU1550_DBDMA_CONF_PHYS_ADDR);
+	__raw_writel(0, addr + 0x0c);
+	wmb();
+
+	return 0;
 }
 
-void au1xxx_dbdma_resume(void)
+static void alchemy_dbdma_resume(void)
 {
 	int i;
-	u32 addr;
+	void __iomem *addr;
 
-	addr = DDMA_GLOBAL_BASE;
-	au_writel(au1xxx_dbdma_pm_regs[0][0], addr + 0x00);
-	au_writel(au1xxx_dbdma_pm_regs[0][1], addr + 0x04);
-	au_writel(au1xxx_dbdma_pm_regs[0][2], addr + 0x08);
-	au_writel(au1xxx_dbdma_pm_regs[0][3], addr + 0x0c);
+	addr = (void __iomem *)KSEG1ADDR(AU1550_DBDMA_CONF_PHYS_ADDR);
+	__raw_writel(alchemy_dbdma_pm_data[0][0], addr + 0x00);
+	__raw_writel(alchemy_dbdma_pm_data[0][1], addr + 0x04);
+	__raw_writel(alchemy_dbdma_pm_data[0][2], addr + 0x08);
+	__raw_writel(alchemy_dbdma_pm_data[0][3], addr + 0x0c);
 
 	/* restore channel configurations */
-	for (i = 1, addr = DDMA_CHANNEL_BASE; i <= NUM_DBDMA_CHANS; i++) {
-		au_writel(au1xxx_dbdma_pm_regs[i][0], addr + 0x00);
-		au_writel(au1xxx_dbdma_pm_regs[i][1], addr + 0x04);
-		au_writel(au1xxx_dbdma_pm_regs[i][2], addr + 0x08);
-		au_writel(au1xxx_dbdma_pm_regs[i][3], addr + 0x0c);
-		au_writel(au1xxx_dbdma_pm_regs[i][4], addr + 0x10);
-		au_writel(au1xxx_dbdma_pm_regs[i][5], addr + 0x14);
-		au_sync();
+	addr = (void __iomem *)KSEG1ADDR(AU1550_DBDMA_PHYS_ADDR);
+	for (i = 1; i <= NUM_DBDMA_CHANS; i++) {
+		__raw_writel(alchemy_dbdma_pm_data[i][0], addr + 0x00);
+		__raw_writel(alchemy_dbdma_pm_data[i][1], addr + 0x04);
+		__raw_writel(alchemy_dbdma_pm_data[i][2], addr + 0x08);
+		__raw_writel(alchemy_dbdma_pm_data[i][3], addr + 0x0c);
+		__raw_writel(alchemy_dbdma_pm_data[i][4], addr + 0x10);
+		__raw_writel(alchemy_dbdma_pm_data[i][5], addr + 0x14);
+		wmb();
 		addr += 0x100;	/* next channel base */
 	}
 }
-#endif	/* CONFIG_PM */
-#endif /* defined(CONFIG_SOC_AU1550) || defined(CONFIG_SOC_AU1200) */
+
+static struct syscore_ops alchemy_dbdma_syscore_ops = {
+	.suspend	= alchemy_dbdma_suspend,
+	.resume		= alchemy_dbdma_resume,
+};
+
+static int __init dbdma_setup(unsigned int irq, dbdev_tab_t *idtable)
+{
+	int ret;
+
+	dbdev_tab = kcalloc(DBDEV_TAB_SIZE, sizeof(dbdev_tab_t), GFP_KERNEL);
+	if (!dbdev_tab)
+		return -ENOMEM;
+
+	memcpy(dbdev_tab, idtable, 32 * sizeof(dbdev_tab_t));
+	for (ret = 32; ret < DBDEV_TAB_SIZE; ret++)
+		dbdev_tab[ret].dev_id = ~0;
+
+	dbdma_gptr->ddma_config = 0;
+	dbdma_gptr->ddma_throttle = 0;
+	dbdma_gptr->ddma_inten = 0xffff;
+	wmb(); /* drain writebuffer */
+
+	ret = request_irq(irq, dbdma_interrupt, 0, "dbdma", (void *)dbdma_gptr);
+	if (ret)
+		printk(KERN_ERR "Cannot grab DBDMA interrupt!\n");
+	else {
+		dbdma_initialized = 1;
+		register_syscore_ops(&alchemy_dbdma_syscore_ops);
+	}
+
+	return ret;
+}
+
+static int __init alchemy_dbdma_init(void)
+{
+	switch (alchemy_get_cputype()) {
+	case ALCHEMY_CPU_AU1550:
+		return dbdma_setup(AU1550_DDMA_INT, au1550_dbdev_tab);
+	case ALCHEMY_CPU_AU1200:
+		return dbdma_setup(AU1200_DDMA_INT, au1200_dbdev_tab);
+	case ALCHEMY_CPU_AU1300:
+		return dbdma_setup(AU1300_DDMA_INT, au1300_dbdev_tab);
+	}
+	return 0;
+}
+subsys_initcall(alchemy_dbdma_init);

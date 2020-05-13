@@ -1,16 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright 2006-2008, IBM Corporation.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 
 #undef DEBUG
 
 #include <linux/types.h>
 #include <linux/kernel.h>
+#include <linux/slab.h>
 #include <linux/smp.h>
 #include <linux/reboot.h>
 #include <linux/kexec.h>
@@ -122,7 +119,8 @@ static int __init cbe_ptcal_enable_on_node(int nid, int order)
 
 	area->nid = nid;
 	area->order = order;
-	area->pages = alloc_pages_exact_node(area->nid, GFP_KERNEL|GFP_THISNODE,
+	area->pages = __alloc_pages_node(area->nid,
+						GFP_KERNEL|__GFP_THISNODE,
 						area->order);
 
 	if (!area->pages) {
@@ -172,8 +170,10 @@ static int __init cbe_ptcal_enable(void)
 		return -ENODEV;
 
 	size = of_get_property(np, "ibm,cbe-ptcal-size", NULL);
-	if (!size)
+	if (!size) {
+		of_node_put(np);
 		return -ENODEV;
+	}
 
 	pr_debug("%s: enabling PTCAL, size = 0x%x\n", __func__, *size);
 	order = get_order(*size);
@@ -192,8 +192,8 @@ static int __init cbe_ptcal_enable(void)
 	for_each_node_by_type(np, "cpu") {
 		const u32 *nid = of_get_property(np, "node-id", NULL);
 		if (!nid) {
-			printk(KERN_ERR "%s: node %s is missing node-id?\n",
-					__func__, np->full_name);
+			printk(KERN_ERR "%s: node %pOF is missing node-id?\n",
+					__func__, np);
 			continue;
 		}
 		cbe_ptcal_enable_on_node(*nid, order);
@@ -255,7 +255,7 @@ static int __init cbe_sysreset_init(void)
 {
 	struct cbe_pmd_regs __iomem *regs;
 
-	sysreset_hack = machine_is_compatible("IBM,CBPLUS-1.0");
+	sysreset_hack = of_machine_is_compatible("IBM,CBPLUS-1.0");
 	if (!sysreset_hack)
 		return 0;
 
@@ -294,7 +294,7 @@ int cbe_sysreset_hack(void)
 }
 #endif /* CONFIG_PPC_IBM_CELL_RESETBUTTON */
 
-int __init cbe_ptcal_init(void)
+static int __init cbe_ptcal_init(void)
 {
 	int ret;
 	ptcal_start_tok = rtas_token("ibm,cbe-start-ptcal");

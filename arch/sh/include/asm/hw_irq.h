@@ -1,9 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_SH_HW_IRQ_H
 #define __ASM_SH_HW_IRQ_H
 
 #include <linux/init.h>
 #include <linux/sh_intc.h>
-#include <asm/atomic.h>
+#include <linux/atomic.h>
 
 extern atomic_t irq_err_count;
 

@@ -1,26 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * (C) Copyright David Gibson <dwg@au1.ibm.com>, IBM Corporation.  2005.
- *
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation; either version 2 of the
- * License, or (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- *  General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307
- *                                                                   USA
  */
 
-%option noyywrap noinput nounput yylineno
+%option noyywrap nounput noinput never-interactive
 
-%x INCLUDE
 %x BYTESTRING
 %x PROPNODENAME
 %s V1
@@ -29,6 +13,7 @@ PROPNODECHAR	[a-zA-Z0-9,._+*#?@-]
 PATHCHAR	({PROPNODECHAR}|[/])
 LABEL		[a-zA-Z_][a-zA-Z0-9_]*
 STRING		\"([^\\"]|\\.)*\"
+CHAR_LITERAL	'([^']|\\')*'
 WS		[[:space:]]
 COMMENT		"/*"([^*]|\*+[^*/])*\*+"/"
 LINECOMMENT	"//".*\n
@@ -38,6 +23,13 @@ LINECOMMENT	"//".*\n
 #include "srcpos.h"
 #include "dtc-parser.tab.h"
 
+extern bool treesource_error;
+
+/* CAUTION: this will stop working if we ever use yyless() or yyunput() */
+#define	YY_USER_ACTION \
+	{ \
+		srcpos_update(&yylloc, yytext, yyleng); \
+	}
 
 /*#define LEXDEBUG	1*/
 
@@ -47,18 +39,15 @@ LINECOMMENT	"//".*\n
 #define DPRINT(fmt, ...)	do { } while (0)
 #endif
 
-static int dts_version; /* = 0 */
+static int dts_version = 1;
 
-#define BEGIN_DEFAULT()	if (dts_version == 0) { \
-				DPRINT("<INITIAL>\n"); \
-				BEGIN(INITIAL); \
-			} else { \
-				DPRINT("<V1>\n"); \
+#define BEGIN_DEFAULT()		DPRINT("<V1>\n"); \
 				BEGIN(V1); \
-			}
 
 static void push_input_file(const char *filename);
-static int pop_input_file(void);
+static bool pop_input_file(void);
+static void PRINTF(1, 2) lexical_error(const char *fmt, ...);
+
 %}
 
 %%
@@ -68,6 +57,35 @@ static int pop_input_file(void);
 			push_input_file(name);
 		}
 
+<*>^"#"(line)?[ \t]+[0-9]+[ \t]+{STRING}([ \t]+[0-9]+)? {
+			char *line, *fnstart, *fnend;
+			struct data fn;
+			/* skip text before line # */
+			line = yytext;
+			while (!isdigit((unsigned char)*line))
+				line++;
+
+			/* regexp ensures that first and list "
+			 * in the whole yytext are those at
+			 * beginning and end of the filename string */
+			fnstart = memchr(yytext, '"', yyleng);
+			for (fnend = yytext + yyleng - 1;
+			     *fnend != '"'; fnend--)
+				;
+			assert(fnstart && fnend && (fnend > fnstart));
+
+			fn = data_copy_escape_string(fnstart + 1,
+						     fnend - fnstart - 1);
+
+			/* Don't allow nuls in filenames */
+			if (memchr(fn.val, '\0', fn.len - 1))
+				lexical_error("nul in line number directive");
+
+			/* -1 since #line is the number of the next line */
+			srcpos_set_line(xstrdup(fn.val), atoi(line) - 1);
+			data_free(fn);
+		}
+
 <*><<EOF>>		{
 			if (!pop_input_file()) {
 				yyterminate();
@@ -75,125 +93,141 @@ static int pop_input_file(void);
 		}
 
 <*>{STRING}	{
-			yylloc.file = srcpos_file;
-			yylloc.first_line = yylineno;
 			DPRINT("String: %s\n", yytext);
 			yylval.data = data_copy_escape_string(yytext+1,
 					yyleng-2);
-			yylloc.first_line = yylineno;
 			return DT_STRING;
 		}
 
 <*>"/dts-v1/"	{
-			yylloc.file = srcpos_file;
-			yylloc.first_line = yylineno;
 			DPRINT("Keyword: /dts-v1/\n");
 			dts_version = 1;
 			BEGIN_DEFAULT();
 			return DT_V1;
 		}
 
+<*>"/plugin/"	{
+			DPRINT("Keyword: /plugin/\n");
+			return DT_PLUGIN;
+		}
+
 <*>"/memreserve/"	{
-			yylloc.file = srcpos_file;
-			yylloc.first_line = yylineno;
 			DPRINT("Keyword: /memreserve/\n");
 			BEGIN_DEFAULT();
 			return DT_MEMRESERVE;
 		}
 
+<*>"/bits/"	{
+			DPRINT("Keyword: /bits/\n");
+			BEGIN_DEFAULT();
+			return DT_BITS;
+		}
+
+<*>"/delete-property/"	{
+			DPRINT("Keyword: /delete-property/\n");
+			DPRINT("<PROPNODENAME>\n");
+			BEGIN(PROPNODENAME);
+			return DT_DEL_PROP;
+		}
+
+<*>"/delete-node/"	{
+			DPRINT("Keyword: /delete-node/\n");
+			DPRINT("<PROPNODENAME>\n");
+			BEGIN(PROPNODENAME);
+			return DT_DEL_NODE;
+		}
+
+<*>"/omit-if-no-ref/"	{
+			DPRINT("Keyword: /omit-if-no-ref/\n");
+			DPRINT("<PROPNODENAME>\n");
+			BEGIN(PROPNODENAME);
+			return DT_OMIT_NO_REF;
+		}
+
 <*>{LABEL}:	{
-			yylloc.file = srcpos_file;
-			yylloc.first_line = yylineno;
 			DPRINT("Label: %s\n", yytext);
-			yylval.labelref = strdup(yytext);
+			yylval.labelref = xstrdup(yytext);
 			yylval.labelref[yyleng-1] = '\0';
 			return DT_LABEL;
 		}
 
-<INITIAL>[bodh]# {
-			yylloc.file = srcpos_file;
-			yylloc.first_line = yylineno;
-			if (*yytext == 'b')
-				yylval.cbase = 2;
-			else if (*yytext == 'o')
-				yylval.cbase = 8;
-			else if (*yytext == 'd')
-				yylval.cbase = 10;
+<V1>([0-9]+|0[xX][0-9a-fA-F]+)(U|L|UL|LL|ULL)? {
+			char *e;
+			DPRINT("Integer Literal: '%s'\n", yytext);
+
+			errno = 0;
+			yylval.integer = strtoull(yytext, &e, 0);
+
+			if (*e && e[strspn(e, "UL")]) {
+				lexical_error("Bad integer literal '%s'",
+					      yytext);
+			}
+
+			if (errno == ERANGE)
+				lexical_error("Integer literal '%s' out of range",
+					      yytext);
 			else
-				yylval.cbase = 16;
-			DPRINT("Base: %d\n", yylval.cbase);
-			return DT_BASE;
-		}
-
-<INITIAL>[0-9a-fA-F]+	{
-			yylloc.file = srcpos_file;
-			yylloc.first_line = yylineno;
-			yylval.literal = strdup(yytext);
-			DPRINT("Literal: '%s'\n", yylval.literal);
-			return DT_LEGACYLITERAL;
-		}
-
-<V1>[0-9]+|0[xX][0-9a-fA-F]+      {
-			yylloc.file = srcpos_file;
-			yylloc.first_line = yylineno;
-			yylval.literal = strdup(yytext);
-			DPRINT("Literal: '%s'\n", yylval.literal);
+				/* ERANGE is the only strtoull error triggerable
+				 *  by strings matching the pattern */
+				assert(errno == 0);
 			return DT_LITERAL;
 		}
 
-\&{LABEL}	{	/* label reference */
-			yylloc.file = srcpos_file;
-			yylloc.first_line = yylineno;
-			DPRINT("Ref: %s\n", yytext+1);
-			yylval.labelref = strdup(yytext+1);
-			return DT_REF;
+<*>{CHAR_LITERAL}	{
+			struct data d;
+			DPRINT("Character literal: %s\n", yytext);
+
+			d = data_copy_escape_string(yytext+1, yyleng-2);
+			if (d.len == 1) {
+				lexical_error("Empty character literal");
+				yylval.integer = 0;
+			} else {
+				yylval.integer = (unsigned char)d.val[0];
+
+				if (d.len > 2)
+					lexical_error("Character literal has %d"
+						      " characters instead of 1",
+						      d.len - 1);
+			}
+
+			data_free(d);
+			return DT_CHAR_LITERAL;
 		}
 
-"&{/"{PATHCHAR}+\}	{	/* new-style path reference */
-			yylloc.file = srcpos_file;
-			yylloc.first_line = yylineno;
+<*>\&{LABEL}	{	/* label reference */
+			DPRINT("Ref: %s\n", yytext+1);
+			yylval.labelref = xstrdup(yytext+1);
+			return DT_LABEL_REF;
+		}
+
+<*>"&{/"{PATHCHAR}*\}	{	/* new-style path reference */
 			yytext[yyleng-1] = '\0';
 			DPRINT("Ref: %s\n", yytext+2);
-			yylval.labelref = strdup(yytext+2);
-			return DT_REF;
-		}
-
-<INITIAL>"&/"{PATHCHAR}+ {	/* old-style path reference */
-			yylloc.file = srcpos_file;
-			yylloc.first_line = yylineno;
-			DPRINT("Ref: %s\n", yytext+1);
-			yylval.labelref = strdup(yytext+1);
-			return DT_REF;
+			yylval.labelref = xstrdup(yytext+2);
+			return DT_PATH_REF;
 		}
 
 <BYTESTRING>[0-9a-fA-F]{2} {
-			yylloc.file = srcpos_file;
-			yylloc.first_line = yylineno;
 			yylval.byte = strtol(yytext, NULL, 16);
 			DPRINT("Byte: %02x\n", (int)yylval.byte);
 			return DT_BYTE;
 		}
 
 <BYTESTRING>"]"	{
-			yylloc.file = srcpos_file;
-			yylloc.first_line = yylineno;
 			DPRINT("/BYTESTRING\n");
 			BEGIN_DEFAULT();
 			return ']';
 		}
 
-<PROPNODENAME>{PROPNODECHAR}+ {
-			yylloc.file = srcpos_file;
-			yylloc.first_line = yylineno;
+<PROPNODENAME>\\?{PROPNODECHAR}+ {
 			DPRINT("PropNodeName: %s\n", yytext);
-			yylval.propnodename = strdup(yytext);
+			yylval.propnodename = xstrdup((yytext[0] == '\\') ?
+							yytext + 1 : yytext);
 			BEGIN_DEFAULT();
 			return DT_PROPNODENAME;
 		}
 
 "/incbin/"	{
-			yylloc.file = srcpos_file;
-			yylloc.first_line = yylineno;
 			DPRINT("Binary Include\n");
 			return DT_INCBIN;
 		}
@@ -202,9 +236,16 @@ static int pop_input_file(void);
 <*>{COMMENT}+	/* eat C-style comments */
 <*>{LINECOMMENT}+ /* eat C++-style comments */
 
+<*>"<<"		{ return DT_LSHIFT; };
+<*>">>"		{ return DT_RSHIFT; };
+<*>"<="		{ return DT_LE; };
+<*>">="		{ return DT_GE; };
+<*>"=="		{ return DT_EQ; };
+<*>"!="		{ return DT_NE; };
+<*>"&&"		{ return DT_AND; };
+<*>"||"		{ return DT_OR; };
+
 <*>.		{
-			yylloc.file = srcpos_file;
-			yylloc.first_line = yylineno;
 			DPRINT("Char: %c (\\x%02x)\n", yytext[0],
 				(unsigned)yytext[0]);
 			if (yytext[0] == '[') {
@@ -221,100 +262,36 @@ static int pop_input_file(void);
 
 %%
 
-
-/*
- * Stack of nested include file contexts.
- */
-
-struct incl_file {
-	struct dtc_file *file;
-	YY_BUFFER_STATE yy_prev_buf;
-	int yy_prev_lineno;
-	struct incl_file *prev;
-};
-
-static struct incl_file *incl_file_stack;
-
-
-/*
- * Detect infinite include recursion.
- */
-#define MAX_INCLUDE_DEPTH	(100)
-
-static int incl_depth = 0;
-
-
 static void push_input_file(const char *filename)
 {
-	struct incl_file *incl_file;
-	struct dtc_file *newfile;
-	struct search_path search, *searchptr = NULL;
-
 	assert(filename);
 
-	if (incl_depth++ >= MAX_INCLUDE_DEPTH)
-		die("Includes nested too deeply");
+	srcfile_push(filename);
 
-	if (srcpos_file) {
-		search.dir = srcpos_file->dir;
-		search.next = NULL;
-		search.prev = NULL;
-		searchptr = &search;
-	}
+	yyin = current_srcfile->f;
 
-	newfile = dtc_open_file(filename, searchptr);
-
-	incl_file = xmalloc(sizeof(struct incl_file));
-
-	/*
-	 * Save current context.
-	 */
-	incl_file->yy_prev_buf = YY_CURRENT_BUFFER;
-	incl_file->yy_prev_lineno = yylineno;
-	incl_file->file = srcpos_file;
-	incl_file->prev = incl_file_stack;
-
-	incl_file_stack = incl_file;
-
-	/*
-	 * Establish new context.
-	 */
-	srcpos_file = newfile;
-	yylineno = 1;
-	yyin = newfile->file;
-	yy_switch_to_buffer(yy_create_buffer(yyin, YY_BUF_SIZE));
+	yypush_buffer_state(yy_create_buffer(yyin, YY_BUF_SIZE));
 }
 
 
-static int pop_input_file(void)
+static bool pop_input_file(void)
 {
-	struct incl_file *incl_file;
+	if (srcfile_pop() == 0)
+		return false;
 
-	if (incl_file_stack == 0)
-		return 0;
+	yypop_buffer_state();
+	yyin = current_srcfile->f;
 
-	dtc_close_file(srcpos_file);
+	return true;
+}
 
-	/*
-	 * Pop.
-	 */
-	--incl_depth;
-	incl_file = incl_file_stack;
-	incl_file_stack = incl_file->prev;
+static void lexical_error(const char *fmt, ...)
+{
+	va_list ap;
 
-	/*
-	 * Recover old context.
-	 */
-	yy_delete_buffer(YY_CURRENT_BUFFER);
-	yy_switch_to_buffer(incl_file->yy_prev_buf);
-	yylineno = incl_file->yy_prev_lineno;
-	srcpos_file = incl_file->file;
-	yyin = incl_file->file ? incl_file->file->file : NULL;
+	va_start(ap, fmt);
+	srcpos_verror(&yylloc, "Lexical error", fmt, ap);
+	va_end(ap);
 
-	/*
-	 * Free old state.
-	 */
-	free(incl_file);
-
-	return 1;
+	treesource_error = true;
 }

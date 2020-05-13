@@ -1,23 +1,22 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  Sony MemoryStick Pro storage support
  *
  *  Copyright (C) 2007 Alex Dubov <oakad@yahoo.com>
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  * Special thanks to Carlos Corbacho for providing various MemoryStick cards
  * that made this driver possible.
- *
  */
 
-#include <linux/blkdev.h>
+#include <linux/blk-mq.h>
 #include <linux/idr.h>
 #include <linux/hdreg.h>
 #include <linux/kthread.h>
 #include <linux/delay.h>
+#include <linux/slab.h>
+#include <linux/mutex.h>
 #include <linux/memstick.h>
+#include <linux/module.h>
 
 #define DRIVER_NAME "mspro_block"
 
@@ -139,6 +138,7 @@ struct mspro_block_data {
 	struct gendisk        *disk;
 	struct request_queue  *queue;
 	struct request        *block_req;
+	struct blk_mq_tag_set tag_set;
 	spinlock_t            q_lock;
 
 	unsigned short        page_size;
@@ -149,13 +149,19 @@ struct mspro_block_data {
 	unsigned char         system;
 	unsigned char         read_only:1,
 			      eject:1,
-			      has_request:1,
 			      data_dir:1,
 			      active:1;
 	unsigned char         transfer_cmd;
 
 	int                   (*mrq_handler)(struct memstick_dev *card,
 					     struct memstick_request **mrq);
+
+
+	/* Default request setup function for data access method preferred by
+	 * this host instance.
+	 */
+	void                  (*setup_transfer)(struct memstick_dev *card,
+						u64 offset, size_t length);
 
 	struct attribute_group attr_group;
 
@@ -194,7 +200,7 @@ static int mspro_block_bd_open(struct block_device *bdev, fmode_t mode)
 }
 
 
-static int mspro_block_disk_release(struct gendisk *disk)
+static void mspro_block_disk_release(struct gendisk *disk)
 {
 	struct mspro_block_data *msb = disk->private_data;
 	int disk_id = MINOR(disk_devt(disk)) >> MSPRO_BLOCK_PART_SHIFT;
@@ -214,13 +220,11 @@ static int mspro_block_disk_release(struct gendisk *disk)
 	}
 
 	mutex_unlock(&mspro_block_disk_lock);
-
-	return 0;
 }
 
-static int mspro_block_bd_release(struct gendisk *disk, fmode_t mode)
+static void mspro_block_bd_release(struct gendisk *disk, fmode_t mode)
 {
-	return mspro_block_disk_release(disk);
+	mspro_block_disk_release(disk);
 }
 
 static int mspro_block_bd_getgeo(struct block_device *bdev,
@@ -654,17 +658,45 @@ has_int_reg:
 	}
 }
 
-/*** Data transfer ***/
+/*** Transfer setup functions for different access methods. ***/
 
-static int mspro_block_issue_req(struct memstick_dev *card, int chunk)
+/** Setup data transfer request for SET_CMD TPC with arguments in card
+ *  registers.
+ *
+ *  @card    Current media instance
+ *  @offset  Target data offset in bytes
+ *  @length  Required transfer length in bytes.
+ */
+static void h_mspro_block_setup_cmd(struct memstick_dev *card, u64 offset,
+				    size_t length)
 {
 	struct mspro_block_data *msb = memstick_get_drvdata(card);
-	sector_t t_sec;
-	unsigned int count;
-	struct mspro_param_register param;
+	struct mspro_param_register param = {
+		.system = msb->system,
+		.data_count = cpu_to_be16((uint16_t)(length / msb->page_size)),
+		/* ISO C90 warning precludes direct initialization for now. */
+		.data_address = 0,
+		.tpc_param = 0
+	};
 
-try_again:
-	while (chunk) {
+	do_div(offset, msb->page_size);
+	param.data_address = cpu_to_be32((uint32_t)offset);
+
+	card->next_request = h_mspro_block_req_init;
+	msb->mrq_handler = h_mspro_block_transfer_data;
+	memstick_init_req(&card->current_mrq, MS_TPC_WRITE_REG,
+			  &param, sizeof(param));
+}
+
+/*** Data transfer ***/
+
+static int mspro_block_issue_req(struct memstick_dev *card)
+{
+	struct mspro_block_data *msb = memstick_get_drvdata(card);
+	u64 t_off;
+	unsigned int count;
+
+	while (true) {
 		msb->current_page = 0;
 		msb->current_seg = 0;
 		msb->seg_count = blk_rq_map_sg(msb->block_req->q,
@@ -672,62 +704,49 @@ try_again:
 					       msb->req_sg);
 
 		if (!msb->seg_count) {
-			chunk = __blk_end_request_cur(msb->block_req, -ENOMEM);
-			continue;
+			unsigned int bytes = blk_rq_cur_bytes(msb->block_req);
+			bool chunk;
+
+			chunk = blk_update_request(msb->block_req,
+							BLK_STS_RESOURCE,
+							bytes);
+			if (chunk)
+				continue;
+			__blk_mq_end_request(msb->block_req,
+						BLK_STS_RESOURCE);
+			msb->block_req = NULL;
+			return -EAGAIN;
 		}
 
-		t_sec = blk_rq_pos(msb->block_req) << 9;
-		sector_div(t_sec, msb->page_size);
-
+		t_off = blk_rq_pos(msb->block_req);
+		t_off <<= 9;
 		count = blk_rq_bytes(msb->block_req);
-		count /= msb->page_size;
 
-		param.system = msb->system;
-		param.data_count = cpu_to_be16(count);
-		param.data_address = cpu_to_be32((uint32_t)t_sec);
-		param.tpc_param = 0;
+		msb->setup_transfer(card, t_off, count);
 
 		msb->data_dir = rq_data_dir(msb->block_req);
 		msb->transfer_cmd = msb->data_dir == READ
 				    ? MSPRO_CMD_READ_DATA
 				    : MSPRO_CMD_WRITE_DATA;
 
-		dev_dbg(&card->dev, "data transfer: cmd %x, "
-			"lba %x, count %x\n", msb->transfer_cmd,
-			be32_to_cpu(param.data_address), count);
-
-		card->next_request = h_mspro_block_req_init;
-		msb->mrq_handler = h_mspro_block_transfer_data;
-		memstick_init_req(&card->current_mrq, MS_TPC_WRITE_REG,
-				  &param, sizeof(param));
 		memstick_new_req(card->host);
 		return 0;
 	}
-
-	dev_dbg(&card->dev, "blk_fetch\n");
-	msb->block_req = blk_fetch_request(msb->queue);
-	if (!msb->block_req) {
-		dev_dbg(&card->dev, "issue end\n");
-		return -EAGAIN;
-	}
-
-	dev_dbg(&card->dev, "trying again\n");
-	chunk = 1;
-	goto try_again;
 }
 
 static int mspro_block_complete_req(struct memstick_dev *card, int error)
 {
 	struct mspro_block_data *msb = memstick_get_drvdata(card);
-	int chunk, cnt;
+	int cnt;
+	bool chunk;
 	unsigned int t_len = 0;
 	unsigned long flags;
 
 	spin_lock_irqsave(&msb->q_lock, flags);
-	dev_dbg(&card->dev, "complete %d, %d\n", msb->has_request ? 1 : 0,
+	dev_dbg(&card->dev, "complete %d, %d\n", msb->block_req ? 1 : 0,
 		error);
 
-	if (msb->has_request) {
+	if (msb->block_req) {
 		/* Nothing to do - not really an error */
 		if (error == -EAGAIN)
 			error = 0;
@@ -752,14 +771,17 @@ static int mspro_block_complete_req(struct memstick_dev *card, int error)
 		if (error && !t_len)
 			t_len = blk_rq_cur_bytes(msb->block_req);
 
-		chunk = __blk_end_request(msb->block_req, error, t_len);
-
-		error = mspro_block_issue_req(card, chunk);
-
-		if (!error)
-			goto out;
-		else
-			msb->has_request = 0;
+		chunk = blk_update_request(msb->block_req,
+				errno_to_blk_status(error), t_len);
+		if (chunk) {
+			error = mspro_block_issue_req(card);
+			if (!error)
+				goto out;
+		} else {
+			__blk_mq_end_request(msb->block_req,
+						errno_to_blk_status(error));
+			msb->block_req = NULL;
+		}
 	} else {
 		if (!error)
 			error = -EAGAIN;
@@ -780,8 +802,8 @@ static void mspro_block_stop(struct memstick_dev *card)
 
 	while (1) {
 		spin_lock_irqsave(&msb->q_lock, flags);
-		if (!msb->has_request) {
-			blk_stop_queue(msb->queue);
+		if (!msb->block_req) {
+			blk_mq_stop_hw_queues(msb->queue);
 			rc = 1;
 		}
 		spin_unlock_irqrestore(&msb->q_lock, flags);
@@ -796,44 +818,37 @@ static void mspro_block_stop(struct memstick_dev *card)
 static void mspro_block_start(struct memstick_dev *card)
 {
 	struct mspro_block_data *msb = memstick_get_drvdata(card);
-	unsigned long flags;
 
-	spin_lock_irqsave(&msb->q_lock, flags);
-	blk_start_queue(msb->queue);
-	spin_unlock_irqrestore(&msb->q_lock, flags);
+	blk_mq_start_hw_queues(msb->queue);
 }
 
-static int mspro_block_prepare_req(struct request_queue *q, struct request *req)
+static blk_status_t mspro_queue_rq(struct blk_mq_hw_ctx *hctx,
+				   const struct blk_mq_queue_data *bd)
 {
-	if (!blk_fs_request(req) && !blk_pc_request(req)) {
-		blk_dump_rq_flags(req, "MSPro unsupported request");
-		return BLKPREP_KILL;
-	}
-
-	req->cmd_flags |= REQ_DONTPREP;
-
-	return BLKPREP_OK;
-}
-
-static void mspro_block_submit_req(struct request_queue *q)
-{
-	struct memstick_dev *card = q->queuedata;
+	struct memstick_dev *card = hctx->queue->queuedata;
 	struct mspro_block_data *msb = memstick_get_drvdata(card);
-	struct request *req = NULL;
 
-	if (msb->has_request)
-		return;
+	spin_lock_irq(&msb->q_lock);
+
+	if (msb->block_req) {
+		spin_unlock_irq(&msb->q_lock);
+		return BLK_STS_DEV_RESOURCE;
+	}
 
 	if (msb->eject) {
-		while ((req = blk_fetch_request(q)) != NULL)
-			__blk_end_request_all(req, -ENODEV);
-
-		return;
+		spin_unlock_irq(&msb->q_lock);
+		blk_mq_start_request(bd->rq);
+		return BLK_STS_IOERR;
 	}
 
-	msb->has_request = 1;
-	if (mspro_block_issue_req(card, 0))
-		msb->has_request = 0;
+	msb->block_req = bd->rq;
+	blk_mq_start_request(bd->rq);
+
+	if (mspro_block_issue_req(card))
+		msb->block_req = NULL;
+
+	spin_unlock_irq(&msb->q_lock);
+	return BLK_STS_OK;
 }
 
 /*** Initialization ***/
@@ -948,24 +963,22 @@ try_again:
 }
 
 /* Memory allocated for attributes by this function should be freed by
- * mspro_block_data_clear, no matter if the initialization process succeded
+ * mspro_block_data_clear, no matter if the initialization process succeeded
  * or failed.
  */
 static int mspro_block_read_attributes(struct memstick_dev *card)
 {
 	struct mspro_block_data *msb = memstick_get_drvdata(card);
-	struct mspro_param_register param = {
-		.system = msb->system,
-		.data_count = cpu_to_be16(1),
-		.data_address = 0,
-		.tpc_param = 0
-	};
 	struct mspro_attribute *attr = NULL;
 	struct mspro_sys_attr *s_attr = NULL;
 	unsigned char *buffer = NULL;
 	int cnt, rc, attr_count;
-	unsigned int addr;
-	unsigned short page_count;
+	/* While normally physical device offsets, represented here by
+	 * attr_offset and attr_len will be of large numeric types, we can be
+	 * sure, that attributes are close enough to the beginning of the
+	 * device, to save ourselves some trouble.
+	 */
+	unsigned int addr, attr_offset = 0, attr_len = msb->page_size;
 
 	attr = kmalloc(msb->page_size, GFP_KERNEL);
 	if (!attr)
@@ -978,10 +991,8 @@ static int mspro_block_read_attributes(struct memstick_dev *card)
 	msb->data_dir = READ;
 	msb->transfer_cmd = MSPRO_CMD_READ_ATRB;
 
-	card->next_request = h_mspro_block_req_init;
-	msb->mrq_handler = h_mspro_block_transfer_data;
-	memstick_init_req(&card->current_mrq, MS_TPC_WRITE_REG, &param,
-			  sizeof(param));
+	msb->setup_transfer(card, attr_offset, attr_len);
+
 	memstick_new_req(card->host);
 	wait_for_completion(&card->mrq_complete);
 	if (card->current_mrq.error) {
@@ -1003,8 +1014,8 @@ static int mspro_block_read_attributes(struct memstick_dev *card)
 	} else
 		attr_count = attr->count;
 
-	msb->attr_group.attrs = kzalloc((attr_count + 1)
-					* sizeof(struct attribute),
+	msb->attr_group.attrs = kcalloc(attr_count + 1,
+					sizeof(*msb->attr_group.attrs),
 					GFP_KERNEL);
 	if (!msb->attr_group.attrs) {
 		rc = -ENOMEM;
@@ -1012,13 +1023,11 @@ static int mspro_block_read_attributes(struct memstick_dev *card)
 	}
 	msb->attr_group.name = "media_attributes";
 
-	buffer = kmalloc(msb->page_size, GFP_KERNEL);
+	buffer = kmemdup(attr, attr_len, GFP_KERNEL);
 	if (!buffer) {
 		rc = -ENOMEM;
 		goto out_free_attr;
 	}
-	memcpy(buffer, (char *)attr, msb->page_size);
-	page_count = 1;
 
 	for (cnt = 0; cnt < attr_count; ++cnt) {
 		s_attr = kzalloc(sizeof(struct mspro_sys_attr), GFP_KERNEL);
@@ -1029,9 +1038,10 @@ static int mspro_block_read_attributes(struct memstick_dev *card)
 
 		msb->attr_group.attrs[cnt] = &s_attr->dev_attr.attr;
 		addr = be32_to_cpu(attr->entries[cnt].address);
-		rc = be32_to_cpu(attr->entries[cnt].size);
+		s_attr->size = be32_to_cpu(attr->entries[cnt].size);
 		dev_dbg(&card->dev, "adding attribute %d: id %x, address %x, "
-			"size %x\n", cnt, attr->entries[cnt].id, addr, rc);
+			"size %zx\n", cnt, attr->entries[cnt].id, addr,
+			s_attr->size);
 		s_attr->id = attr->entries[cnt].id;
 		if (mspro_block_attr_name(s_attr->id))
 			snprintf(s_attr->name, sizeof(s_attr->name), "%s",
@@ -1040,61 +1050,52 @@ static int mspro_block_read_attributes(struct memstick_dev *card)
 			snprintf(s_attr->name, sizeof(s_attr->name),
 				 "attr_x%02x", attr->entries[cnt].id);
 
+		sysfs_attr_init(&s_attr->dev_attr.attr);
 		s_attr->dev_attr.attr.name = s_attr->name;
 		s_attr->dev_attr.attr.mode = S_IRUGO;
 		s_attr->dev_attr.show = mspro_block_attr_show(s_attr->id);
 
-		if (!rc)
+		if (!s_attr->size)
 			continue;
 
-		s_attr->size = rc;
-		s_attr->data = kmalloc(rc, GFP_KERNEL);
+		s_attr->data = kmalloc(s_attr->size, GFP_KERNEL);
 		if (!s_attr->data) {
 			rc = -ENOMEM;
 			goto out_free_buffer;
 		}
 
-		if (((addr / msb->page_size)
-		     == be32_to_cpu(param.data_address))
-		    && (((addr + rc - 1) / msb->page_size)
-			== be32_to_cpu(param.data_address))) {
+		if (((addr / msb->page_size) == (attr_offset / msb->page_size))
+		    && (((addr + s_attr->size - 1) / msb->page_size)
+			== (attr_offset / msb->page_size))) {
 			memcpy(s_attr->data, buffer + addr % msb->page_size,
-			       rc);
+			       s_attr->size);
 			continue;
 		}
 
-		if (page_count <= (rc / msb->page_size)) {
+		attr_offset = (addr / msb->page_size) * msb->page_size;
+
+		if ((attr_offset + attr_len) < (addr + s_attr->size)) {
 			kfree(buffer);
-			page_count = (rc / msb->page_size) + 1;
-			buffer = kmalloc(page_count * msb->page_size,
-					 GFP_KERNEL);
+			attr_len = (((addr + s_attr->size) / msb->page_size)
+				    + 1 ) * msb->page_size - attr_offset;
+			buffer = kmalloc(attr_len, GFP_KERNEL);
 			if (!buffer) {
 				rc = -ENOMEM;
 				goto out_free_attr;
 			}
 		}
 
-		param.system = msb->system;
-		param.data_count = cpu_to_be16((rc / msb->page_size) + 1);
-		param.data_address = cpu_to_be32(addr / msb->page_size);
-		param.tpc_param = 0;
-
-		sg_init_one(&msb->req_sg[0], buffer,
-			    be16_to_cpu(param.data_count) * msb->page_size);
+		sg_init_one(&msb->req_sg[0], buffer, attr_len);
 		msb->seg_count = 1;
 		msb->current_seg = 0;
 		msb->current_page = 0;
 		msb->data_dir = READ;
 		msb->transfer_cmd = MSPRO_CMD_READ_ATRB;
 
-		dev_dbg(&card->dev, "reading attribute pages %x, %x\n",
-			be32_to_cpu(param.data_address),
-			be16_to_cpu(param.data_count));
+		dev_dbg(&card->dev, "reading attribute range %x, %x\n",
+			attr_offset, attr_len);
 
-		card->next_request = h_mspro_block_req_init;
-		msb->mrq_handler = h_mspro_block_transfer_data;
-		memstick_init_req(&card->current_mrq, MS_TPC_WRITE_REG,
-				  (char *)&param, sizeof(param));
+		msb->setup_transfer(card, attr_offset, attr_len);
 		memstick_new_req(card->host);
 		wait_for_completion(&card->mrq_complete);
 		if (card->current_mrq.error) {
@@ -1102,7 +1103,8 @@ static int mspro_block_read_attributes(struct memstick_dev *card)
 			goto out_free_buffer;
 		}
 
-		memcpy(s_attr->data, buffer + addr % msb->page_size, rc);
+		memcpy(s_attr->data, buffer + addr % msb->page_size,
+		       s_attr->size);
 	}
 
 	rc = 0;
@@ -1120,6 +1122,8 @@ static int mspro_block_init_card(struct memstick_dev *card)
 	int rc = 0;
 
 	msb->system = MEMSTICK_SYS_SERIAL;
+	msb->setup_transfer = h_mspro_block_setup_cmd;
+
 	card->reg_addr.r_offset = offsetof(struct mspro_register, status);
 	card->reg_addr.r_length = sizeof(struct ms_status_register);
 	card->reg_addr.w_offset = offsetof(struct mspro_register, param);
@@ -1164,19 +1168,18 @@ static int mspro_block_init_card(struct memstick_dev *card)
 
 }
 
+static const struct blk_mq_ops mspro_mq_ops = {
+	.queue_rq	= mspro_queue_rq,
+};
+
 static int mspro_block_init_disk(struct memstick_dev *card)
 {
 	struct mspro_block_data *msb = memstick_get_drvdata(card);
-	struct memstick_host *host = card->host;
 	struct mspro_devinfo *dev_info = NULL;
 	struct mspro_sys_info *sys_info = NULL;
 	struct mspro_sys_attr *s_attr = NULL;
 	int rc, disk_id;
-	u64 limit = BLK_BOUNCE_HIGH;
 	unsigned long capacity;
-
-	if (host->dev.dma_mask && *(host->dev.dma_mask))
-		limit = *(host->dev.dma_mask);
 
 	for (rc = 0; msb->attr_group.attrs[rc]; ++rc) {
 		s_attr = mspro_from_sysfs_attr(msb->attr_group.attrs[rc]);
@@ -1196,20 +1199,11 @@ static int mspro_block_init_disk(struct memstick_dev *card)
 
 	msb->page_size = be16_to_cpu(sys_info->unit_size);
 
-	if (!idr_pre_get(&mspro_block_disk_idr, GFP_KERNEL))
-		return -ENOMEM;
-
 	mutex_lock(&mspro_block_disk_lock);
-	rc = idr_get_new(&mspro_block_disk_idr, card, &disk_id);
+	disk_id = idr_alloc(&mspro_block_disk_idr, card, 0, 256, GFP_KERNEL);
 	mutex_unlock(&mspro_block_disk_lock);
-
-	if (rc)
-		return rc;
-
-	if ((disk_id << MSPRO_BLOCK_PART_SHIFT) > 255) {
-		rc = -ENOSPC;
-		goto out_release_id;
-	}
+	if (disk_id < 0)
+		return disk_id;
 
 	msb->disk = alloc_disk(1 << MSPRO_BLOCK_PART_SHIFT);
 	if (!msb->disk) {
@@ -1217,19 +1211,18 @@ static int mspro_block_init_disk(struct memstick_dev *card)
 		goto out_release_id;
 	}
 
-	msb->queue = blk_init_queue(mspro_block_submit_req, &msb->q_lock);
-	if (!msb->queue) {
-		rc = -ENOMEM;
+	msb->queue = blk_mq_init_sq_queue(&msb->tag_set, &mspro_mq_ops, 2,
+						BLK_MQ_F_SHOULD_MERGE);
+	if (IS_ERR(msb->queue)) {
+		rc = PTR_ERR(msb->queue);
+		msb->queue = NULL;
 		goto out_put_disk;
 	}
 
 	msb->queue->queuedata = card;
-	blk_queue_prep_rq(msb->queue, mspro_block_prepare_req);
 
-	blk_queue_bounce_limit(msb->queue, limit);
-	blk_queue_max_sectors(msb->queue, MSPRO_BLOCK_MAX_PAGES);
-	blk_queue_max_phys_segments(msb->queue, MSPRO_BLOCK_MAX_SEGS);
-	blk_queue_max_hw_segments(msb->queue, MSPRO_BLOCK_MAX_SEGS);
+	blk_queue_max_hw_sectors(msb->queue, MSPRO_BLOCK_MAX_PAGES);
+	blk_queue_max_segments(msb->queue, MSPRO_BLOCK_MAX_SEGS);
 	blk_queue_max_segment_size(msb->queue,
 				   MSPRO_BLOCK_MAX_PAGES * msb->page_size);
 
@@ -1239,7 +1232,6 @@ static int mspro_block_init_disk(struct memstick_dev *card)
 	msb->usage_count = 1;
 	msb->disk->private_data = msb;
 	msb->disk->queue = msb->queue;
-	msb->disk->driverfs_dev = &card->dev;
 
 	sprintf(msb->disk->disk_name, "mspblk%d", disk_id);
 
@@ -1251,7 +1243,7 @@ static int mspro_block_init_disk(struct memstick_dev *card)
 	set_capacity(msb->disk, capacity);
 	dev_dbg(&card->dev, "capacity set %ld\n", capacity);
 
-	add_disk(msb->disk);
+	device_add_disk(&card->dev, msb->disk, NULL);
 	msb->active = 1;
 	return 0;
 
@@ -1333,13 +1325,14 @@ static void mspro_block_remove(struct memstick_dev *card)
 
 	spin_lock_irqsave(&msb->q_lock, flags);
 	msb->eject = 1;
-	blk_start_queue(msb->queue);
 	spin_unlock_irqrestore(&msb->q_lock, flags);
+	blk_mq_start_hw_queues(msb->queue);
 
 	del_gendisk(msb->disk);
 	dev_dbg(&card->dev, "mspro block remove\n");
 
 	blk_cleanup_queue(msb->queue);
+	blk_mq_free_tag_set(&msb->tag_set);
 	msb->queue = NULL;
 
 	sysfs_remove_group(&card->dev.kobj, &msb->attr_group);
@@ -1359,8 +1352,9 @@ static int mspro_block_suspend(struct memstick_dev *card, pm_message_t state)
 	struct mspro_block_data *msb = memstick_get_drvdata(card);
 	unsigned long flags;
 
+	blk_mq_stop_hw_queues(msb->queue);
+
 	spin_lock_irqsave(&msb->q_lock, flags);
-	blk_stop_queue(msb->queue);
 	msb->active = 0;
 	spin_unlock_irqrestore(&msb->q_lock, flags);
 
@@ -1370,7 +1364,6 @@ static int mspro_block_suspend(struct memstick_dev *card, pm_message_t state)
 static int mspro_block_resume(struct memstick_dev *card)
 {
 	struct mspro_block_data *msb = memstick_get_drvdata(card);
-	unsigned long flags;
 	int rc = 0;
 
 #ifdef CONFIG_MEMSTICK_UNSAFE_RESUME
@@ -1416,9 +1409,7 @@ out_unlock:
 
 #endif /* CONFIG_MEMSTICK_UNSAFE_RESUME */
 
-	spin_lock_irqsave(&msb->q_lock, flags);
-	blk_start_queue(msb->queue);
-	spin_unlock_irqrestore(&msb->q_lock, flags);
+	blk_mq_start_hw_queues(msb->queue);
 	return rc;
 }
 

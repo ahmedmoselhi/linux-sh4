@@ -1,55 +1,31 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * USB
  */
-#include <linux/kernel.h>
-#include <linux/module.h>
+#include <linux/dma-mapping.h>
 #include <linux/init.h>
 #include <linux/platform_device.h>
-#include <linux/dma-mapping.h>
-
+#include <linux/platform_data/usb-davinci.h>
 #include <linux/usb/musb.h>
-#include <linux/usb/otg.h>
 
 #include <mach/common.h>
-#include <mach/hardware.h>
-#include <mach/irqs.h>
 #include <mach/cputype.h>
 
-#define DAVINCI_USB_OTG_BASE 0x01C64000
+#include "irqs.h"
 
-#if defined(CONFIG_USB_MUSB_HDRC) || defined(CONFIG_USB_MUSB_HDRC_MODULE)
-static struct musb_hdrc_eps_bits musb_eps[] = {
-	{ "ep1_tx", 8, },
-	{ "ep1_rx", 8, },
-	{ "ep2_tx", 8, },
-	{ "ep2_rx", 8, },
-	{ "ep3_tx", 5, },
-	{ "ep3_rx", 5, },
-	{ "ep4_tx", 5, },
-	{ "ep4_rx", 5, },
-};
+#define DAVINCI_USB_OTG_BASE	0x01c64000
 
+#if IS_ENABLED(CONFIG_USB_MUSB_HDRC)
 static struct musb_hdrc_config musb_config = {
 	.multipoint	= true,
-	.dyn_fifo	= true,
-	.soft_con	= true,
-	.dma		= true,
 
 	.num_eps	= 5,
-	.dma_channels	= 8,
 	.ram_bits	= 10,
-	.eps_bits	= musb_eps,
 };
 
 static struct musb_hdrc_platform_data usb_data = {
-#if defined(CONFIG_USB_MUSB_OTG)
 	/* OTG requires a Mini-AB connector */
 	.mode           = MUSB_OTG,
-#elif defined(CONFIG_USB_MUSB_PERIPHERAL)
-	.mode           = MUSB_PERIPHERAL,
-#elif defined(CONFIG_USB_MUSB_HOST)
-	.mode           = MUSB_HOST,
-#endif
 	.clock		= "usb",
 	.config		= &musb_config,
 };
@@ -62,19 +38,21 @@ static struct resource usb_resources[] = {
 		.flags          = IORESOURCE_MEM,
 	},
 	{
-		.start          = IRQ_USBINT,
+		.start          = DAVINCI_INTC_IRQ(IRQ_USBINT),
 		.flags          = IORESOURCE_IRQ,
+		.name		= "mc"
 	},
 	{
 		/* placeholder for the dedicated CPPI IRQ */
 		.flags          = IORESOURCE_IRQ,
+		.name		= "dma"
 	},
 };
 
 static u64 usb_dmamask = DMA_BIT_MASK(32);
 
 static struct platform_device usb_dev = {
-	.name           = "musb_hdrc",
+	.name           = "musb-davinci",
 	.id             = -1,
 	.dev = {
 		.platform_data		= &usb_data,
@@ -85,15 +63,16 @@ static struct platform_device usb_dev = {
 	.num_resources  = ARRAY_SIZE(usb_resources),
 };
 
-void __init setup_usb(unsigned mA, unsigned potpgt_msec)
+void __init davinci_setup_usb(unsigned mA, unsigned potpgt_ms)
 {
-	usb_data.power = mA / 2;
-	usb_data.potpgt = potpgt_msec / 2;
+	usb_data.power = mA > 510 ? 255 : mA / 2;
+	usb_data.potpgt = (potpgt_ms + 1) / 2;
 
 	if (cpu_is_davinci_dm646x()) {
 		/* Override the defaults as DM6467 uses different IRQs. */
-		usb_dev.resource[1].start = IRQ_DM646X_USBINT;
-		usb_dev.resource[2].start = IRQ_DM646X_USBDMAINT;
+		usb_dev.resource[1].start = DAVINCI_INTC_IRQ(IRQ_DM646X_USBINT);
+		usb_dev.resource[2].start = DAVINCI_INTC_IRQ(
+							IRQ_DM646X_USBDMAINT);
 	} else	/* other devices don't have dedicated CPPI IRQ */
 		usb_dev.num_resources = 2;
 
@@ -102,9 +81,8 @@ void __init setup_usb(unsigned mA, unsigned potpgt_msec)
 
 #else
 
-void __init setup_usb(unsigned mA, unsigned potpgt_msec)
+void __init davinci_setup_usb(unsigned mA, unsigned potpgt_ms)
 {
 }
 
 #endif  /* CONFIG_USB_MUSB_HDRC */
-

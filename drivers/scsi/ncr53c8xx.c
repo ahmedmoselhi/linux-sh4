@@ -1,21 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /******************************************************************************
 **  Device driver for the PCI-SCSI NCR538XX controller family.
 **
 **  Copyright (C) 1994  Wolfgang Stanglmeier
 **
-**  This program is free software; you can redistribute it and/or modify
-**  it under the terms of the GNU General Public License as published by
-**  the Free Software Foundation; either version 2 of the License, or
-**  (at your option) any later version.
-**
-**  This program is distributed in the hope that it will be useful,
-**  but WITHOUT ANY WARRANTY; without even the implied warranty of
-**  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-**  GNU General Public License for more details.
-**
-**  You should have received a copy of the GNU General Public License
-**  along with this program; if not, write to the Free Software
-**  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 **
 **-----------------------------------------------------------------------------
 **
@@ -98,6 +86,7 @@
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/errno.h>
+#include <linux/gfp.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/ioport.h>
@@ -114,7 +103,6 @@
 
 #include <asm/dma.h>
 #include <asm/io.h>
-#include <asm/system.h>
 
 #include <scsi/scsi.h>
 #include <scsi/scsi_cmnd.h>
@@ -1615,7 +1603,7 @@ struct ncb {
 	spinlock_t	smp_lock;	/* Lock for SMP threading       */
 
 	/*----------------------------------------------------------------
-	**	Chip and controller indentification.
+	**	Chip and controller identification.
 	**----------------------------------------------------------------
 	*/
 	int		unit;		/* Unit number			*/
@@ -1734,7 +1722,7 @@ struct ncb {
 	**	Miscellaneous configuration and status parameters.
 	**----------------------------------------------------------------
 	*/
-	u_char		disc;		/* Diconnection allowed		*/
+	u_char		disc;		/* Disconnection allowed	*/
 	u_char		scsi_mode;	/* Current SCSI BUS mode	*/
 	u_char		order;		/* Tag order to use		*/
 	u_char		verbose;	/* Verbosity for this controller*/
@@ -2215,7 +2203,7 @@ static	struct script script0 __initdata = {
 	**	Possible data corruption during Memory Write and Invalidate.
 	**	This work-around resets the addressing logic prior to the 
 	**	start of the first MOVE of a DATA IN phase.
-	**	(See Documentation/scsi/ncr53c8xx.txt for more information)
+	**	(See Documentation/scsi/ncr53c8xx.rst for more information)
 	*/
 	SCR_JUMPR ^ IFFALSE (IF (SCR_DATA_IN)),
 		20,
@@ -2678,7 +2666,7 @@ static	struct script script0 __initdata = {
 }/*-------------------------< RESEL_TAG >-------------------*/,{
 	/*
 	**	Read IDENTIFY + SIMPLE + TAG using a single MOVE.
-	**	Agressive optimization, is'nt it?
+	**	Aggressive optimization, is'nt it?
 	**	No need to test the SIMPLE TAG message, since the 
 	**	driver only supports conformant devices for tags. ;-)
 	*/
@@ -3922,11 +3910,14 @@ static void __init ncr_prepare_setting(struct ncb *np)
 					np->scsi_mode = SMODE_HVD;
 				break;
 			}
+			/* fall through */
 		case 3:	/* SYMBIOS controllers report HVD through GPIO3 */
 			if (INB(nc_gpreg) & 0x08)
 				break;
+			/* fall through */
 		case 2:	/* Set HVD unconditionally */
 			np->scsi_mode = SMODE_HVD;
+			/* fall through */
 		case 1:	/* Trust previous settings for HVD */
 			if (np->sv_stest2 & 0x20)
 				np->scsi_mode = SMODE_HVD;
@@ -4611,7 +4602,7 @@ static int ncr_reset_bus (struct ncb *np, struct scsi_cmnd *cmd, int sync_reset)
  * in order to keep it alive.
  */
 	if (!found && sync_reset && !retrieve_from_waiting_list(0, np, cmd)) {
-		cmd->result = ScsiResult(DID_RESET, 0);
+		cmd->result = DID_RESET << 16;
 		ncr_queue_done_cmd(np, cmd);
 	}
 
@@ -4957,7 +4948,7 @@ void ncr_complete (struct ncb *np, struct ccb *cp)
 		/*
 		**   Check condition code
 		*/
-		cmd->result = ScsiResult(DID_OK, S_CHECK_COND);
+		cmd->result = DID_OK << 16 | S_CHECK_COND;
 
 		/*
 		**	Copy back sense data to caller's buffer.
@@ -4978,7 +4969,7 @@ void ncr_complete (struct ncb *np, struct ccb *cp)
 		/*
 		**   Reservation Conflict condition code
 		*/
-		cmd->result = ScsiResult(DID_OK, S_CONFLICT);
+		cmd->result = DID_OK << 16 | S_CONFLICT;
 	
 	} else if ((cp->host_status == HS_COMPLETE)
 		&& (cp->scsi_status == S_BUSY ||
@@ -6495,7 +6486,7 @@ static void ncr_int_ma (struct ncb *np)
 	**	we force a SIR_NEGO_PROTO interrupt (it is a hack that avoids 
 	**	bloat for such a should_not_happen situation).
 	**	In all other situation, we reset the BUS.
-	**	Are these assumptions reasonnable ? (Wait and see ...)
+	**	Are these assumptions reasonable ? (Wait and see ...)
 	*/
 unexpected_phase:
 	dsp -= 8;
@@ -6633,7 +6624,7 @@ static void ncr_sir_to_redo(struct ncb *np, int num, struct ccb *cp)
 		**	patch requested size into sense command
 		*/
 		cp->sensecmd[0]		= 0x03;
-		cp->sensecmd[1]		= cmd->device->lun << 5;
+		cp->sensecmd[1]		= (cmd->device->lun & 0x7) << 5;
 		cp->sensecmd[4]		= sizeof(cp->sense_buf);
 
 		/*
@@ -6726,6 +6717,7 @@ void ncr_int_sir (struct ncb *np)
 			OUTL_DSP (scr_to_cpu(tp->lp[0]->jump_ccb[0]));
 			return;
 		}
+		/* fall through */
 	case SIR_RESEL_BAD_TARGET:	/* Will send a TARGET RESET message */
 	case SIR_RESEL_BAD_LUN:		/* Will send a TARGET RESET message */
 	case SIR_RESEL_BAD_I_T_L_Q:	/* Will send an ABORT TAG message   */
@@ -7997,10 +7989,7 @@ static int ncr53c8xx_slave_configure(struct scsi_device *device)
 	if (depth_to_use > MAX_TAGS)
 		depth_to_use = MAX_TAGS;
 
-	scsi_adjust_queue_depth(device,
-				(device->tagged_supported ?
-				 MSG_SIMPLE_TAG : 0),
-				depth_to_use);
+	scsi_change_queue_depth(device, depth_to_use);
 
 	/*
 	**	Since the queue depth is not tunable under Linux,
@@ -8028,7 +8017,7 @@ static int ncr53c8xx_slave_configure(struct scsi_device *device)
 	return 0;
 }
 
-static int ncr53c8xx_queue_command (struct scsi_cmnd *cmd, void (* done)(struct scsi_cmnd *))
+static int ncr53c8xx_queue_command_lck (struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *))
 {
      struct ncb *np = ((struct host_data *) cmd->device->host->hostdata)->ncb;
      unsigned long flags;
@@ -8046,7 +8035,7 @@ printk("ncr53c8xx_queue_command\n");
      spin_lock_irqsave(&np->smp_lock, flags);
 
      if ((sts = ncr_queue_command(np, cmd)) != DID_OK) {
-	  cmd->result = ScsiResult(sts, 0);
+	  cmd->result = sts << 16;
 #ifdef DEBUG_NCR53C8XX
 printk("ncr53c8xx : command not queued - result=%d\n", sts);
 #endif
@@ -8066,6 +8055,8 @@ printk("ncr53c8xx : command successfully queued\n");
 
      return sts;
 }
+
+static DEF_SCSI_QCMD(ncr53c8xx_queue_command)
 
 irqreturn_t ncr53c8xx_intr(int irq, void *dev_id)
 {
@@ -8094,9 +8085,9 @@ irqreturn_t ncr53c8xx_intr(int irq, void *dev_id)
      return IRQ_HANDLED;
 }
 
-static void ncr53c8xx_timeout(unsigned long npref)
+static void ncr53c8xx_timeout(struct timer_list *t)
 {
-	struct ncb *np = (struct ncb *) npref;
+	struct ncb *np = from_timer(np, t, timer);
 	unsigned long flags;
 	struct scsi_cmnd *done_list;
 
@@ -8144,7 +8135,7 @@ static int ncr53c8xx_abort(struct scsi_cmnd *cmd)
 	unsigned long flags;
 	struct scsi_cmnd *done_list;
 
-	printk("ncr53c8xx_abort: command pid %lu\n", cmd->serial_number);
+	printk("ncr53c8xx_abort\n");
 
 	NCR_LOCK_NCB(np, flags);
 
@@ -8235,7 +8226,7 @@ static void process_waiting_list(struct ncb *np, int sts)
 #ifdef DEBUG_WAITING_LIST
 	printk("%s: cmd %lx done forced sts=%d\n", ncr_name(np), (u_long) wcmd, sts);
 #endif
-			wcmd->result = ScsiResult(sts, 0);
+			wcmd->result = sts << 16;
 			ncr_queue_done_cmd(np, wcmd);
 		}
 	}
@@ -8314,7 +8305,6 @@ struct Scsi_Host * __init ncr_attach(struct scsi_host_template *tpnt,
 	tpnt->this_id		= 7;
 	tpnt->sg_tablesize	= SCSI_NCR_SG_TABLESIZE;
 	tpnt->cmd_per_lun	= SCSI_NCR_CMD_PER_LUN;
-	tpnt->use_clustering	= ENABLE_CLUSTERING;
 
 	if (device->differential)
 		driver_setup.diff_support = device->differential;
@@ -8358,9 +8348,7 @@ struct Scsi_Host * __init ncr_attach(struct scsi_host_template *tpnt,
 	if (!np->scripth0)
 		goto attach_error;
 
-	init_timer(&np->timer);
-	np->timer.data     = (unsigned long) np;
-	np->timer.function = ncr53c8xx_timeout;
+	timer_setup(&np->timer, ncr53c8xx_timeout, 0);
 
 	/* Try to map the controller chip to virtual and physical memory. */
 

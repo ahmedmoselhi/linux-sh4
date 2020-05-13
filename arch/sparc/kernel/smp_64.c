@@ -1,11 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0
 /* smp.c: Sparc64 SMP support.
  *
  * Copyright (C) 1997, 2007, 2008 David S. Miller (davem@davemloft.net)
  */
 
-#include <linux/module.h>
+#include <linux/export.h>
 #include <linux/kernel.h>
-#include <linux/sched.h>
+#include <linux/sched/mm.h>
+#include <linux/sched/hotplug.h>
 #include <linux/mm.h>
 #include <linux/pagemap.h>
 #include <linux/threads.h>
@@ -20,26 +22,30 @@
 #include <linux/cache.h>
 #include <linux/jiffies.h>
 #include <linux/profile.h>
-#include <linux/bootmem.h>
+#include <linux/memblock.h>
 #include <linux/vmalloc.h>
+#include <linux/ftrace.h>
 #include <linux/cpu.h>
+#include <linux/slab.h>
+#include <linux/kgdb.h>
 
 #include <asm/head.h>
 #include <asm/ptrace.h>
-#include <asm/atomic.h>
+#include <linux/atomic.h>
 #include <asm/tlbflush.h>
 #include <asm/mmu_context.h>
 #include <asm/cpudata.h>
 #include <asm/hvtramp.h>
 #include <asm/io.h>
 #include <asm/timer.h>
+#include <asm/setup.h>
 
 #include <asm/irq.h>
 #include <asm/irq_regs.h>
 #include <asm/page.h>
 #include <asm/pgtable.h>
 #include <asm/oplib.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/starfire.h>
 #include <asm/tlb.h>
 #include <asm/sections.h>
@@ -47,19 +53,30 @@
 #include <asm/mdesc.h>
 #include <asm/ldc.h>
 #include <asm/hypervisor.h>
+#include <asm/pcr.h>
 
 #include "cpumap.h"
-
-int sparc64_multi_core __read_mostly;
+#include "kernel.h"
 
 DEFINE_PER_CPU(cpumask_t, cpu_sibling_map) = CPU_MASK_NONE;
 cpumask_t cpu_core_map[NR_CPUS] __read_mostly =
 	{ [0 ... NR_CPUS-1] = CPU_MASK_NONE };
 
+cpumask_t cpu_core_sib_map[NR_CPUS] __read_mostly = {
+	[0 ... NR_CPUS-1] = CPU_MASK_NONE };
+
+cpumask_t cpu_core_sib_cache_map[NR_CPUS] __read_mostly = {
+	[0 ... NR_CPUS - 1] = CPU_MASK_NONE };
+
 EXPORT_PER_CPU_SYMBOL(cpu_sibling_map);
 EXPORT_SYMBOL(cpu_core_map);
+EXPORT_SYMBOL(cpu_core_sib_map);
+EXPORT_SYMBOL(cpu_core_sib_cache_map);
 
 static cpumask_t smp_commenced_mask;
+
+static DEFINE_PER_CPU(bool, poke);
+static bool cpu_poke;
 
 void smp_info(struct seq_file *m)
 {
@@ -84,7 +101,7 @@ extern void setup_sparc64_timer(void);
 
 static volatile unsigned long callin_flag = 0;
 
-void __cpuinit smp_callin(void)
+void smp_callin(void)
 {
 	int cpuid = hard_smp_processor_id();
 
@@ -100,8 +117,6 @@ void __cpuinit smp_callin(void)
 	if (cheetah_pcache_forced_on)
 		cheetah_enable_pcache();
 
-	local_irq_enable();
-
 	callin_flag = 1;
 	__asm__ __volatile__("membar #Sync\n\t"
 			     "flush  %%g6" : : : "memory");
@@ -112,21 +127,23 @@ void __cpuinit smp_callin(void)
 	current_thread_info()->new_child = 0;
 
 	/* Attach to the address space of init_task. */
-	atomic_inc(&init_mm.mm_count);
+	mmgrab(&init_mm);
 	current->active_mm = &init_mm;
 
 	/* inform the notifiers about the new cpu */
 	notify_cpu_starting(cpuid);
 
-	while (!cpu_isset(cpuid, smp_commenced_mask))
+	while (!cpumask_test_cpu(cpuid, &smp_commenced_mask))
 		rmb();
 
-	ipi_call_lock_irq();
-	cpu_set(cpuid, cpu_online_map);
-	ipi_call_unlock_irq();
+	set_cpu_online(cpuid, true);
 
 	/* idle thread is expected to have preempt disabled */
 	preempt_disable();
+
+	local_irq_enable();
+
+	cpu_startup_entry(CPUHP_AP_ONLINE_IDLE);
 }
 
 void cpu_panic(void)
@@ -148,7 +165,7 @@ void cpu_panic(void)
 #define NUM_ROUNDS	64	/* magic value */
 #define NUM_ITERS	5	/* likewise */
 
-static DEFINE_SPINLOCK(itc_sync_lock);
+static DEFINE_RAW_SPINLOCK(itc_sync_lock);
 static unsigned long go[SLAVE + 1];
 
 #define DEBUG_TICK_SYNC	0
@@ -186,7 +203,7 @@ static inline long get_delta (long *rt, long *master)
 void smp_synchronize_tick_client(void)
 {
 	long i, delta, adj, adjust_latency = 0, done = 0;
-	unsigned long flags, rt, master_time_stamp, bound;
+	unsigned long flags, rt, master_time_stamp;
 #if DEBUG_TICK_SYNC
 	struct {
 		long rt;	/* roundtrip time */
@@ -205,10 +222,8 @@ void smp_synchronize_tick_client(void)
 	{
 		for (i = 0; i < NUM_ROUNDS; i++) {
 			delta = get_delta(&rt, &master_time_stamp);
-			if (delta == 0) {
+			if (delta == 0)
 				done = 1;	/* let's lock on to this... */
-				bound = rt;
-			}
 
 			if (!done) {
 				if (i > 0) {
@@ -258,7 +273,7 @@ static void smp_synchronize_one_tick(int cpu)
 	go[MASTER] = 0;
 	membar_safe("#StoreLoad");
 
-	spin_lock_irqsave(&itc_sync_lock, flags);
+	raw_spin_lock_irqsave(&itc_sync_lock, flags);
 	{
 		for (i = 0; i < NUM_ROUNDS*NUM_ITERS; i++) {
 			while (!go[MASTER])
@@ -269,19 +284,12 @@ static void smp_synchronize_one_tick(int cpu)
 			membar_safe("#StoreLoad");
 		}
 	}
-	spin_unlock_irqrestore(&itc_sync_lock, flags);
+	raw_spin_unlock_irqrestore(&itc_sync_lock, flags);
 }
 
 #if defined(CONFIG_SUN_LDOMS) && defined(CONFIG_HOTPLUG_CPU)
-/* XXX Put this in some common place. XXX */
-static unsigned long kimage_addr_to_ra(void *p)
-{
-	unsigned long val = (unsigned long) p;
-
-	return kern_base + (val - KERNBASE);
-}
-
-static void __cpuinit ldom_startcpu_cpuid(unsigned int cpu, unsigned long thread_reg, void **descrp)
+static void ldom_startcpu_cpuid(unsigned int cpu, unsigned long thread_reg,
+				void **descrp)
 {
 	extern unsigned long sparc64_ttable_tl0;
 	extern unsigned long kern_locked_tte_data;
@@ -342,21 +350,17 @@ extern unsigned long sparc64_cpu_startup;
  */
 static struct thread_info *cpu_new_thread = NULL;
 
-static int __cpuinit smp_boot_one_cpu(unsigned int cpu)
+static int smp_boot_one_cpu(unsigned int cpu, struct task_struct *idle)
 {
 	unsigned long entry =
 		(unsigned long)(&sparc64_cpu_startup);
 	unsigned long cookie =
 		(unsigned long)(&cpu_new_thread);
-	struct task_struct *p;
 	void *descr = NULL;
 	int timeout, ret;
 
-	p = fork_idle(cpu);
-	if (IS_ERR(p))
-		return PTR_ERR(p);
 	callin_flag = 0;
-	cpu_new_thread = task_thread_info(p);
+	cpu_new_thread = task_thread_info(idle);
 
 	if (tlb_type == hypervisor) {
 #if defined(CONFIG_SUN_LDOMS) && defined(CONFIG_HOTPLUG_CPU)
@@ -370,7 +374,7 @@ static int __cpuinit smp_boot_one_cpu(unsigned int cpu)
 	} else {
 		struct device_node *dp = of_find_node_by_cpuid(cpu);
 
-		prom_startcpu(dp->node, entry, cookie);
+		prom_startcpu(dp->phandle, entry, cookie);
 	}
 
 	for (timeout = 0; timeout < 50000; timeout++) {
@@ -622,22 +626,48 @@ retry:
 	}
 }
 
-/* Multi-cpu list version.  */
+#define	CPU_MONDO_COUNTER(cpuid)	(cpu_mondo_counter[cpuid])
+#define	MONDO_USEC_WAIT_MIN		2
+#define	MONDO_USEC_WAIT_MAX		100
+#define	MONDO_RETRY_LIMIT		500000
+
+/* Multi-cpu list version.
+ *
+ * Deliver xcalls to 'cnt' number of cpus in 'cpu_list'.
+ * Sometimes not all cpus receive the mondo, requiring us to re-send
+ * the mondo until all cpus have received, or cpus are truly stuck
+ * unable to receive mondo, and we timeout.
+ * Occasionally a target cpu strand is borrowed briefly by hypervisor to
+ * perform guest service, such as PCIe error handling. Consider the
+ * service time, 1 second overall wait is reasonable for 1 cpu.
+ * Here two in-between mondo check wait time are defined: 2 usec for
+ * single cpu quick turn around and up to 100usec for large cpu count.
+ * Deliver mondo to large number of cpus could take longer, we adjusts
+ * the retry count as long as target cpus are making forward progress.
+ */
 static void hypervisor_xcall_deliver(struct trap_per_cpu *tb, int cnt)
 {
-	int retries, this_cpu, prev_sent, i, saw_cpu_error;
+	int this_cpu, tot_cpus, prev_sent, i, rem;
+	int usec_wait, retries, tot_retries;
+	u16 first_cpu = 0xffff;
+	unsigned long xc_rcvd = 0;
 	unsigned long status;
+	int ecpuerror_id = 0;
+	int enocpu_id = 0;
 	u16 *cpu_list;
+	u16 cpu;
 
 	this_cpu = smp_processor_id();
-
 	cpu_list = __va(tb->cpu_list_pa);
-
-	saw_cpu_error = 0;
-	retries = 0;
+	usec_wait = cnt * MONDO_USEC_WAIT_MIN;
+	if (usec_wait > MONDO_USEC_WAIT_MAX)
+		usec_wait = MONDO_USEC_WAIT_MAX;
+	retries = tot_retries = 0;
+	tot_cpus = cnt;
 	prev_sent = 0;
+
 	do {
-		int forward_progress, n_sent;
+		int n_sent, mondo_delivered, target_cpu_busy;
 
 		status = sun4v_cpu_mondo_send(cnt,
 					      tb->cpu_list_pa,
@@ -645,94 +675,113 @@ static void hypervisor_xcall_deliver(struct trap_per_cpu *tb, int cnt)
 
 		/* HV_EOK means all cpus received the xcall, we're done.  */
 		if (likely(status == HV_EOK))
-			break;
+			goto xcall_done;
+
+		/* If not these non-fatal errors, panic */
+		if (unlikely((status != HV_EWOULDBLOCK) &&
+			(status != HV_ECPUERROR) &&
+			(status != HV_ENOCPU)))
+			goto fatal_errors;
 
 		/* First, see if we made any forward progress.
 		 *
+		 * Go through the cpu_list, count the target cpus that have
+		 * received our mondo (n_sent), and those that did not (rem).
+		 * Re-pack cpu_list with the cpus remain to be retried in the
+		 * front - this simplifies tracking the truly stalled cpus.
+		 *
 		 * The hypervisor indicates successful sends by setting
 		 * cpu list entries to the value 0xffff.
+		 *
+		 * EWOULDBLOCK means some target cpus did not receive the
+		 * mondo and retry usually helps.
+		 *
+		 * ECPUERROR means at least one target cpu is in error state,
+		 * it's usually safe to skip the faulty cpu and retry.
+		 *
+		 * ENOCPU means one of the target cpu doesn't belong to the
+		 * domain, perhaps offlined which is unexpected, but not
+		 * fatal and it's okay to skip the offlined cpu.
 		 */
+		rem = 0;
 		n_sent = 0;
 		for (i = 0; i < cnt; i++) {
-			if (likely(cpu_list[i] == 0xffff))
+			cpu = cpu_list[i];
+			if (likely(cpu == 0xffff)) {
 				n_sent++;
+			} else if ((status == HV_ECPUERROR) &&
+				(sun4v_cpu_state(cpu) == HV_CPU_STATE_ERROR)) {
+				ecpuerror_id = cpu + 1;
+			} else if (status == HV_ENOCPU && !cpu_online(cpu)) {
+				enocpu_id = cpu + 1;
+			} else {
+				cpu_list[rem++] = cpu;
+			}
 		}
 
-		forward_progress = 0;
-		if (n_sent > prev_sent)
-			forward_progress = 1;
+		/* No cpu remained, we're done. */
+		if (rem == 0)
+			break;
 
+		/* Otherwise, update the cpu count for retry. */
+		cnt = rem;
+
+		/* Record the overall number of mondos received by the
+		 * first of the remaining cpus.
+		 */
+		if (first_cpu != cpu_list[0]) {
+			first_cpu = cpu_list[0];
+			xc_rcvd = CPU_MONDO_COUNTER(first_cpu);
+		}
+
+		/* Was any mondo delivered successfully? */
+		mondo_delivered = (n_sent > prev_sent);
 		prev_sent = n_sent;
 
-		/* If we get a HV_ECPUERROR, then one or more of the cpus
-		 * in the list are in error state.  Use the cpu_state()
-		 * hypervisor call to find out which cpus are in error state.
+		/* or, was any target cpu busy processing other mondos? */
+		target_cpu_busy = (xc_rcvd < CPU_MONDO_COUNTER(first_cpu));
+		xc_rcvd = CPU_MONDO_COUNTER(first_cpu);
+
+		/* Retry count is for no progress. If we're making progress,
+		 * reset the retry count.
 		 */
-		if (unlikely(status == HV_ECPUERROR)) {
-			for (i = 0; i < cnt; i++) {
-				long err;
-				u16 cpu;
-
-				cpu = cpu_list[i];
-				if (cpu == 0xffff)
-					continue;
-
-				err = sun4v_cpu_state(cpu);
-				if (err == HV_CPU_STATE_ERROR) {
-					saw_cpu_error = (cpu + 1);
-					cpu_list[i] = 0xffff;
-				}
-			}
-		} else if (unlikely(status != HV_EWOULDBLOCK))
-			goto fatal_mondo_error;
-
-		/* Don't bother rewriting the CPU list, just leave the
-		 * 0xffff and non-0xffff entries in there and the
-		 * hypervisor will do the right thing.
-		 *
-		 * Only advance timeout state if we didn't make any
-		 * forward progress.
-		 */
-		if (unlikely(!forward_progress)) {
-			if (unlikely(++retries > 10000))
-				goto fatal_mondo_timeout;
-
-			/* Delay a little bit to let other cpus catch up
-			 * on their cpu mondo queue work.
-			 */
-			udelay(2 * cnt);
+		if (likely(mondo_delivered || target_cpu_busy)) {
+			tot_retries += retries;
+			retries = 0;
+		} else if (unlikely(retries > MONDO_RETRY_LIMIT)) {
+			goto fatal_mondo_timeout;
 		}
+
+		/* Delay a little bit to let other cpus catch up on
+		 * their cpu mondo queue work.
+		 */
+		if (!mondo_delivered)
+			udelay(usec_wait);
+
+		retries++;
 	} while (1);
 
-	if (unlikely(saw_cpu_error))
-		goto fatal_mondo_cpu_error;
-
+xcall_done:
+	if (unlikely(ecpuerror_id > 0)) {
+		pr_crit("CPU[%d]: SUN4V mondo cpu error, target cpu(%d) was in error state\n",
+		       this_cpu, ecpuerror_id - 1);
+	} else if (unlikely(enocpu_id > 0)) {
+		pr_crit("CPU[%d]: SUN4V mondo cpu error, target cpu(%d) does not belong to the domain\n",
+		       this_cpu, enocpu_id - 1);
+	}
 	return;
 
-fatal_mondo_cpu_error:
-	printk(KERN_CRIT "CPU[%d]: SUN4V mondo cpu error, some target cpus "
-	       "(including %d) were in error state\n",
-	       this_cpu, saw_cpu_error - 1);
-	return;
+fatal_errors:
+	/* fatal errors include bad alignment, etc */
+	pr_crit("CPU[%d]: Args were cnt(%d) cpulist_pa(%lx) mondo_block_pa(%lx)\n",
+	       this_cpu, tot_cpus, tb->cpu_list_pa, tb->cpu_mondo_block_pa);
+	panic("Unexpected SUN4V mondo error %lu\n", status);
 
 fatal_mondo_timeout:
-	printk(KERN_CRIT "CPU[%d]: SUN4V mondo timeout, no forward "
-	       " progress after %d retries.\n",
-	       this_cpu, retries);
-	goto dump_cpu_list_and_out;
-
-fatal_mondo_error:
-	printk(KERN_CRIT "CPU[%d]: Unexpected SUN4V mondo error %lu\n",
-	       this_cpu, status);
-	printk(KERN_CRIT "CPU[%d]: Args were cnt(%d) cpulist_pa(%lx) "
-	       "mondo_block_pa(%lx)\n",
-	       this_cpu, cnt, tb->cpu_list_pa, tb->cpu_mondo_block_pa);
-
-dump_cpu_list_and_out:
-	printk(KERN_CRIT "CPU[%d]: CPU list [ ", this_cpu);
-	for (i = 0; i < cnt; i++)
-		printk("%u ", cpu_list[i]);
-	printk("]\n");
+	/* some cpus being non-responsive to the cpu mondo */
+	pr_crit("CPU[%d]: SUN4V mondo timeout, cpu(%d) made no forward progress after %d retries. Total target cpus(%d).\n",
+	       this_cpu, first_cpu, (tot_retries + retries), tot_cpus);
+	panic("SUN4V mondo timeout panic\n");
 }
 
 static void (*xcall_deliver_impl)(struct trap_per_cpu *, int);
@@ -784,7 +833,7 @@ static void xcall_deliver(u64 data0, u64 data1, u64 data2, const cpumask_t *mask
 
 /* Send cross call to all processors mentioned in MASK_P
  * except self.  Really, there are only two cases currently,
- * "&cpu_online_map" and "&mm->cpu_vm_mask".
+ * "cpu_online_mask" and "mm_cpumask(mm)".
  */
 static void smp_cross_call_masked(unsigned long *func, u32 ctx, u64 data1, u64 data2, const cpumask_t *mask)
 {
@@ -796,7 +845,7 @@ static void smp_cross_call_masked(unsigned long *func, u32 ctx, u64 data1, u64 d
 /* Send cross call to all processors except self. */
 static void smp_cross_call(unsigned long *func, u32 ctx, u64 data1, u64 data2)
 {
-	smp_cross_call_masked(func, ctx, data1, data2, &cpu_online_map);
+	smp_cross_call_masked(func, ctx, data1, data2, cpu_online_mask);
 }
 
 extern unsigned long xcall_sync_tick;
@@ -804,7 +853,7 @@ extern unsigned long xcall_sync_tick;
 static void smp_start_sync_tick_client(int cpu)
 {
 	xcall_deliver((u64) &xcall_sync_tick, 0, 0,
-		      &cpumask_of_cpu(cpu));
+		      cpumask_of(cpu));
 }
 
 extern unsigned long xcall_call_function;
@@ -819,19 +868,23 @@ extern unsigned long xcall_call_function_single;
 void arch_send_call_function_single_ipi(int cpu)
 {
 	xcall_deliver((u64) &xcall_call_function_single, 0, 0,
-		      &cpumask_of_cpu(cpu));
+		      cpumask_of(cpu));
 }
 
-void smp_call_function_client(int irq, struct pt_regs *regs)
+void __irq_entry smp_call_function_client(int irq, struct pt_regs *regs)
 {
 	clear_softint(1 << irq);
+	irq_enter();
 	generic_smp_call_function_interrupt();
+	irq_exit();
 }
 
-void smp_call_function_single_client(int irq, struct pt_regs *regs)
+void __irq_entry smp_call_function_single_client(int irq, struct pt_regs *regs)
 {
 	clear_softint(1 << irq);
+	irq_enter();
 	generic_smp_call_function_single_interrupt();
+	irq_exit();
 }
 
 static void tsb_sync(void *info)
@@ -839,7 +892,7 @@ static void tsb_sync(void *info)
 	struct trap_per_cpu *tp = &trap_block[raw_smp_processor_id()];
 	struct mm_struct *mm = info;
 
-	/* It is not valid to test "currrent->active_mm == mm" here.
+	/* It is not valid to test "current->active_mm == mm" here.
 	 *
 	 * The value of "current" is not changed atomically with
 	 * switch_mm().  But that's OK, we just need to check the
@@ -855,9 +908,11 @@ void smp_tsb_sync(struct mm_struct *mm)
 }
 
 extern unsigned long xcall_flush_tlb_mm;
-extern unsigned long xcall_flush_tlb_pending;
+extern unsigned long xcall_flush_tlb_page;
 extern unsigned long xcall_flush_tlb_kernel_range;
 extern unsigned long xcall_fetch_glob_regs;
+extern unsigned long xcall_fetch_glob_pmu;
+extern unsigned long xcall_fetch_glob_pmu_n4;
 extern unsigned long xcall_receive_signal;
 extern unsigned long xcall_new_mmu_context_version;
 #ifdef CONFIG_KGDB
@@ -869,19 +924,14 @@ extern unsigned long xcall_flush_dcache_page_cheetah;
 #endif
 extern unsigned long xcall_flush_dcache_page_spitfire;
 
-#ifdef CONFIG_DEBUG_DCFLUSH
-extern atomic_t dcpage_flushes;
-extern atomic_t dcpage_flushes_xcall;
-#endif
-
 static inline void __local_flush_dcache_page(struct page *page)
 {
 #ifdef DCACHE_ALIASING_POSSIBLE
 	__flush_dcache_page(page_address(page),
 			    ((tlb_type == spitfire) &&
-			     page_mapping(page) != NULL));
+			     page_mapping_file(page) != NULL));
 #else
-	if (page_mapping(page) != NULL &&
+	if (page_mapping_file(page) != NULL &&
 	    tlb_type == spitfire)
 		__flush_icache_page(__pa(page_address(page)));
 #endif
@@ -908,7 +958,7 @@ void smp_flush_dcache_page_impl(struct page *page, int cpu)
 
 		if (tlb_type == spitfire) {
 			data0 = ((u64)&xcall_flush_dcache_page_spitfire);
-			if (page_mapping(page) != NULL)
+			if (page_mapping_file(page) != NULL)
 				data0 |= ((u64)1 << 32);
 		} else if (tlb_type == cheetah || tlb_type == cheetah_plus) {
 #ifdef DCACHE_ALIASING_POSSIBLE
@@ -917,7 +967,7 @@ void smp_flush_dcache_page_impl(struct page *page, int cpu)
 		}
 		if (data0) {
 			xcall_deliver(data0, __pa(pg_addr),
-				      (u64) pg_addr, &cpumask_of_cpu(cpu));
+				      (u64) pg_addr, cpumask_of(cpu));
 #ifdef CONFIG_DEBUG_DCFLUSH
 			atomic_inc(&dcpage_flushes_xcall);
 #endif
@@ -930,13 +980,12 @@ void smp_flush_dcache_page_impl(struct page *page, int cpu)
 void flush_dcache_page_all(struct mm_struct *mm, struct page *page)
 {
 	void *pg_addr;
-	int this_cpu;
 	u64 data0;
 
 	if (tlb_type == hypervisor)
 		return;
 
-	this_cpu = get_cpu();
+	preempt_disable();
 
 #ifdef CONFIG_DEBUG_DCFLUSH
 	atomic_inc(&dcpage_flushes);
@@ -945,7 +994,7 @@ void flush_dcache_page_all(struct mm_struct *mm, struct page *page)
 	pg_addr = page_address(page);
 	if (tlb_type == spitfire) {
 		data0 = ((u64)&xcall_flush_dcache_page_spitfire);
-		if (page_mapping(page) != NULL)
+		if (page_mapping_file(page) != NULL)
 			data0 |= ((u64)1 << 32);
 	} else if (tlb_type == cheetah || tlb_type == cheetah_plus) {
 #ifdef DCACHE_ALIASING_POSSIBLE
@@ -954,49 +1003,18 @@ void flush_dcache_page_all(struct mm_struct *mm, struct page *page)
 	}
 	if (data0) {
 		xcall_deliver(data0, __pa(pg_addr),
-			      (u64) pg_addr, &cpu_online_map);
+			      (u64) pg_addr, cpu_online_mask);
 #ifdef CONFIG_DEBUG_DCFLUSH
 		atomic_inc(&dcpage_flushes_xcall);
 #endif
 	}
 	__local_flush_dcache_page(page);
 
-	put_cpu();
-}
-
-void smp_new_mmu_context_version_client(int irq, struct pt_regs *regs)
-{
-	struct mm_struct *mm;
-	unsigned long flags;
-
-	clear_softint(1 << irq);
-
-	/* See if we need to allocate a new TLB context because
-	 * the version of the one we are using is now out of date.
-	 */
-	mm = current->active_mm;
-	if (unlikely(!mm || (mm == &init_mm)))
-		return;
-
-	spin_lock_irqsave(&mm->context.lock, flags);
-
-	if (unlikely(!CTX_VALID(mm->context)))
-		get_new_mmu_context(mm);
-
-	spin_unlock_irqrestore(&mm->context.lock, flags);
-
-	load_secondary_context(mm);
-	__flush_tlb_mm(CTX_HWBITS(mm->context),
-		       SECONDARY_CONTEXT);
-}
-
-void smp_new_mmu_context_version(void)
-{
-	smp_cross_call(&xcall_new_mmu_context_version, 0, 0, 0);
+	preempt_enable();
 }
 
 #ifdef CONFIG_KGDB
-void kgdb_roundup_cpus(unsigned long flags)
+void kgdb_roundup_cpus(void)
 {
 	smp_cross_call(&xcall_kgdb_capture, 0, 0, 0);
 }
@@ -1005,6 +1023,15 @@ void kgdb_roundup_cpus(unsigned long flags)
 void smp_fetch_global_regs(void)
 {
 	smp_cross_call(&xcall_fetch_glob_regs, 0, 0, 0);
+}
+
+void smp_fetch_global_pmu(void)
+{
+	if (tlb_type == hypervisor &&
+	    sun4v_chip_type >= SUN4V_CHIP_NIAGARA4)
+		smp_cross_call(&xcall_fetch_glob_pmu_n4, 0, 0, 0);
+	else
+		smp_cross_call(&xcall_fetch_glob_pmu, 0, 0, 0);
 }
 
 /* We know that the window frames of the user have been flushed
@@ -1070,19 +1097,52 @@ local_flush_and_out:
 	put_cpu();
 }
 
+struct tlb_pending_info {
+	unsigned long ctx;
+	unsigned long nr;
+	unsigned long *vaddrs;
+};
+
+static void tlb_pending_func(void *info)
+{
+	struct tlb_pending_info *t = info;
+
+	__flush_tlb_pending(t->ctx, t->nr, t->vaddrs);
+}
+
 void smp_flush_tlb_pending(struct mm_struct *mm, unsigned long nr, unsigned long *vaddrs)
 {
 	u32 ctx = CTX_HWBITS(mm->context);
+	struct tlb_pending_info info;
+	int cpu = get_cpu();
+
+	info.ctx = ctx;
+	info.nr = nr;
+	info.vaddrs = vaddrs;
+
+	if (mm == current->mm && atomic_read(&mm->mm_users) == 1)
+		cpumask_copy(mm_cpumask(mm), cpumask_of(cpu));
+	else
+		smp_call_function_many(mm_cpumask(mm), tlb_pending_func,
+				       &info, 1);
+
+	__flush_tlb_pending(ctx, nr, vaddrs);
+
+	put_cpu();
+}
+
+void smp_flush_tlb_page(struct mm_struct *mm, unsigned long vaddr)
+{
+	unsigned long context = CTX_HWBITS(mm->context);
 	int cpu = get_cpu();
 
 	if (mm == current->mm && atomic_read(&mm->mm_users) == 1)
 		cpumask_copy(mm_cpumask(mm), cpumask_of(cpu));
 	else
-		smp_cross_call_masked(&xcall_flush_tlb_pending,
-				      ctx, nr, (unsigned long) vaddrs,
+		smp_cross_call_masked(&xcall_flush_tlb_page,
+				      context, vaddr, 0,
 				      mm_cpumask(mm));
-
-	__flush_tlb_pending(ctx, nr, vaddrs);
+	__flush_tlb_page(context, vaddr);
 
 	put_cpu();
 }
@@ -1109,7 +1169,7 @@ static unsigned long penguins_are_doing_time;
 
 void smp_capture(void)
 {
-	int result = atomic_add_ret(1, &smp_capture_depth);
+	int result = atomic_add_return(1, &smp_capture_depth);
 
 	if (result == 1) {
 		int ncpus = num_online_cpus();
@@ -1148,7 +1208,7 @@ void smp_release(void)
  */
 extern void prom_world(int);
 
-void smp_penguin_jailcell(int irq, struct pt_regs *regs)
+void __irq_entry smp_penguin_jailcell(int irq, struct pt_regs *regs)
 {
 	clear_softint(1 << irq);
 
@@ -1176,7 +1236,7 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
 {
 }
 
-void __devinit smp_prepare_boot_cpu(void)
+void smp_prepare_boot_cpu(void)
 {
 }
 
@@ -1190,52 +1250,79 @@ void __init smp_setup_processor_id(void)
 		xcall_deliver_impl = hypervisor_xcall_deliver;
 }
 
-void __devinit smp_fill_in_sib_core_maps(void)
+void __init smp_fill_in_cpu_possible_map(void)
+{
+	int possible_cpus = num_possible_cpus();
+	int i;
+
+	if (possible_cpus > nr_cpu_ids)
+		possible_cpus = nr_cpu_ids;
+
+	for (i = 0; i < possible_cpus; i++)
+		set_cpu_possible(i, true);
+	for (; i < NR_CPUS; i++)
+		set_cpu_possible(i, false);
+}
+
+void smp_fill_in_sib_core_maps(void)
 {
 	unsigned int i;
 
 	for_each_present_cpu(i) {
 		unsigned int j;
 
-		cpus_clear(cpu_core_map[i]);
+		cpumask_clear(&cpu_core_map[i]);
 		if (cpu_data(i).core_id == 0) {
-			cpu_set(i, cpu_core_map[i]);
+			cpumask_set_cpu(i, &cpu_core_map[i]);
 			continue;
 		}
 
 		for_each_present_cpu(j) {
 			if (cpu_data(i).core_id ==
 			    cpu_data(j).core_id)
-				cpu_set(j, cpu_core_map[i]);
+				cpumask_set_cpu(j, &cpu_core_map[i]);
+		}
+	}
+
+	for_each_present_cpu(i)  {
+		unsigned int j;
+
+		for_each_present_cpu(j)  {
+			if (cpu_data(i).max_cache_id ==
+			    cpu_data(j).max_cache_id)
+				cpumask_set_cpu(j, &cpu_core_sib_cache_map[i]);
+
+			if (cpu_data(i).sock_id == cpu_data(j).sock_id)
+				cpumask_set_cpu(j, &cpu_core_sib_map[i]);
 		}
 	}
 
 	for_each_present_cpu(i) {
 		unsigned int j;
 
-		cpus_clear(per_cpu(cpu_sibling_map, i));
+		cpumask_clear(&per_cpu(cpu_sibling_map, i));
 		if (cpu_data(i).proc_id == -1) {
-			cpu_set(i, per_cpu(cpu_sibling_map, i));
+			cpumask_set_cpu(i, &per_cpu(cpu_sibling_map, i));
 			continue;
 		}
 
 		for_each_present_cpu(j) {
 			if (cpu_data(i).proc_id ==
 			    cpu_data(j).proc_id)
-				cpu_set(j, per_cpu(cpu_sibling_map, i));
+				cpumask_set_cpu(j, &per_cpu(cpu_sibling_map, i));
 		}
 	}
 }
 
-int __cpuinit __cpu_up(unsigned int cpu)
+int __cpu_up(unsigned int cpu, struct task_struct *tidle)
 {
-	int ret = smp_boot_one_cpu(cpu);
+	int ret = smp_boot_one_cpu(cpu, tidle);
 
 	if (!ret) {
-		cpu_set(cpu, smp_commenced_mask);
-		while (!cpu_isset(cpu, cpu_online_map))
+		cpumask_set_cpu(cpu, &smp_commenced_mask);
+		while (!cpu_online(cpu))
 			mb();
-		if (!cpu_isset(cpu, cpu_online_map)) {
+		if (!cpu_online(cpu)) {
 			ret = -ENODEV;
 		} else {
 			/* On SUN4V, writes to %tick and %stick are
@@ -1269,7 +1356,7 @@ void cpu_play_dead(void)
 				tb->nonresum_mondo_pa, 0);
 	}
 
-	cpu_clear(cpu, smp_commenced_mask);
+	cpumask_clear_cpu(cpu, &smp_commenced_mask);
 	membar_safe("#Sync");
 
 	local_irq_disable();
@@ -1290,13 +1377,13 @@ int __cpu_disable(void)
 	cpuinfo_sparc *c;
 	int i;
 
-	for_each_cpu_mask(i, cpu_core_map[cpu])
-		cpu_clear(cpu, cpu_core_map[i]);
-	cpus_clear(cpu_core_map[cpu]);
+	for_each_cpu(i, &cpu_core_map[cpu])
+		cpumask_clear_cpu(cpu, &cpu_core_map[i]);
+	cpumask_clear(&cpu_core_map[cpu]);
 
-	for_each_cpu_mask(i, per_cpu(cpu_sibling_map, cpu))
-		cpu_clear(cpu, per_cpu(cpu_sibling_map, i));
-	cpus_clear(per_cpu(cpu_sibling_map, cpu));
+	for_each_cpu(i, &per_cpu(cpu_sibling_map, cpu))
+		cpumask_clear_cpu(cpu, &per_cpu(cpu_sibling_map, i));
+	cpumask_clear(&per_cpu(cpu_sibling_map, cpu));
 
 	c = &cpu_data(cpu);
 
@@ -1312,9 +1399,7 @@ int __cpu_disable(void)
 	mdelay(1);
 	local_irq_disable();
 
-	ipi_call_lock();
-	cpu_clear(cpu, cpu_online_map);
-	ipi_call_unlock();
+	set_cpu_online(cpu, false);
 
 	cpu_map_rebuild();
 
@@ -1327,11 +1412,11 @@ void __cpu_die(unsigned int cpu)
 
 	for (i = 0; i < 100; i++) {
 		smp_rmb();
-		if (!cpu_isset(cpu, smp_commenced_mask))
+		if (!cpumask_test_cpu(cpu, &smp_commenced_mask))
 			break;
 		msleep(100);
 	}
-	if (cpu_isset(cpu, smp_commenced_mask)) {
+	if (cpumask_test_cpu(cpu, &smp_commenced_mask)) {
 		printk(KERN_ERR "CPU %u didn't die...\n", cpu);
 	} else {
 #if defined(CONFIG_SUN_LDOMS)
@@ -1341,7 +1426,7 @@ void __cpu_die(unsigned int cpu)
 		do {
 			hv_err = sun4v_cpu_stop(cpu);
 			if (hv_err == HV_EOK) {
-				cpu_clear(cpu, cpu_present_map);
+				set_cpu_present(cpu, false);
 				break;
 			}
 		} while (--limit > 0);
@@ -1358,22 +1443,127 @@ void __init smp_cpus_done(unsigned int max_cpus)
 {
 }
 
+static void send_cpu_ipi(int cpu)
+{
+	xcall_deliver((u64) &xcall_receive_signal,
+			0, 0, cpumask_of(cpu));
+}
+
+void scheduler_poke(void)
+{
+	if (!cpu_poke)
+		return;
+
+	if (!__this_cpu_read(poke))
+		return;
+
+	__this_cpu_write(poke, false);
+	set_softint(1 << PIL_SMP_RECEIVE_SIGNAL);
+}
+
+static unsigned long send_cpu_poke(int cpu)
+{
+	unsigned long hv_err;
+
+	per_cpu(poke, cpu) = true;
+	hv_err = sun4v_cpu_poke(cpu);
+	if (hv_err != HV_EOK) {
+		per_cpu(poke, cpu) = false;
+		pr_err_ratelimited("%s: sun4v_cpu_poke() fails err=%lu\n",
+				    __func__, hv_err);
+	}
+
+	return hv_err;
+}
+
 void smp_send_reschedule(int cpu)
 {
-	xcall_deliver((u64) &xcall_receive_signal, 0, 0,
-		      &cpumask_of_cpu(cpu));
+	if (cpu == smp_processor_id()) {
+		WARN_ON_ONCE(preemptible());
+		set_softint(1 << PIL_SMP_RECEIVE_SIGNAL);
+		return;
+	}
+
+	/* Use cpu poke to resume idle cpu if supported. */
+	if (cpu_poke && idle_cpu(cpu)) {
+		unsigned long ret;
+
+		ret = send_cpu_poke(cpu);
+		if (ret == HV_EOK)
+			return;
+	}
+
+	/* Use IPI in following cases:
+	 * - cpu poke not supported
+	 * - cpu not idle
+	 * - send_cpu_poke() returns with error
+	 */
+	send_cpu_ipi(cpu);
 }
 
-void smp_receive_signal_client(int irq, struct pt_regs *regs)
+void smp_init_cpu_poke(void)
+{
+	unsigned long major;
+	unsigned long minor;
+	int ret;
+
+	if (tlb_type != hypervisor)
+		return;
+
+	ret = sun4v_hvapi_get(HV_GRP_CORE, &major, &minor);
+	if (ret) {
+		pr_debug("HV_GRP_CORE is not registered\n");
+		return;
+	}
+
+	if (major == 1 && minor >= 6) {
+		/* CPU POKE is registered. */
+		cpu_poke = true;
+		return;
+	}
+
+	pr_debug("CPU_POKE not supported\n");
+}
+
+void __irq_entry smp_receive_signal_client(int irq, struct pt_regs *regs)
 {
 	clear_softint(1 << irq);
+	scheduler_ipi();
 }
 
-/* This is a nop because we capture all other cpus
- * anyways when making the PROM active.
- */
+static void stop_this_cpu(void *dummy)
+{
+	set_cpu_online(smp_processor_id(), false);
+	prom_stopself();
+}
+
 void smp_send_stop(void)
 {
+	int cpu;
+
+	if (tlb_type == hypervisor) {
+		int this_cpu = smp_processor_id();
+#ifdef CONFIG_SERIAL_SUNHV
+		sunhv_migrate_hvcons_irq(this_cpu);
+#endif
+		for_each_online_cpu(cpu) {
+			if (cpu == this_cpu)
+				continue;
+
+			set_cpu_online(cpu, false);
+#ifdef CONFIG_SUN_LDOMS
+			if (ldom_domaining_enabled) {
+				unsigned long hv_err;
+				hv_err = sun4v_cpu_stop(cpu);
+				if (hv_err)
+					printk(KERN_ERR "sun4v_cpu_stop() "
+					       "failed err=%lu\n", hv_err);
+			} else
+#endif
+				prom_stopcpu_cpuid(cpu);
+		}
+	} else
+		smp_call_function(stop_this_cpu, NULL, 0);
 }
 
 /**
@@ -1398,26 +1588,26 @@ static void * __init pcpu_alloc_bootmem(unsigned int cpu, size_t size,
 	void *ptr;
 
 	if (!node_online(node) || !NODE_DATA(node)) {
-		ptr = __alloc_bootmem(size, align, goal);
+		ptr = memblock_alloc_from(size, align, goal);
 		pr_info("cpu %d has no node %d or node-local memory\n",
 			cpu, node);
 		pr_debug("per cpu data for cpu%d %lu bytes at %016lx\n",
 			 cpu, size, __pa(ptr));
 	} else {
-		ptr = __alloc_bootmem_node(NODE_DATA(node),
-					   size, align, goal);
+		ptr = memblock_alloc_try_nid(size, align, goal,
+					     MEMBLOCK_ALLOC_ACCESSIBLE, node);
 		pr_debug("per cpu data for cpu%d %lu bytes on node%d at "
 			 "%016lx\n", cpu, size, node, __pa(ptr));
 	}
 	return ptr;
 #else
-	return __alloc_bootmem(size, align, goal);
+	return memblock_alloc_from(size, align, goal);
 #endif
 }
 
 static void __init pcpu_free_bootmem(void *ptr, size_t size)
 {
-	free_bootmem(__pa(ptr), size);
+	memblock_free(__pa(ptr), size);
 }
 
 static int __init pcpu_cpu_distance(unsigned int from, unsigned int to)
@@ -1431,14 +1621,36 @@ static int __init pcpu_cpu_distance(unsigned int from, unsigned int to)
 static void __init pcpu_populate_pte(unsigned long addr)
 {
 	pgd_t *pgd = pgd_offset_k(addr);
+	p4d_t *p4d;
 	pud_t *pud;
 	pmd_t *pmd;
 
-	pud = pud_offset(pgd, addr);
+	if (pgd_none(*pgd)) {
+		pud_t *new;
+
+		new = memblock_alloc_from(PAGE_SIZE, PAGE_SIZE, PAGE_SIZE);
+		if (!new)
+			goto err_alloc;
+		pgd_populate(&init_mm, pgd, new);
+	}
+
+	p4d = p4d_offset(pgd, addr);
+	if (p4d_none(*p4d)) {
+		pud_t *new;
+
+		new = memblock_alloc_from(PAGE_SIZE, PAGE_SIZE, PAGE_SIZE);
+		if (!new)
+			goto err_alloc;
+		p4d_populate(&init_mm, p4d, new);
+	}
+
+	pud = pud_offset(p4d, addr);
 	if (pud_none(*pud)) {
 		pmd_t *new;
 
-		new = __alloc_bootmem(PAGE_SIZE, PAGE_SIZE, PAGE_SIZE);
+		new = memblock_alloc_from(PAGE_SIZE, PAGE_SIZE, PAGE_SIZE);
+		if (!new)
+			goto err_alloc;
 		pud_populate(&init_mm, pud, new);
 	}
 
@@ -1446,9 +1658,17 @@ static void __init pcpu_populate_pte(unsigned long addr)
 	if (!pmd_present(*pmd)) {
 		pte_t *new;
 
-		new = __alloc_bootmem(PAGE_SIZE, PAGE_SIZE, PAGE_SIZE);
+		new = memblock_alloc_from(PAGE_SIZE, PAGE_SIZE, PAGE_SIZE);
+		if (!new)
+			goto err_alloc;
 		pmd_populate_kernel(&init_mm, pmd, new);
 	}
+
+	return;
+
+err_alloc:
+	panic("%s: Failed to allocate %lu bytes align=%lx from=%lx\n",
+	      __func__, PAGE_SIZE, PAGE_SIZE, PAGE_SIZE);
 }
 
 void __init setup_per_cpu_areas(void)
@@ -1464,9 +1684,9 @@ void __init setup_per_cpu_areas(void)
 					    pcpu_alloc_bootmem,
 					    pcpu_free_bootmem);
 		if (rc)
-			pr_warning("PERCPU: %s allocator failed (%d), "
-				   "falling back to page size\n",
-				   pcpu_fc_names[pcpu_chosen_fc], rc);
+			pr_warn("PERCPU: %s allocator failed (%d), "
+				"falling back to page size\n",
+				pcpu_fc_names[pcpu_chosen_fc], rc);
 	}
 	if (rc < 0)
 		rc = pcpu_page_first_chunk(PERCPU_MODULE_RESERVE,

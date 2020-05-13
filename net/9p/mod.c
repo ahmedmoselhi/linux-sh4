@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  net/9p/9p.c
  *
@@ -6,25 +7,13 @@
  *  Copyright (C) 2007 by Latchesar Ionkov <lucho@ionkov.net>
  *  Copyright (C) 2004 by Eric Van Hensbergen <ericvh@gmail.com>
  *  Copyright (C) 2002 by Ron Minnich <rminnich@lanl.gov>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2
- *  as published by the Free Software Foundation.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to:
- *  Free Software Foundation
- *  51 Franklin Street, Fifth Floor
- *  Boston, MA  02111-1301  USA
- *
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/module.h>
+#include <linux/errno.h>
+#include <linux/sched.h>
 #include <linux/moduleparam.h>
 #include <net/9p/9p.h>
 #include <linux/fs.h>
@@ -39,6 +28,29 @@ unsigned int p9_debug_level = 0;	/* feature-rific global debug level  */
 EXPORT_SYMBOL(p9_debug_level);
 module_param_named(debug, p9_debug_level, uint, 0);
 MODULE_PARM_DESC(debug, "9P debugging level");
+
+void _p9_debug(enum p9_debug_flags level, const char *func,
+		const char *fmt, ...)
+{
+	struct va_format vaf;
+	va_list args;
+
+	if ((p9_debug_level & level) != level)
+		return;
+
+	va_start(args, fmt);
+
+	vaf.fmt = fmt;
+	vaf.va = &args;
+
+	if (level == P9_DEBUG_9P)
+		pr_notice("(%8.8d) %pV", task_pid_nr(current), &vaf);
+	else
+		pr_notice("-- %s (%d): %pV", func, task_pid_nr(current), &vaf);
+
+	va_end(args);
+}
+EXPORT_SYMBOL(_p9_debug);
 #endif
 
 /*
@@ -77,17 +89,17 @@ EXPORT_SYMBOL(v9fs_unregister_trans);
 
 /**
  * v9fs_get_trans_by_name - get transport with the matching name
- * @name: string identifying transport
+ * @s: string identifying transport
  *
  */
-struct p9_trans_module *v9fs_get_trans_by_name(const substring_t *name)
+struct p9_trans_module *v9fs_get_trans_by_name(char *s)
 {
 	struct p9_trans_module *t, *found = NULL;
 
 	spin_lock(&v9fs_trans_lock);
 
 	list_for_each_entry(t, &v9fs_trans_list, list)
-		if (strncmp(t->name, name->from, name->to-name->from) == 0 &&
+		if (strcmp(t->name, s) == 0 &&
 		    try_module_get(t->owner)) {
 			found = t;
 			break;
@@ -139,30 +151,35 @@ void v9fs_put_trans(struct p9_trans_module *m)
 }
 
 /**
- * v9fs_init - Initialize module
+ * init_p9 - Initialize module
  *
  */
 static int __init init_p9(void)
 {
-	int ret = 0;
+	int ret;
+
+	ret = p9_client_init();
+	if (ret)
+		return ret;
 
 	p9_error_init();
-	printk(KERN_INFO "Installing 9P2000 support\n");
+	pr_info("Installing 9P2000 support\n");
 	p9_trans_fd_init();
 
 	return ret;
 }
 
 /**
- * v9fs_init - shutdown module
+ * exit_p9 - shutdown module
  *
  */
 
 static void __exit exit_p9(void)
 {
-	printk(KERN_INFO "Unloading 9P2000 support\n");
+	pr_info("Unloading 9P2000 support\n");
 
 	p9_trans_fd_exit();
+	p9_client_exit();
 }
 
 module_init(init_p9)

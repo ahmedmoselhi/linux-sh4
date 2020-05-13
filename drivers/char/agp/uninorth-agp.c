@@ -1,15 +1,16 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * UniNorth AGPGART routines.
  */
 #include <linux/module.h>
 #include <linux/pci.h>
+#include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/pagemap.h>
 #include <linux/agp_backend.h>
 #include <linux/delay.h>
 #include <linux/vmalloc.h>
 #include <asm/uninorth.h>
-#include <asm/pci-bridge.h>
 #include <asm/prom.h>
 #include <asm/pmac_feature.h>
 #include "agp.h"
@@ -27,6 +28,7 @@
  */
 static int uninorth_rev;
 static int is_u3;
+static u32 scratch_value;
 
 #define DEFAULT_APERTURE_SIZE 256
 #define DEFAULT_APERTURE_STRING "256"
@@ -78,7 +80,7 @@ static void uninorth_tlbflush(struct agp_memory *mem)
 			       ctrl | UNI_N_CFG_GART_INVAL);
 	pci_write_config_dword(agp_bridge->dev, UNI_N_CFG_GART_CTRL, ctrl);
 
-	if (uninorth_rev <= 0x30) {
+	if (!mem && uninorth_rev <= 0x30) {
 		pci_write_config_dword(agp_bridge->dev, UNI_N_CFG_GART_CTRL,
 				       ctrl | UNI_N_CFG_GART_2xRESET);
 		pci_write_config_dword(agp_bridge->dev, UNI_N_CFG_GART_CTRL,
@@ -144,58 +146,61 @@ static int uninorth_configure(void)
 	return 0;
 }
 
-static int uninorth_insert_memory(struct agp_memory *mem, off_t pg_start,
-				int type)
-{
-	int i, j, num_entries;
-	void *temp;
-	int mask_type;
-
-	temp = agp_bridge->current_size;
-	num_entries = A_SIZE_32(temp)->num_entries;
-
-	if (type != mem->type)
-		return -EINVAL;
-
-	mask_type = agp_bridge->driver->agp_type_to_mask_type(agp_bridge, type);
-	if (mask_type != 0) {
-		/* We know nothing of memory types */
-		return -EINVAL;
-	}
-
-	if ((pg_start + mem->page_count) > num_entries)
-		return -EINVAL;
-
-	j = pg_start;
-
-	while (j < (pg_start + mem->page_count)) {
-		if (agp_bridge->gatt_table[j])
-			return -EBUSY;
-		j++;
-	}
-
-	for (i = 0, j = pg_start; i < mem->page_count; i++, j++) {
-		agp_bridge->gatt_table[j] =
-			cpu_to_le32((page_to_phys(mem->pages[i]) & 0xFFFFF000UL) | 0x1UL);
-		flush_dcache_range((unsigned long)__va(page_to_phys(mem->pages[i])),
-				   (unsigned long)__va(page_to_phys(mem->pages[i]))+0x1000);
-	}
-	(void)in_le32((volatile u32*)&agp_bridge->gatt_table[pg_start]);
-	mb();
-
-	uninorth_tlbflush(mem);
-	return 0;
-}
-
-static int u3_insert_memory(struct agp_memory *mem, off_t pg_start, int type)
+static int uninorth_insert_memory(struct agp_memory *mem, off_t pg_start, int type)
 {
 	int i, num_entries;
 	void *temp;
 	u32 *gp;
 	int mask_type;
 
+	if (type != mem->type)
+		return -EINVAL;
+
+	mask_type = agp_bridge->driver->agp_type_to_mask_type(agp_bridge, type);
+	if (mask_type != 0) {
+		/* We know nothing of memory types */
+		return -EINVAL;
+	}
+
+	if (mem->page_count == 0)
+		return 0;
+
 	temp = agp_bridge->current_size;
 	num_entries = A_SIZE_32(temp)->num_entries;
+
+	if ((pg_start + mem->page_count) > num_entries)
+		return -EINVAL;
+
+	gp = (u32 *) &agp_bridge->gatt_table[pg_start];
+	for (i = 0; i < mem->page_count; ++i) {
+		if (gp[i] != scratch_value) {
+			dev_info(&agp_bridge->dev->dev,
+				 "uninorth_insert_memory: entry 0x%x occupied (%x)\n",
+				 i, gp[i]);
+			return -EBUSY;
+		}
+	}
+
+	for (i = 0; i < mem->page_count; i++) {
+		if (is_u3)
+			gp[i] = (page_to_phys(mem->pages[i]) >> PAGE_SHIFT) | 0x80000000UL;
+		else
+			gp[i] =	cpu_to_le32((page_to_phys(mem->pages[i]) & 0xFFFFF000UL) |
+					    0x1UL);
+		flush_dcache_range((unsigned long)__va(page_to_phys(mem->pages[i])),
+				   (unsigned long)__va(page_to_phys(mem->pages[i]))+0x1000);
+	}
+	mb();
+	uninorth_tlbflush(mem);
+
+	return 0;
+}
+
+static int uninorth_remove_memory(struct agp_memory *mem, off_t pg_start, int type)
+{
+	size_t i;
+	u32 *gp;
+	int mask_type;
 
 	if (type != mem->type)
 		return -EINVAL;
@@ -206,42 +211,13 @@ static int u3_insert_memory(struct agp_memory *mem, off_t pg_start, int type)
 		return -EINVAL;
 	}
 
-	if ((pg_start + mem->page_count) > num_entries)
-		return -EINVAL;
+	if (mem->page_count == 0)
+		return 0;
 
 	gp = (u32 *) &agp_bridge->gatt_table[pg_start];
 	for (i = 0; i < mem->page_count; ++i) {
-		if (gp[i]) {
-			dev_info(&agp_bridge->dev->dev,
-				 "u3_insert_memory: entry 0x%x occupied (%x)\n",
-				 i, gp[i]);
-			return -EBUSY;
-		}
+		gp[i] = scratch_value;
 	}
-
-	for (i = 0; i < mem->page_count; i++) {
-		gp[i] = (page_to_phys(mem->pages[i]) >> PAGE_SHIFT) | 0x80000000UL;
-		flush_dcache_range((unsigned long)__va(page_to_phys(mem->pages[i])),
-				   (unsigned long)__va(page_to_phys(mem->pages[i]))+0x1000);
-	}
-	mb();
-	uninorth_tlbflush(mem);
-
-	return 0;
-}
-
-int u3_remove_memory(struct agp_memory *mem, off_t pg_start, int type)
-{
-	size_t i;
-	u32 *gp;
-
-	if (type != 0 || mem->type != 0)
-		/* We know nothing of memory types */
-		return -EINVAL;
-
-	gp = (u32 *) &agp_bridge->gatt_table[pg_start];
-	for (i = 0; i < mem->page_count; ++i)
-		gp[i] = 0;
 	mb();
 	uninorth_tlbflush(mem);
 
@@ -385,6 +361,10 @@ static int agp_uninorth_resume(struct pci_dev *pdev)
 }
 #endif /* CONFIG_PM */
 
+static struct {
+	struct page **pages_arr;
+} uninorth_priv;
+
 static int uninorth_create_gatt_table(struct agp_bridge_data *bridge)
 {
 	char *table;
@@ -395,7 +375,6 @@ static int uninorth_create_gatt_table(struct agp_bridge_data *bridge)
 	int i;
 	void *temp;
 	struct page *page;
-	struct page **pages;
 
 	/* We can't handle 2 level gatt's */
 	if (bridge->driver->size_type == LVL2_APER_SIZE)
@@ -424,8 +403,10 @@ static int uninorth_create_gatt_table(struct agp_bridge_data *bridge)
 	if (table == NULL)
 		return -ENOMEM;
 
-	pages = kmalloc((1 << page_order) * sizeof(struct page*), GFP_KERNEL);
-	if (pages == NULL)
+	uninorth_priv.pages_arr = kmalloc_array(1 << page_order,
+						sizeof(struct page *),
+						GFP_KERNEL);
+	if (uninorth_priv.pages_arr == NULL)
 		goto enomem;
 
 	table_end = table + ((PAGE_SIZE * (1 << page_order)) - 1);
@@ -433,27 +414,32 @@ static int uninorth_create_gatt_table(struct agp_bridge_data *bridge)
 	for (page = virt_to_page(table), i = 0; page <= virt_to_page(table_end);
 	     page++, i++) {
 		SetPageReserved(page);
-		pages[i] = page;
+		uninorth_priv.pages_arr[i] = page;
 	}
 
 	bridge->gatt_table_real = (u32 *) table;
 	/* Need to clear out any dirty data still sitting in caches */
 	flush_dcache_range((unsigned long)table,
-			   (unsigned long)(table_end + PAGE_SIZE));
-	bridge->gatt_table = vmap(pages, (1 << page_order), 0, PAGE_KERNEL_NCG);
+			   (unsigned long)table_end + 1);
+	bridge->gatt_table = vmap(uninorth_priv.pages_arr, (1 << page_order), 0, PAGE_KERNEL_NCG);
 
 	if (bridge->gatt_table == NULL)
 		goto enomem;
 
 	bridge->gatt_bus_addr = virt_to_phys(table);
 
+	if (is_u3)
+		scratch_value = (page_to_phys(agp_bridge->scratch_page_page) >> PAGE_SHIFT) | 0x80000000UL;
+	else
+		scratch_value =	cpu_to_le32((page_to_phys(agp_bridge->scratch_page_page) & 0xFFFFF000UL) |
+				0x1UL);
 	for (i = 0; i < num_entries; i++)
-		bridge->gatt_table[i] = 0;
+		bridge->gatt_table[i] = scratch_value;
 
 	return 0;
 
 enomem:
-	kfree(pages);
+	kfree(uninorth_priv.pages_arr);
 	if (table)
 		free_pages((unsigned long)table, page_order);
 	return -ENOMEM;
@@ -475,6 +461,7 @@ static int uninorth_free_gatt_table(struct agp_bridge_data *bridge)
 	 */
 
 	vunmap(bridge->gatt_table);
+	kfree(uninorth_priv.pages_arr);
 	table = (char *) bridge->gatt_table_real;
 	table_end = table + ((PAGE_SIZE * (1 << page_order)) - 1);
 
@@ -486,7 +473,7 @@ static int uninorth_free_gatt_table(struct agp_bridge_data *bridge)
 	return 0;
 }
 
-void null_cache_flush(void)
+static void null_cache_flush(void)
 {
 	mb();
 }
@@ -536,7 +523,7 @@ const struct agp_bridge_driver uninorth_agp_driver = {
 	.create_gatt_table	= uninorth_create_gatt_table,
 	.free_gatt_table	= uninorth_free_gatt_table,
 	.insert_memory		= uninorth_insert_memory,
-	.remove_memory		= agp_generic_remove_memory,
+	.remove_memory		= uninorth_remove_memory,
 	.alloc_by_type		= agp_generic_alloc_by_type,
 	.free_by_type		= agp_generic_free_by_type,
 	.agp_alloc_page		= agp_generic_alloc_page,
@@ -545,6 +532,7 @@ const struct agp_bridge_driver uninorth_agp_driver = {
 	.agp_destroy_pages	= agp_generic_destroy_pages,
 	.agp_type_to_mask_type  = agp_generic_type_to_mask_type,
 	.cant_use_aperture	= true,
+	.needs_scratch_page	= true,
 };
 
 const struct agp_bridge_driver u3_agp_driver = {
@@ -562,8 +550,8 @@ const struct agp_bridge_driver u3_agp_driver = {
 	.agp_enable		= uninorth_agp_enable,
 	.create_gatt_table	= uninorth_create_gatt_table,
 	.free_gatt_table	= uninorth_free_gatt_table,
-	.insert_memory		= u3_insert_memory,
-	.remove_memory		= u3_remove_memory,
+	.insert_memory		= uninorth_insert_memory,
+	.remove_memory		= uninorth_remove_memory,
 	.alloc_by_type		= agp_generic_alloc_by_type,
 	.free_by_type		= agp_generic_free_by_type,
 	.agp_alloc_page		= agp_generic_alloc_page,
@@ -575,7 +563,7 @@ const struct agp_bridge_driver u3_agp_driver = {
 	.needs_scratch_page	= true,
 };
 
-static struct agp_device_ids uninorth_agp_device_ids[] __devinitdata = {
+static struct agp_device_ids uninorth_agp_device_ids[] = {
 	{
 		.device_id	= PCI_DEVICE_ID_APPLE_UNI_N_AGP,
 		.chipset_name	= "UniNorth",
@@ -610,8 +598,8 @@ static struct agp_device_ids uninorth_agp_device_ids[] __devinitdata = {
 	},
 };
 
-static int __devinit agp_uninorth_probe(struct pci_dev *pdev,
-					const struct pci_device_id *ent)
+static int agp_uninorth_probe(struct pci_dev *pdev,
+			      const struct pci_device_id *ent)
 {
 	struct agp_device_ids *devs = uninorth_agp_device_ids;
 	struct agp_bridge_data *bridge;
@@ -681,7 +669,7 @@ static int __devinit agp_uninorth_probe(struct pci_dev *pdev,
 	return agp_add_bridge(bridge);
 }
 
-static void __devexit agp_uninorth_remove(struct pci_dev *pdev)
+static void agp_uninorth_remove(struct pci_dev *pdev)
 {
 	struct agp_bridge_data *bridge = pci_get_drvdata(pdev);
 
@@ -694,7 +682,7 @@ static void __devexit agp_uninorth_remove(struct pci_dev *pdev)
 	agp_put_bridge(bridge);
 }
 
-static struct pci_device_id agp_uninorth_pci_table[] = {
+static const struct pci_device_id agp_uninorth_pci_table[] = {
 	{
 	.class		= (PCI_CLASS_BRIDGE_HOST << 8),
 	.class_mask	= ~0,

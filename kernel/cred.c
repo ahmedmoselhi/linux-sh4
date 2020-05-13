@@ -1,46 +1,39 @@
-/* Task credentials management - see Documentation/credentials.txt
+// SPDX-License-Identifier: GPL-2.0-or-later
+/* Task credentials management - see Documentation/security/credentials.rst
  *
  * Copyright (C) 2008 Red Hat, Inc. All Rights Reserved.
  * Written by David Howells (dhowells@redhat.com)
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public Licence
- * as published by the Free Software Foundation; either version
- * 2 of the Licence, or (at your option) any later version.
  */
-#include <linux/module.h>
+#include <linux/export.h>
 #include <linux/cred.h>
+#include <linux/slab.h>
 #include <linux/sched.h>
+#include <linux/sched/coredump.h>
 #include <linux/key.h>
 #include <linux/keyctl.h>
 #include <linux/init_task.h>
 #include <linux/security.h>
+#include <linux/binfmts.h>
 #include <linux/cn_proc.h>
+#include <linux/uidgid.h>
 
 #if 0
-#define kdebug(FMT, ...) \
-	printk("[%-5.5s%5u] "FMT"\n", current->comm, current->pid ,##__VA_ARGS__)
+#define kdebug(FMT, ...)						\
+	printk("[%-5.5s%5u] " FMT "\n",					\
+	       current->comm, current->pid, ##__VA_ARGS__)
 #else
-static inline __attribute__((format(printf, 1, 2)))
-void no_printk(const char *fmt, ...)
-{
-}
-#define kdebug(FMT, ...) \
-	no_printk("[%-5.5s%5u] "FMT"\n", current->comm, current->pid ,##__VA_ARGS__)
+#define kdebug(FMT, ...)						\
+do {									\
+	if (0)								\
+		no_printk("[%-5.5s%5u] " FMT "\n",			\
+			  current->comm, current->pid, ##__VA_ARGS__);	\
+} while (0)
 #endif
 
 static struct kmem_cache *cred_jar;
 
-/*
- * The common credentials for the initial task's thread group
- */
-#ifdef CONFIG_KEYS
-static struct thread_group_cred init_tgcred = {
-	.usage	= ATOMIC_INIT(2),
-	.tgid	= 0,
-	.lock	= SPIN_LOCK_UNLOCKED,
-};
-#endif
+/* init to 2 - one for init_task, one to ensure it is never freed */
+struct group_info init_groups = { .usage = ATOMIC_INIT(2) };
 
 /*
  * The initial credentials for the initial task
@@ -51,16 +44,22 @@ struct cred init_cred = {
 	.subscribers		= ATOMIC_INIT(2),
 	.magic			= CRED_MAGIC,
 #endif
+	.uid			= GLOBAL_ROOT_UID,
+	.gid			= GLOBAL_ROOT_GID,
+	.suid			= GLOBAL_ROOT_UID,
+	.sgid			= GLOBAL_ROOT_GID,
+	.euid			= GLOBAL_ROOT_UID,
+	.egid			= GLOBAL_ROOT_GID,
+	.fsuid			= GLOBAL_ROOT_UID,
+	.fsgid			= GLOBAL_ROOT_GID,
 	.securebits		= SECUREBITS_DEFAULT,
-	.cap_inheritable	= CAP_INIT_INH_SET,
+	.cap_inheritable	= CAP_EMPTY_SET,
 	.cap_permitted		= CAP_FULL_SET,
-	.cap_effective		= CAP_INIT_EFF_SET,
-	.cap_bset		= CAP_INIT_BSET,
+	.cap_effective		= CAP_FULL_SET,
+	.cap_bset		= CAP_FULL_SET,
 	.user			= INIT_USER,
+	.user_ns		= &init_user_ns,
 	.group_info		= &init_groups,
-#ifdef CONFIG_KEYS
-	.tgcred			= &init_tgcred,
-#endif
 };
 
 static inline void set_cred_subscribers(struct cred *cred, int n)
@@ -89,36 +88,6 @@ static inline void alter_cred_subscribers(const struct cred *_cred, int n)
 }
 
 /*
- * Dispose of the shared task group credentials
- */
-#ifdef CONFIG_KEYS
-static void release_tgcred_rcu(struct rcu_head *rcu)
-{
-	struct thread_group_cred *tgcred =
-		container_of(rcu, struct thread_group_cred, rcu);
-
-	BUG_ON(atomic_read(&tgcred->usage) != 0);
-
-	key_put(tgcred->session_keyring);
-	key_put(tgcred->process_keyring);
-	kfree(tgcred);
-}
-#endif
-
-/*
- * Release a set of thread group credentials.
- */
-static void release_tgcred(struct cred *cred)
-{
-#ifdef CONFIG_KEYS
-	struct thread_group_cred *tgcred = cred->tgcred;
-
-	if (atomic_dec_and_test(&tgcred->usage))
-		call_rcu(&tgcred->rcu, release_tgcred_rcu);
-#endif
-}
-
-/*
  * The RCU callback to actually dispose of a set of credentials
  */
 static void put_cred_rcu(struct rcu_head *rcu)
@@ -143,12 +112,14 @@ static void put_cred_rcu(struct rcu_head *rcu)
 #endif
 
 	security_cred_free(cred);
+	key_put(cred->session_keyring);
+	key_put(cred->process_keyring);
 	key_put(cred->thread_keyring);
 	key_put(cred->request_key_auth);
-	release_tgcred(cred);
 	if (cred->group_info)
 		put_group_info(cred->group_info);
 	free_uid(cred->user);
+	put_user_ns(cred->user_ns);
 	kmem_cache_free(cred_jar, cred);
 }
 
@@ -173,7 +144,10 @@ void __put_cred(struct cred *cred)
 	BUG_ON(cred == current->cred);
 	BUG_ON(cred == current->real_cred);
 
-	call_rcu(&cred->rcu, put_cred_rcu);
+	if (cred->non_rcu)
+		put_cred_rcu(&cred->rcu);
+	else
+		call_rcu(&cred->rcu, put_cred_rcu);
 }
 EXPORT_SYMBOL(__put_cred);
 
@@ -200,12 +174,10 @@ void exit_creds(struct task_struct *tsk)
 	alter_cred_subscribers(cred, -1);
 	put_cred(cred);
 
-	cred = (struct cred *) tsk->replacement_session_keyring;
-	if (cred) {
-		tsk->replacement_session_keyring = NULL;
-		validate_creds(cred);
-		put_cred(cred);
-	}
+#ifdef CONFIG_KEYS_REQUEST_CACHE
+	key_put(tsk->cached_requested_key);
+	tsk->cached_requested_key = NULL;
+#endif
 }
 
 /**
@@ -227,11 +199,12 @@ const struct cred *get_task_cred(struct task_struct *task)
 	do {
 		cred = __task_cred((task));
 		BUG_ON(!cred);
-	} while (!atomic_inc_not_zero(&((struct cred *)cred)->usage));
+	} while (!get_cred_rcu(cred));
 
 	rcu_read_unlock();
 	return cred;
 }
+EXPORT_SYMBOL(get_task_cred);
 
 /*
  * Allocate blank credentials, such that the credentials can be filled in at a
@@ -245,21 +218,12 @@ struct cred *cred_alloc_blank(void)
 	if (!new)
 		return NULL;
 
-#ifdef CONFIG_KEYS
-	new->tgcred = kzalloc(sizeof(*new->tgcred), GFP_KERNEL);
-	if (!new->tgcred) {
-		kmem_cache_free(cred_jar, new);
-		return NULL;
-	}
-	atomic_set(&new->tgcred->usage, 1);
-#endif
-
 	atomic_set(&new->usage, 1);
 #ifdef CONFIG_DEBUG_CREDENTIALS
 	new->magic = CRED_MAGIC;
 #endif
 
-	if (security_cred_alloc_blank(new, GFP_KERNEL) < 0)
+	if (security_cred_alloc_blank(new, GFP_KERNEL_ACCOUNT) < 0)
 		goto error;
 
 	return new;
@@ -300,22 +264,25 @@ struct cred *prepare_creds(void)
 	old = task->cred;
 	memcpy(new, old, sizeof(struct cred));
 
+	new->non_rcu = 0;
 	atomic_set(&new->usage, 1);
 	set_cred_subscribers(new, 0);
 	get_group_info(new->group_info);
 	get_uid(new->user);
+	get_user_ns(new->user_ns);
 
 #ifdef CONFIG_KEYS
+	key_get(new->session_keyring);
+	key_get(new->process_keyring);
 	key_get(new->thread_keyring);
 	key_get(new->request_key_auth);
-	atomic_inc(&new->tgcred->usage);
 #endif
 
 #ifdef CONFIG_SECURITY
 	new->security = NULL;
 #endif
 
-	if (security_prepare_creds(new, old, GFP_KERNEL) < 0)
+	if (security_prepare_creds(new, old, GFP_KERNEL_ACCOUNT) < 0)
 		goto error;
 	validate_creds(new);
 	return new;
@@ -328,100 +295,27 @@ EXPORT_SYMBOL(prepare_creds);
 
 /*
  * Prepare credentials for current to perform an execve()
- * - The caller must hold current->cred_guard_mutex
+ * - The caller must hold ->cred_guard_mutex
  */
 struct cred *prepare_exec_creds(void)
 {
-	struct thread_group_cred *tgcred = NULL;
 	struct cred *new;
 
-#ifdef CONFIG_KEYS
-	tgcred = kmalloc(sizeof(*tgcred), GFP_KERNEL);
-	if (!tgcred)
-		return NULL;
-#endif
-
 	new = prepare_creds();
-	if (!new) {
-		kfree(tgcred);
+	if (!new)
 		return new;
-	}
 
 #ifdef CONFIG_KEYS
 	/* newly exec'd tasks don't get a thread keyring */
 	key_put(new->thread_keyring);
 	new->thread_keyring = NULL;
 
-	/* create a new per-thread-group creds for all this set of threads to
-	 * share */
-	memcpy(tgcred, new->tgcred, sizeof(struct thread_group_cred));
-
-	atomic_set(&tgcred->usage, 1);
-	spin_lock_init(&tgcred->lock);
-
 	/* inherit the session keyring; new process keyring */
-	key_get(tgcred->session_keyring);
-	tgcred->process_keyring = NULL;
-
-	release_tgcred(new);
-	new->tgcred = tgcred;
+	key_put(new->process_keyring);
+	new->process_keyring = NULL;
 #endif
 
 	return new;
-}
-
-/*
- * prepare new credentials for the usermode helper dispatcher
- */
-struct cred *prepare_usermodehelper_creds(void)
-{
-#ifdef CONFIG_KEYS
-	struct thread_group_cred *tgcred = NULL;
-#endif
-	struct cred *new;
-
-#ifdef CONFIG_KEYS
-	tgcred = kzalloc(sizeof(*new->tgcred), GFP_ATOMIC);
-	if (!tgcred)
-		return NULL;
-#endif
-
-	new = kmem_cache_alloc(cred_jar, GFP_ATOMIC);
-	if (!new)
-		return NULL;
-
-	kdebug("prepare_usermodehelper_creds() alloc %p", new);
-
-	memcpy(new, &init_cred, sizeof(struct cred));
-
-	atomic_set(&new->usage, 1);
-	set_cred_subscribers(new, 0);
-	get_group_info(new->group_info);
-	get_uid(new->user);
-
-#ifdef CONFIG_KEYS
-	new->thread_keyring = NULL;
-	new->request_key_auth = NULL;
-	new->jit_keyring = KEY_REQKEY_DEFL_DEFAULT;
-
-	atomic_set(&tgcred->usage, 1);
-	spin_lock_init(&tgcred->lock);
-	new->tgcred = tgcred;
-#endif
-
-#ifdef CONFIG_SECURITY
-	new->security = NULL;
-#endif
-	if (security_prepare_creds(new, &init_cred, GFP_ATOMIC) < 0)
-		goto error;
-	validate_creds(new);
-
-	BUG_ON(atomic_read(&new->usage) != 1);
-	return new;
-
-error:
-	put_cred(new);
-	return NULL;
 }
 
 /*
@@ -435,15 +329,12 @@ error:
  */
 int copy_creds(struct task_struct *p, unsigned long clone_flags)
 {
-#ifdef CONFIG_KEYS
-	struct thread_group_cred *tgcred;
-#endif
 	struct cred *new;
 	int ret;
 
-	mutex_init(&p->cred_guard_mutex);
-
-	p->replacement_session_keyring = NULL;
+#ifdef CONFIG_KEYS_REQUEST_CACHE
+	p->cached_requested_key = NULL;
+#endif
 
 	if (
 #ifdef CONFIG_KEYS
@@ -481,22 +372,12 @@ int copy_creds(struct task_struct *p, unsigned long clone_flags)
 			install_thread_keyring_to_cred(new);
 	}
 
-	/* we share the process and session keyrings between all the threads in
-	 * a process - this is slightly icky as we violate COW credentials a
-	 * bit */
+	/* The process keyring is only shared between the threads in a process;
+	 * anything outside of those threads doesn't inherit.
+	 */
 	if (!(clone_flags & CLONE_THREAD)) {
-		tgcred = kmalloc(sizeof(*tgcred), GFP_KERNEL);
-		if (!tgcred) {
-			ret = -ENOMEM;
-			goto error_put;
-		}
-		atomic_set(&tgcred->usage, 1);
-		spin_lock_init(&tgcred->lock);
-		tgcred->process_keyring = NULL;
-		tgcred->session_keyring = key_get(new->tgcred->session_keyring);
-
-		release_tgcred(new);
-		new->tgcred = tgcred;
+		key_put(new->process_keyring);
+		new->process_keyring = NULL;
 	}
 #endif
 
@@ -509,6 +390,31 @@ int copy_creds(struct task_struct *p, unsigned long clone_flags)
 error_put:
 	put_cred(new);
 	return ret;
+}
+
+static bool cred_cap_issubset(const struct cred *set, const struct cred *subset)
+{
+	const struct user_namespace *set_ns = set->user_ns;
+	const struct user_namespace *subset_ns = subset->user_ns;
+
+	/* If the two credentials are in the same user namespace see if
+	 * the capabilities of subset are a subset of set.
+	 */
+	if (set_ns == subset_ns)
+		return cap_issubset(subset->cap_permitted, set->cap_permitted);
+
+	/* The credentials are in a different user namespaces
+	 * therefore one is a subset of the other only if a set is an
+	 * ancestor of subset and set->euid is owner of subset or one
+	 * of subsets ancestors.
+	 */
+	for (;subset_ns != &init_user_ns; subset_ns = subset_ns->parent) {
+		if ((set_ns == subset_ns->parent)  &&
+		    uid_eq(subset_ns->owner, set->euid))
+			return true;
+	}
+
+	return false;
 }
 
 /**
@@ -542,33 +448,38 @@ int commit_creds(struct cred *new)
 #endif
 	BUG_ON(atomic_read(&new->usage) < 1);
 
-	security_commit_creds(new, old);
-
 	get_cred(new); /* we will require a ref for the subj creds too */
 
 	/* dumpability changes */
-	if (old->euid != new->euid ||
-	    old->egid != new->egid ||
-	    old->fsuid != new->fsuid ||
-	    old->fsgid != new->fsgid ||
-	    !cap_issubset(new->cap_permitted, old->cap_permitted)) {
+	if (!uid_eq(old->euid, new->euid) ||
+	    !gid_eq(old->egid, new->egid) ||
+	    !uid_eq(old->fsuid, new->fsuid) ||
+	    !gid_eq(old->fsgid, new->fsgid) ||
+	    !cred_cap_issubset(old, new)) {
 		if (task->mm)
 			set_dumpable(task->mm, suid_dumpable);
 		task->pdeath_signal = 0;
+		/*
+		 * If a task drops privileges and becomes nondumpable,
+		 * the dumpability change must become visible before
+		 * the credential change; otherwise, a __ptrace_may_access()
+		 * racing with this change may be able to attach to a task it
+		 * shouldn't be able to attach to (as if the task had dropped
+		 * privileges without becoming nondumpable).
+		 * Pairs with a read barrier in __ptrace_may_access().
+		 */
 		smp_wmb();
 	}
 
 	/* alter the thread keyring */
-	if (new->fsuid != old->fsuid)
-		key_fsuid_changed(task);
-	if (new->fsgid != old->fsgid)
-		key_fsgid_changed(task);
+	if (!uid_eq(new->fsuid, old->fsuid))
+		key_fsuid_changed(new);
+	if (!gid_eq(new->fsgid, old->fsgid))
+		key_fsgid_changed(new);
 
 	/* do it
-	 * - What if a process setreuid()'s and this brings the
-	 *   new uid over his NPROC rlimit?  We can check this now
-	 *   cheaply with the new uid cache, so if it matters
-	 *   we should be checking for it.  -DaveM
+	 * RLIMIT_NPROC limits on user->processes have already been checked
+	 * in set_user().
 	 */
 	alter_cred_subscribers(new, 2);
 	if (new->user != old->user)
@@ -580,16 +491,16 @@ int commit_creds(struct cred *new)
 	alter_cred_subscribers(old, -2);
 
 	/* send notifications */
-	if (new->uid   != old->uid  ||
-	    new->euid  != old->euid ||
-	    new->suid  != old->suid ||
-	    new->fsuid != old->fsuid)
+	if (!uid_eq(new->uid,   old->uid)  ||
+	    !uid_eq(new->euid,  old->euid) ||
+	    !uid_eq(new->suid,  old->suid) ||
+	    !uid_eq(new->fsuid, old->fsuid))
 		proc_id_connector(task, PROC_EVENT_UID);
 
-	if (new->gid   != old->gid  ||
-	    new->egid  != old->egid ||
-	    new->sgid  != old->sgid ||
-	    new->fsgid != old->fsgid)
+	if (!gid_eq(new->gid,   old->gid)  ||
+	    !gid_eq(new->egid,  old->egid) ||
+	    !gid_eq(new->sgid,  old->sgid) ||
+	    !gid_eq(new->fsgid, old->fsgid))
 		proc_id_connector(task, PROC_EVENT_GID);
 
 	/* release the old obj and subj refs both */
@@ -637,7 +548,19 @@ const struct cred *override_creds(const struct cred *new)
 
 	validate_creds(old);
 	validate_creds(new);
-	get_cred(new);
+
+	/*
+	 * NOTE! This uses 'get_new_cred()' rather than 'get_cred()'.
+	 *
+	 * That means that we do not clear the 'non_rcu' flag, since
+	 * we are only installing the cred into the thread-synchronous
+	 * '->cred' pointer, not the '->real_cred' pointer that is
+	 * visible to other threads under RCU.
+	 *
+	 * Also note that we did validate_creds() manually, not depending
+	 * on the validation in 'get_cred()'.
+	 */
+	get_new_cred((struct cred *)new);
 	alter_cred_subscribers(new, 1);
 	rcu_assign_pointer(current->cred, new);
 	alter_cred_subscribers(old, -1);
@@ -673,14 +596,68 @@ void revert_creds(const struct cred *old)
 }
 EXPORT_SYMBOL(revert_creds);
 
+/**
+ * cred_fscmp - Compare two credentials with respect to filesystem access.
+ * @a: The first credential
+ * @b: The second credential
+ *
+ * cred_cmp() will return zero if both credentials have the same
+ * fsuid, fsgid, and supplementary groups.  That is, if they will both
+ * provide the same access to files based on mode/uid/gid.
+ * If the credentials are different, then either -1 or 1 will
+ * be returned depending on whether @a comes before or after @b
+ * respectively in an arbitrary, but stable, ordering of credentials.
+ *
+ * Return: -1, 0, or 1 depending on comparison
+ */
+int cred_fscmp(const struct cred *a, const struct cred *b)
+{
+	struct group_info *ga, *gb;
+	int g;
+
+	if (a == b)
+		return 0;
+	if (uid_lt(a->fsuid, b->fsuid))
+		return -1;
+	if (uid_gt(a->fsuid, b->fsuid))
+		return 1;
+
+	if (gid_lt(a->fsgid, b->fsgid))
+		return -1;
+	if (gid_gt(a->fsgid, b->fsgid))
+		return 1;
+
+	ga = a->group_info;
+	gb = b->group_info;
+	if (ga == gb)
+		return 0;
+	if (ga == NULL)
+		return -1;
+	if (gb == NULL)
+		return 1;
+	if (ga->ngroups < gb->ngroups)
+		return -1;
+	if (ga->ngroups > gb->ngroups)
+		return 1;
+
+	for (g = 0; g < ga->ngroups; g++) {
+		if (gid_lt(ga->gid[g], gb->gid[g]))
+			return -1;
+		if (gid_gt(ga->gid[g], gb->gid[g]))
+			return 1;
+	}
+	return 0;
+}
+EXPORT_SYMBOL(cred_fscmp);
+
 /*
  * initialise the credentials stuff
  */
 void __init cred_init(void)
 {
 	/* allocate a slab in which we can store credentials */
-	cred_jar = kmem_cache_create("cred_jar", sizeof(struct cred),
-				     0, SLAB_HWCACHE_ALIGN|SLAB_PANIC, NULL);
+	cred_jar = kmem_cache_create("cred_jar", sizeof(struct cred), 0,
+			SLAB_HWCACHE_ALIGN|SLAB_PANIC|SLAB_ACCOUNT, NULL);
 }
 
 /**
@@ -698,8 +675,6 @@ void __init cred_init(void)
  * The caller may change these controls afterwards if desired.
  *
  * Returns the new credentials or NULL if out of memory.
- *
- * Does not take, and does not return holding current->cred_replace_mutex.
  */
 struct cred *prepare_kernel_cred(struct task_struct *daemon)
 {
@@ -720,23 +695,25 @@ struct cred *prepare_kernel_cred(struct task_struct *daemon)
 	validate_creds(old);
 
 	*new = *old;
+	new->non_rcu = 0;
 	atomic_set(&new->usage, 1);
 	set_cred_subscribers(new, 0);
 	get_uid(new->user);
+	get_user_ns(new->user_ns);
 	get_group_info(new->group_info);
 
 #ifdef CONFIG_KEYS
-	atomic_inc(&init_tgcred.usage);
-	new->tgcred = &init_tgcred;
-	new->request_key_auth = NULL;
+	new->session_keyring = NULL;
+	new->process_keyring = NULL;
 	new->thread_keyring = NULL;
+	new->request_key_auth = NULL;
 	new->jit_keyring = KEY_REQKEY_DEFL_THREAD_KEYRING;
 #endif
 
 #ifdef CONFIG_SECURITY
 	new->security = NULL;
 #endif
-	if (security_prepare_creds(new, old, GFP_KERNEL) < 0)
+	if (security_prepare_creds(new, old, GFP_KERNEL_ACCOUNT) < 0)
 		goto error;
 
 	put_cred(old);
@@ -798,6 +775,8 @@ EXPORT_SYMBOL(set_security_override_from_ctx);
  */
 int set_create_files_as(struct cred *new, struct inode *inode)
 {
+	if (!uid_valid(inode->i_uid) || !gid_valid(inode->i_gid))
+		return -EINVAL;
 	new->fsuid = inode->i_uid;
 	new->fsgid = inode->i_gid;
 	return security_kernel_create_files_as(new, inode);
@@ -810,19 +789,6 @@ bool creds_are_invalid(const struct cred *cred)
 {
 	if (cred->magic != CRED_MAGIC)
 		return true;
-#ifdef CONFIG_SECURITY_SELINUX
-	/*
-	 * cred->security == NULL if security_cred_alloc_blank() or
-	 * security_prepare_creds() returned an error.
-	 */
-	if (selinux_is_enabled() && cred->security) {
-		if ((unsigned long) cred->security < PAGE_SIZE)
-			return true;
-		if ((*(u32 *)cred->security & 0xffffff00) ==
-		    (POISON_FREE << 24 | POISON_FREE << 16 | POISON_FREE << 8))
-			return true;
-	}
-#endif
 	return false;
 }
 EXPORT_SYMBOL(creds_are_invalid);
@@ -844,9 +810,15 @@ static void dump_invalid_creds(const struct cred *cred, const char *label,
 	       atomic_read(&cred->usage),
 	       read_cred_subscribers(cred));
 	printk(KERN_ERR "CRED: ->*uid = { %d,%d,%d,%d }\n",
-	       cred->uid, cred->euid, cred->suid, cred->fsuid);
+		from_kuid_munged(&init_user_ns, cred->uid),
+		from_kuid_munged(&init_user_ns, cred->euid),
+		from_kuid_munged(&init_user_ns, cred->suid),
+		from_kuid_munged(&init_user_ns, cred->fsuid));
 	printk(KERN_ERR "CRED: ->*gid = { %d,%d,%d,%d }\n",
-	       cred->gid, cred->egid, cred->sgid, cred->fsgid);
+		from_kgid_munged(&init_user_ns, cred->gid),
+		from_kgid_munged(&init_user_ns, cred->egid),
+		from_kgid_munged(&init_user_ns, cred->sgid),
+		from_kgid_munged(&init_user_ns, cred->fsgid));
 #ifdef CONFIG_SECURITY
 	printk(KERN_ERR "CRED: ->security is %p\n", cred->security);
 	if ((unsigned long) cred->security >= PAGE_SIZE &&

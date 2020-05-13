@@ -1,18 +1,20 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * drivers/mfd/ab3100_otp.c
  *
  * Copyright (C) 2007-2009 ST-Ericsson AB
- * License terms: GNU General Public License (GPL) version 2
  * Driver to read out OTP from the AB3100 Mixed-signal circuit
  * Author: Linus Walleij <linus.walleij@stericsson.com>
  */
 
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/platform_device.h>
-#include <linux/mfd/ab3100.h>
+#include <linux/mfd/abx500.h>
 #include <linux/debugfs.h>
+#include <linux/seq_file.h>
 
 /* The OTP registers */
 #define AB3100_OTP0		0xb0
@@ -28,7 +30,6 @@
 /**
  * struct ab3100_otp
  * @dev containing device
- * @ab3100 a pointer to the parent ab3100 device struct
  * @locked whether the OTP is locked, after locking, no more bits
  *       can be changed but before locking it is still possible
  *       to change bits from 1->0.
@@ -47,7 +48,6 @@
  */
 struct ab3100_otp {
 	struct device *dev;
-	struct ab3100 *ab3100;
 	bool locked;
 	u32 freq;
 	bool paf;
@@ -61,19 +61,19 @@ struct ab3100_otp {
 
 static int __init ab3100_otp_read(struct ab3100_otp *otp)
 {
-	struct ab3100 *ab = otp->ab3100;
 	u8 otpval[8];
 	u8 otpp;
 	int err;
 
-	err = ab3100_get_register_interruptible(ab, AB3100_OTPP, &otpp);
+	err = abx500_get_register_interruptible(otp->dev, 0,
+		AB3100_OTPP, &otpp);
 	if (err) {
 		dev_err(otp->dev, "unable to read OTPP register\n");
 		return err;
 	}
 
-	err = ab3100_get_register_page_interruptible(ab, AB3100_OTP0,
-						     otpval, 8);
+	err = abx500_get_register_page_interruptible(otp->dev, 0,
+		AB3100_OTP0, otpval, 8);
 	if (err) {
 		dev_err(otp->dev, "unable to read OTP register page\n");
 		return err;
@@ -95,11 +95,10 @@ static int __init ab3100_otp_read(struct ab3100_otp *otp)
  * This is a simple debugfs human-readable file that dumps out
  * the contents of the OTP.
  */
-#ifdef CONFIG_DEBUGFS
-static int show_otp(struct seq_file *s, void *v)
+#ifdef CONFIG_DEBUG_FS
+static int ab3100_show_otp(struct seq_file *s, void *v)
 {
 	struct ab3100_otp *otp = s->private;
-	int err;
 
 	seq_printf(s, "OTP is %s\n", otp->locked ? "LOCKED" : "UNLOCKED");
 	seq_printf(s, "OTP clock switch startup is %uHz\n", otp->freq);
@@ -113,7 +112,7 @@ static int show_otp(struct seq_file *s, void *v)
 
 static int ab3100_otp_open(struct inode *inode, struct file *file)
 {
-	return single_open(file, ab3100_otp_show, inode->i_private);
+	return single_open(file, ab3100_show_otp, inode->i_private);
 }
 
 static const struct file_operations ab3100_otp_operations = {
@@ -123,28 +122,22 @@ static const struct file_operations ab3100_otp_operations = {
 	.release	= single_release,
 };
 
-static int __init ab3100_otp_init_debugfs(struct device *dev,
-					  struct ab3100_otp *otp)
+static void __init ab3100_otp_init_debugfs(struct device *dev,
+					   struct ab3100_otp *otp)
 {
 	otp->debugfs = debugfs_create_file("ab3100_otp", S_IFREG | S_IRUGO,
-					   NULL, otp,
-					   &ab3100_otp_operations);
-	if (!otp->debugfs) {
-		dev_err(dev, "AB3100 debugfs OTP file registration failed!\n");
-		return err;
-	}
+					   NULL, otp, &ab3100_otp_operations);
 }
 
 static void __exit ab3100_otp_exit_debugfs(struct ab3100_otp *otp)
 {
-	debugfs_remove_file(otp->debugfs);
+	debugfs_remove(otp->debugfs);
 }
 #else
 /* Compile this out if debugfs not selected */
-static inline int __init ab3100_otp_init_debugfs(struct device *dev,
-						 struct ab3100_otp *otp)
+static inline void __init ab3100_otp_init_debugfs(struct device *dev,
+						  struct ab3100_otp *otp)
 {
-	return 0;
 }
 
 static inline void __exit ab3100_otp_exit_debugfs(struct ab3100_otp *otp)
@@ -187,15 +180,13 @@ static int __init ab3100_otp_probe(struct platform_device *pdev)
 	int err = 0;
 	int i;
 
-	otp = kzalloc(sizeof(struct ab3100_otp), GFP_KERNEL);
-	if (!otp) {
-		dev_err(&pdev->dev, "could not allocate AB3100 OTP device\n");
+	otp = devm_kzalloc(&pdev->dev, sizeof(struct ab3100_otp), GFP_KERNEL);
+	if (!otp)
 		return -ENOMEM;
-	}
+
 	otp->dev = &pdev->dev;
 
 	/* Replace platform data coming in with a local struct */
-	otp->ab3100 = platform_get_drvdata(pdev);
 	platform_set_drvdata(pdev, otp);
 
 	err = ab3100_otp_read(otp);
@@ -209,22 +200,17 @@ static int __init ab3100_otp_probe(struct platform_device *pdev)
 		err = device_create_file(&pdev->dev,
 					 &ab3100_otp_attrs[i]);
 		if (err)
-			goto out_no_sysfs;
+			goto err;
 	}
 
 	/* debugfs entries */
-	err = ab3100_otp_init_debugfs(&pdev->dev, otp);
-	if (err)
-		goto out_no_debugfs;
+	ab3100_otp_init_debugfs(&pdev->dev, otp);
 
 	return 0;
 
-out_no_sysfs:
-	for (i = 0; i < ARRAY_SIZE(ab3100_otp_attrs); i++)
-		device_remove_file(&pdev->dev,
-				   &ab3100_otp_attrs[i]);
-out_no_debugfs:
-	kfree(otp);
+err:
+	while (--i >= 0)
+		device_remove_file(&pdev->dev, &ab3100_otp_attrs[i]);
 	return err;
 }
 
@@ -237,31 +223,17 @@ static int __exit ab3100_otp_remove(struct platform_device *pdev)
 		device_remove_file(&pdev->dev,
 				   &ab3100_otp_attrs[i]);
 	ab3100_otp_exit_debugfs(otp);
-	kfree(otp);
 	return 0;
 }
 
 static struct platform_driver ab3100_otp_driver = {
 	.driver = {
 		.name = "ab3100-otp",
-		.owner = THIS_MODULE,
 	},
 	.remove	 = __exit_p(ab3100_otp_remove),
 };
 
-static int __init ab3100_otp_init(void)
-{
-	return platform_driver_probe(&ab3100_otp_driver,
-				     ab3100_otp_probe);
-}
-
-static void __exit ab3100_otp_exit(void)
-{
-	platform_driver_unregister(&ab3100_otp_driver);
-}
-
-module_init(ab3100_otp_init);
-module_exit(ab3100_otp_exit);
+module_platform_driver_probe(ab3100_otp_driver, ab3100_otp_probe);
 
 MODULE_AUTHOR("Linus Walleij <linus.walleij@stericsson.com>");
 MODULE_DESCRIPTION("AB3100 OTP Readout Driver");

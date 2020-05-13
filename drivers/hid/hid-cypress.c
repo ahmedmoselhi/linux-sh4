@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  HID driver for some cypress "special" devices
  *
@@ -5,15 +6,10 @@
  *  Copyright (c) 2000-2005 Vojtech Pavlik <vojtech@suse.cz>
  *  Copyright (c) 2005 Michael Haboustak <mike-@cinci.rr.com> for Concept2, Inc
  *  Copyright (c) 2006-2007 Jiri Kosina
- *  Copyright (c) 2007 Paul Walmsley
  *  Copyright (c) 2008 Jiri Slaby
  */
 
 /*
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation; either version 2 of the License, or (at your option)
- * any later version.
  */
 
 #include <linux/device.h>
@@ -31,25 +27,25 @@
  * Some USB barcode readers from cypress have usage min and usage max in
  * the wrong order
  */
-static void cp_report_fixup(struct hid_device *hdev, __u8 *rdesc,
-		unsigned int rsize)
+static __u8 *cp_report_fixup(struct hid_device *hdev, __u8 *rdesc,
+		unsigned int *rsize)
 {
 	unsigned long quirks = (unsigned long)hid_get_drvdata(hdev);
 	unsigned int i;
 
 	if (!(quirks & CP_RDESC_SWAPPED_MIN_MAX))
-		return;
+		return rdesc;
 
-	for (i = 0; i < rsize - 4; i++)
+	if (*rsize < 4)
+		return rdesc;
+
+	for (i = 0; i < *rsize - 4; i++)
 		if (rdesc[i] == 0x29 && rdesc[i + 2] == 0x19) {
-			__u8 tmp;
-
 			rdesc[i] = 0x19;
 			rdesc[i + 2] = 0x29;
-			tmp = rdesc[i + 3];
-			rdesc[i + 3] = rdesc[i + 1];
-			rdesc[i + 1] = tmp;
+			swap(rdesc[i + 3], rdesc[i + 1]);
 		}
+	return rdesc;
 }
 
 static int cp_input_mapped(struct hid_device *hdev, struct hid_input *hi,
@@ -106,13 +102,13 @@ static int cp_probe(struct hid_device *hdev, const struct hid_device_id *id)
 
 	ret = hid_parse(hdev);
 	if (ret) {
-		dev_err(&hdev->dev, "parse failed\n");
+		hid_err(hdev, "parse failed\n");
 		goto err_free;
 	}
 
 	ret = hid_hw_start(hdev, HID_CONNECT_DEFAULT);
 	if (ret) {
-		dev_err(&hdev->dev, "hw start failed\n");
+		hid_err(hdev, "hw start failed\n");
 		goto err_free;
 	}
 
@@ -128,6 +124,8 @@ static const struct hid_device_id cp_devices[] = {
 		.driver_data = CP_RDESC_SWAPPED_MIN_MAX },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_CYPRESS, USB_DEVICE_ID_CYPRESS_BARCODE_3),
 		.driver_data = CP_RDESC_SWAPPED_MIN_MAX },
+	{ HID_USB_DEVICE(USB_VENDOR_ID_CYPRESS, USB_DEVICE_ID_CYPRESS_BARCODE_4),
+		.driver_data = CP_RDESC_SWAPPED_MIN_MAX },
 	{ HID_USB_DEVICE(USB_VENDOR_ID_CYPRESS, USB_DEVICE_ID_CYPRESS_MOUSE),
 		.driver_data = CP_2WHEEL_MOUSE_HACK },
 	{ }
@@ -142,17 +140,6 @@ static struct hid_driver cp_driver = {
 	.event = cp_event,
 	.probe = cp_probe,
 };
+module_hid_driver(cp_driver);
 
-static int __init cp_init(void)
-{
-	return hid_register_driver(&cp_driver);
-}
-
-static void __exit cp_exit(void)
-{
-	hid_unregister_driver(&cp_driver);
-}
-
-module_init(cp_init);
-module_exit(cp_exit);
 MODULE_LICENSE("GPL");

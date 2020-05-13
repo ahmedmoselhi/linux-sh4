@@ -1,9 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0
 /* psycho_common.c: Code common to PSYCHO and derivative PCI controllers.
  *
  * Copyright (C) 2008 David S. Miller <davem@davemloft.net>
  */
 #include <linux/kernel.h>
 #include <linux/interrupt.h>
+#include <linux/numa.h>
 
 #include <asm/upa.h>
 
@@ -228,7 +230,7 @@ void psycho_check_iommu_error(struct pci_pbm_info *pbm,
 		default:
 			type_str = "ECC Error";
 			break;
-		};
+		}
 		printk(KERN_ERR "%s: IOMMU Error, type[%s]\n",
 		       pbm->name, type_str);
 
@@ -447,13 +449,13 @@ int psycho_iommu_init(struct pci_pbm_info *pbm, int tsbsize,
 
 }
 
-void psycho_pbm_init_common(struct pci_pbm_info *pbm, struct of_device *op,
+void psycho_pbm_init_common(struct pci_pbm_info *pbm, struct platform_device *op,
 			    const char *chip_name, int chip_type)
 {
-	struct device_node *dp = op->node;
+	struct device_node *dp = op->dev.of_node;
 
 	pbm->name = dp->full_name;
-	pbm->numa_node = -1;
+	pbm->numa_node = NUMA_NO_NODE;
 	pbm->chip_type = chip_type;
 	pbm->chip_version = of_getintprop_default(dp, "version#", 0);
 	pbm->chip_revision = of_getintprop_default(dp, "module-revision#", 0);

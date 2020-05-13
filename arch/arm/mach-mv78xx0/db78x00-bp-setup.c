@@ -15,9 +15,9 @@
 #include <linux/mv643xx_eth.h>
 #include <linux/ethtool.h>
 #include <linux/i2c.h>
-#include <mach/mv78xx0.h>
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
+#include "mv78xx0.h"
 #include "common.h"
 
 static struct mv643xx_eth_platform_data db78x00_ge00_data = {
@@ -93,11 +93,12 @@ subsys_initcall(db78x00_pci_init);
 
 MACHINE_START(DB78X00_BP, "Marvell DB-78x00-BP Development Board")
 	/* Maintainer: Lennert Buytenhek <buytenh@marvell.com> */
-	.phys_io	= MV78XX0_REGS_PHYS_BASE,
-	.io_pg_offst	= ((MV78XX0_REGS_VIRT_BASE) >> 18) & 0xfffc,
-	.boot_params	= 0x00000100,
+	.atag_offset	= 0x100,
+	.nr_irqs	= MV78XX0_NR_IRQS,
 	.init_machine	= db78x00_init,
 	.map_io		= mv78xx0_map_io,
+	.init_early	= mv78xx0_init_early,
 	.init_irq	= mv78xx0_init_irq,
-	.timer		= &mv78xx0_timer,
+	.init_time	= mv78xx0_timer_init,
+	.restart	= mv78xx0_restart,
 MACHINE_END

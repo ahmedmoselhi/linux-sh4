@@ -1,23 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SN Platform GRU Driver
  *
  *              GRU HANDLE DEFINITION
  *
  *  Copyright (c) 2008 Silicon Graphics, Inc.  All Rights Reserved.
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
 #ifndef __GRUHANDLES_H__
@@ -91,6 +78,12 @@
 /* Convert an arbitrary handle address to the beginning of the GRU segment */
 #define GRUBASE(h)		((void *)((unsigned long)(h) & ~(GRU_SIZE - 1)))
 
+/* Test a valid handle address to determine the type */
+#define TYPE_IS(hn, h)		((h) >= GRU_##hn##_BASE && (h) <	\
+		GRU_##hn##_BASE + GRU_NUM_##hn * GRU_HANDLE_STRIDE &&   \
+		(((h) & (GRU_HANDLE_STRIDE - 1)) == 0))
+
+
 /* General addressing macros. */
 static inline void *get_gseg_base_address(void *base, int ctxnum)
 {
@@ -157,6 +150,16 @@ static inline void *gru_chiplet_vaddr(void *vaddr, int pnode, int chiplet)
 {
 	return vaddr + GRU_SIZE * (2 * pnode  + chiplet);
 }
+
+static inline struct gru_control_block_extended *gru_tfh_to_cbe(
+					struct gru_tlb_fault_handle *tfh)
+{
+	unsigned long cbe;
+
+	cbe = (unsigned long)tfh - GRU_TFH_BASE + GRU_CBE_BASE;
+	return (struct gru_control_block_extended*)cbe;
+}
+
 
 
 
@@ -235,6 +238,17 @@ enum gru_tgh_state {
 	TGHSTATE_WAITDONE,
 	TGHSTATE_RESTART_CTX,
 };
+
+enum gru_tgh_cause {
+	TGHCAUSE_RR_ECC,
+	TGHCAUSE_TLB_ECC,
+	TGHCAUSE_LRU_ECC,
+	TGHCAUSE_PS_ECC,
+	TGHCAUSE_MUL_ERR,
+	TGHCAUSE_DATA_ERR,
+	TGHCAUSE_SW_FORCE
+};
+
 
 /*
  * TFH - TLB Global Handle
@@ -440,6 +454,12 @@ struct gru_control_block_extended {
 	unsigned int cbrexecstatus:8;
 };
 
+/* CBE fields for active BCOPY instructions */
+#define cbe_baddr0	idef1upd
+#define cbe_baddr1	idef3upd
+#define cbe_src_cl	idef6cpy
+#define cbe_nelemcur	idef5upd
+
 enum gru_cbr_state {
 	CBRSTATE_INACTIVE,
 	CBRSTATE_IDLE,
@@ -487,11 +507,10 @@ int cch_interrupt_sync(struct gru_context_configuration_handle *cch);
 int tgh_invalidate(struct gru_tlb_global_handle *tgh, unsigned long vaddr,
 	unsigned long vaddrmask, int asid, int pagesize, int global, int n,
 	unsigned short ctxbitmap);
-void tfh_write_only(struct gru_tlb_fault_handle *tfh, unsigned long pfn,
-	unsigned long vaddr, int asid, int dirty, int pagesize);
+int tfh_write_only(struct gru_tlb_fault_handle *tfh, unsigned long paddr,
+	int gaa, unsigned long vaddr, int asid, int dirty, int pagesize);
 void tfh_write_restart(struct gru_tlb_fault_handle *tfh, unsigned long paddr,
 	int gaa, unsigned long vaddr, int asid, int dirty, int pagesize);
-void tfh_restart(struct gru_tlb_fault_handle *tfh);
 void tfh_user_polling_mode(struct gru_tlb_fault_handle *tfh);
 void tfh_exception(struct gru_tlb_fault_handle *tfh);
 

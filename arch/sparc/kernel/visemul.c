@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /* visemul.c: Emulation of VIS instructions.
  *
  * Copyright (C) 2006 David S. Miller (davem@davemloft.net)
@@ -5,12 +6,13 @@
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/thread_info.h>
+#include <linux/perf_event.h>
 
 #include <asm/ptrace.h>
 #include <asm/pstate.h>
-#include <asm/system.h>
 #include <asm/fpumacro.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
+#include <asm/cacheflush.h>
 
 /* OPF field of various VIS instructions.  */
 
@@ -29,7 +31,7 @@
 /* 001001011 - two 32-bit merges */
 #define FPMERGE_OPF	0x04b
 
-/* 000110001 - 8-by-16-bit partitoned product  */
+/* 000110001 - 8-by-16-bit partitioned product  */
 #define FMUL8x16_OPF	0x031
 
 /* 000110011 - 8-by-16-bit upper alpha partitioned product  */
@@ -148,21 +150,24 @@ static inline void maybe_flush_windows(unsigned int rs1, unsigned int rs2,
 
 static unsigned long fetch_reg(unsigned int reg, struct pt_regs *regs)
 {
-	unsigned long value;
+	unsigned long value, fp;
 	
 	if (reg < 16)
 		return (!reg ? 0 : regs->u_regs[reg]);
+
+	fp = regs->u_regs[UREG_FP];
+
 	if (regs->tstate & TSTATE_PRIV) {
 		struct reg_window *win;
-		win = (struct reg_window *)(regs->u_regs[UREG_FP] + STACK_BIAS);
+		win = (struct reg_window *)(fp + STACK_BIAS);
 		value = win->locals[reg - 16];
-	} else if (test_thread_flag(TIF_32BIT)) {
+	} else if (!test_thread_64bit_stack(fp)) {
 		struct reg_window32 __user *win32;
-		win32 = (struct reg_window32 __user *)((unsigned long)((u32)regs->u_regs[UREG_FP]));
+		win32 = (struct reg_window32 __user *)((unsigned long)((u32)fp));
 		get_user(value, &win32->locals[reg - 16]);
 	} else {
 		struct reg_window __user *win;
-		win = (struct reg_window __user *)(regs->u_regs[UREG_FP] + STACK_BIAS);
+		win = (struct reg_window __user *)(fp + STACK_BIAS);
 		get_user(value, &win->locals[reg - 16]);
 	}
 	return value;
@@ -171,16 +176,18 @@ static unsigned long fetch_reg(unsigned int reg, struct pt_regs *regs)
 static inline unsigned long __user *__fetch_reg_addr_user(unsigned int reg,
 							  struct pt_regs *regs)
 {
+	unsigned long fp = regs->u_regs[UREG_FP];
+
 	BUG_ON(reg < 16);
 	BUG_ON(regs->tstate & TSTATE_PRIV);
 
-	if (test_thread_flag(TIF_32BIT)) {
+	if (!test_thread_64bit_stack(fp)) {
 		struct reg_window32 __user *win32;
-		win32 = (struct reg_window32 __user *)((unsigned long)((u32)regs->u_regs[UREG_FP]));
+		win32 = (struct reg_window32 __user *)((unsigned long)((u32)fp));
 		return (unsigned long __user *)&win32->locals[reg - 16];
 	} else {
 		struct reg_window __user *win;
-		win = (struct reg_window __user *)(regs->u_regs[UREG_FP] + STACK_BIAS);
+		win = (struct reg_window __user *)(fp + STACK_BIAS);
 		return &win->locals[reg - 16];
 	}
 }
@@ -203,7 +210,7 @@ static void store_reg(struct pt_regs *regs, unsigned long val, unsigned long rd)
 	} else {
 		unsigned long __user *rd_user = __fetch_reg_addr_user(rd, regs);
 
-		if (test_thread_flag(TIF_32BIT))
+		if (!test_thread_64bit_stack(regs->u_regs[UREG_FP]))
 			__put_user((u32)val, (u32 __user *)rd_user);
 		else
 			__put_user(val, rd_user);
@@ -333,7 +340,7 @@ static void edge(struct pt_regs *regs, unsigned int insn, unsigned int opf)
 		left = edge32_tab_l[(rs1 >> 2) & 0x1].left;
 		right = edge32_tab_l[(rs2 >> 2) & 0x1].right;
 		break;
-	};
+	}
 
 	if ((rs1 & ~0x7UL) == (rs2 & ~0x7UL))
 		rd_val = right & left;
@@ -359,7 +366,7 @@ static void edge(struct pt_regs *regs, unsigned int insn, unsigned int opf)
 		tstate = regs->tstate & ~(TSTATE_XCC | TSTATE_ICC);
 		regs->tstate = tstate | (ccr << 32UL);
 	}
-	};
+	}
 }
 
 static void array(struct pt_regs *regs, unsigned int insn, unsigned int opf)
@@ -391,7 +398,7 @@ static void array(struct pt_regs *regs, unsigned int insn, unsigned int opf)
 
 	case ARRAY32_OPF:
 		rd_val <<= 2;
-	};
+	}
 
 	store_reg(regs, rd_val, RD(insn));
 }
@@ -576,7 +583,7 @@ static void pformat(struct pt_regs *regs, unsigned int insn, unsigned int opf)
 		*fpd_regaddr(f, RD(insn)) = rd_val;
 		break;
 	}
-	};
+	}
 }
 
 static void pmul(struct pt_regs *regs, unsigned int insn, unsigned int opf)
@@ -692,7 +699,7 @@ static void pmul(struct pt_regs *regs, unsigned int insn, unsigned int opf)
 		*fpd_regaddr(f, RD(insn)) = rd_val;
 		break;
 	}
-	};
+	}
 }
 
 static void pcmp(struct pt_regs *regs, unsigned int insn, unsigned int opf)
@@ -712,17 +719,17 @@ static void pcmp(struct pt_regs *regs, unsigned int insn, unsigned int opf)
 			s16 b = (rs2 >> (i * 16)) & 0xffff;
 
 			if (a > b)
-				rd_val |= 1 << i;
+				rd_val |= 8 >> i;
 		}
 		break;
 
 	case FCMPGT32_OPF:
 		for (i = 0; i < 2; i++) {
-			s32 a = (rs1 >> (i * 32)) & 0xffff;
-			s32 b = (rs2 >> (i * 32)) & 0xffff;
+			s32 a = (rs1 >> (i * 32)) & 0xffffffff;
+			s32 b = (rs2 >> (i * 32)) & 0xffffffff;
 
 			if (a > b)
-				rd_val |= 1 << i;
+				rd_val |= 2 >> i;
 		}
 		break;
 
@@ -732,17 +739,17 @@ static void pcmp(struct pt_regs *regs, unsigned int insn, unsigned int opf)
 			s16 b = (rs2 >> (i * 16)) & 0xffff;
 
 			if (a <= b)
-				rd_val |= 1 << i;
+				rd_val |= 8 >> i;
 		}
 		break;
 
 	case FCMPLE32_OPF:
 		for (i = 0; i < 2; i++) {
-			s32 a = (rs1 >> (i * 32)) & 0xffff;
-			s32 b = (rs2 >> (i * 32)) & 0xffff;
+			s32 a = (rs1 >> (i * 32)) & 0xffffffff;
+			s32 b = (rs2 >> (i * 32)) & 0xffffffff;
 
 			if (a <= b)
-				rd_val |= 1 << i;
+				rd_val |= 2 >> i;
 		}
 		break;
 
@@ -752,17 +759,17 @@ static void pcmp(struct pt_regs *regs, unsigned int insn, unsigned int opf)
 			s16 b = (rs2 >> (i * 16)) & 0xffff;
 
 			if (a != b)
-				rd_val |= 1 << i;
+				rd_val |= 8 >> i;
 		}
 		break;
 
 	case FCMPNE32_OPF:
 		for (i = 0; i < 2; i++) {
-			s32 a = (rs1 >> (i * 32)) & 0xffff;
-			s32 b = (rs2 >> (i * 32)) & 0xffff;
+			s32 a = (rs1 >> (i * 32)) & 0xffffffff;
+			s32 b = (rs2 >> (i * 32)) & 0xffffffff;
 
 			if (a != b)
-				rd_val |= 1 << i;
+				rd_val |= 2 >> i;
 		}
 		break;
 
@@ -772,20 +779,20 @@ static void pcmp(struct pt_regs *regs, unsigned int insn, unsigned int opf)
 			s16 b = (rs2 >> (i * 16)) & 0xffff;
 
 			if (a == b)
-				rd_val |= 1 << i;
+				rd_val |= 8 >> i;
 		}
 		break;
 
 	case FCMPEQ32_OPF:
 		for (i = 0; i < 2; i++) {
-			s32 a = (rs1 >> (i * 32)) & 0xffff;
-			s32 b = (rs2 >> (i * 32)) & 0xffff;
+			s32 a = (rs1 >> (i * 32)) & 0xffffffff;
+			s32 b = (rs2 >> (i * 32)) & 0xffffffff;
 
 			if (a == b)
-				rd_val |= 1 << i;
+				rd_val |= 2 >> i;
 		}
 		break;
-	};
+	}
 
 	maybe_flush_windows(0, 0, RD(insn), 0);
 	store_reg(regs, rd_val, RD(insn));
@@ -800,6 +807,8 @@ int vis_emul(struct pt_regs *regs, unsigned int insn)
 	unsigned int opf;
 
 	BUG_ON(regs->tstate & TSTATE_PRIV);
+
+	perf_sw_event(PERF_COUNT_SW_EMULATION_FAULTS, 1, regs, 0);
 
 	if (test_thread_flag(TIF_32BIT))
 		pc = (u32)pc;
@@ -882,7 +891,7 @@ int vis_emul(struct pt_regs *regs, unsigned int insn)
 	case BSHUFFLE_OPF:
 		bshuffle(regs, insn);
 		break;
-	};
+	}
 
 	regs->tpc = regs->tnpc;
 	regs->tnpc += 4;

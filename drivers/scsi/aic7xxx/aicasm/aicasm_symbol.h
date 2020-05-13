@@ -1,5 +1,5 @@
 /*
- * Aic7xxx SCSI host adapter firmware asssembler symbol table definitions
+ * Aic7xxx SCSI host adapter firmware assembler symbol table definitions
  *
  * Copyright (c) 1997 Justin T. Gibbs.
  * Copyright (c) 2002 Adaptec Inc.
@@ -42,11 +42,7 @@
  * $FreeBSD$
  */
 
-#ifdef __linux__
 #include "../queue.h"
-#else
-#include <sys/queue.h>
-#endif
 
 typedef enum {
 	UNINITIALIZED,

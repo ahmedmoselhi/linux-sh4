@@ -1,99 +1,49 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* 
  * Copyright (C) 2002 Jeff Dike (jdike@karaya.com)
- * Licensed under the GPL
+ * Copyright (C) 2015 Richard Weinberger (richard@nod.at)
  */
 
 #ifndef __UM_UACCESS_H
 #define __UM_UACCESS_H
 
-#include <asm/errno.h>
-#include <asm/processor.h>
+#include <asm/elf.h>
 
-/* thread_info has a mm_segment_t in it, so put the definition up here */
-typedef struct {
-	unsigned long seg;
-} mm_segment_t;
+#define __under_task_size(addr, size) \
+	(((unsigned long) (addr) < TASK_SIZE) && \
+	 (((unsigned long) (addr) + (size)) < TASK_SIZE))
 
-#include "linux/thread_info.h"
+#define __access_ok_vsyscall(addr, size) \
+	  (((unsigned long) (addr) >= FIXADDR_USER_START) && \
+	  ((unsigned long) (addr) + (size) <= FIXADDR_USER_END) && \
+	  ((unsigned long) (addr) + (size) >= (unsigned long)(addr)))
 
-#define VERIFY_READ 0
-#define VERIFY_WRITE 1
+#define __addr_range_nowrap(addr, size) \
+	((unsigned long) (addr) <= ((unsigned long) (addr) + (size)))
 
-/*
- * The fs value determines whether argument validity checking should be
- * performed or not.  If get_fs() == USER_DS, checking is performed, with
- * get_fs() == KERNEL_DS, checking is bypassed.
- *
- * For historical reasons, these macros are grossly misnamed.
- */
+extern unsigned long raw_copy_from_user(void *to, const void __user *from, unsigned long n);
+extern unsigned long raw_copy_to_user(void __user *to, const void *from, unsigned long n);
+extern long __strncpy_from_user(char *dst, const char __user *src, long count);
+extern long __strnlen_user(const void __user *str, long len);
+extern unsigned long __clear_user(void __user *mem, unsigned long len);
+static inline int __access_ok(unsigned long addr, unsigned long size);
 
-#define MAKE_MM_SEG(s)	((mm_segment_t) { (s) })
+/* Teach asm-generic/uaccess.h that we have C functions for these. */
+#define __access_ok __access_ok
+#define __clear_user __clear_user
+#define __strnlen_user __strnlen_user
+#define __strncpy_from_user __strncpy_from_user
+#define INLINE_COPY_FROM_USER
+#define INLINE_COPY_TO_USER
 
-#define KERNEL_DS	MAKE_MM_SEG(0xFFFFFFFF)
-#define USER_DS		MAKE_MM_SEG(TASK_SIZE)
+#include <asm-generic/uaccess.h>
 
-#define get_ds()	(KERNEL_DS)
-#define get_fs()	(current_thread_info()->addr_limit)
-#define set_fs(x)	(current_thread_info()->addr_limit = (x))
-
-#define segment_eq(a, b) ((a).seg == (b).seg)
-
-#include "um_uaccess.h"
-
-#define __copy_from_user(to, from, n) copy_from_user(to, from, n)
-
-#define __copy_to_user(to, from, n) copy_to_user(to, from, n)
-
-#define __copy_to_user_inatomic __copy_to_user
-#define __copy_from_user_inatomic __copy_from_user
-
-#define __get_user(x, ptr) \
-({ \
-	const __typeof__(*(ptr)) __user *__private_ptr = (ptr);	\
-	__typeof__(x) __private_val;			\
-	int __private_ret = -EFAULT;			\
-	(x) = (__typeof__(*(__private_ptr)))0;				\
-	if (__copy_from_user((__force void *)&__private_val, (__private_ptr),\
-			     sizeof(*(__private_ptr))) == 0) {		\
-		(x) = (__typeof__(*(__private_ptr))) __private_val;	\
-		__private_ret = 0;					\
-	}								\
-	__private_ret;							\
-}) 
-
-#define get_user(x, ptr) \
-({ \
-        const __typeof__((*(ptr))) __user *private_ptr = (ptr); \
-        (access_ok(VERIFY_READ, private_ptr, sizeof(*private_ptr)) ? \
-	 __get_user(x, private_ptr) : ((x) = (__typeof__(*ptr))0, -EFAULT)); \
-})
-
-#define __put_user(x, ptr) \
-({ \
-        __typeof__(*(ptr)) __user *__private_ptr = ptr; \
-        __typeof__(*(__private_ptr)) __private_val; \
-        int __private_ret = -EFAULT; \
-        __private_val = (__typeof__(*(__private_ptr))) (x); \
-        if (__copy_to_user((__private_ptr), &__private_val, \
-			   sizeof(*(__private_ptr))) == 0) { \
-		__private_ret = 0; \
-	} \
-        __private_ret; \
-})
-
-#define put_user(x, ptr) \
-({ \
-        __typeof__(*(ptr)) __user *private_ptr = (ptr); \
-        (access_ok(VERIFY_WRITE, private_ptr, sizeof(*private_ptr)) ? \
-	 __put_user(x, private_ptr) : -EFAULT); \
-})
-
-#define strlen_user(str) strnlen_user(str, ~0U >> 1)
-
-struct exception_table_entry
+static inline int __access_ok(unsigned long addr, unsigned long size)
 {
-        unsigned long insn;
-	unsigned long fixup;
-};
+	return __addr_range_nowrap(addr, size) &&
+		(__under_task_size(addr, size) ||
+		__access_ok_vsyscall(addr, size) ||
+		uaccess_kernel());
+}
 
 #endif

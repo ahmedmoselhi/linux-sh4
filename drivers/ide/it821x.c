@@ -61,6 +61,7 @@
 
 #include <linux/types.h>
 #include <linux/module.h>
+#include <linux/slab.h>
 #include <linux/pci.h>
 #include <linux/ide.h>
 #include <linux/init.h>
@@ -228,18 +229,18 @@ static void it821x_clock_strategy(ide_drive_t *drive)
 
 /**
  *	it821x_set_pio_mode	-	set host controller for PIO mode
+ *	@hwif: port
  *	@drive: drive
- *	@pio: PIO mode number
  *
  *	Tune the host to the desired PIO mode taking into the consideration
  *	the maximum PIO mode supported by the other device on the cable.
  */
 
-static void it821x_set_pio_mode(ide_drive_t *drive, const u8 pio)
+static void it821x_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
-	ide_hwif_t *hwif = drive->hwif;
 	struct it821x_dev *itdev = ide_get_hwifdata(hwif);
 	ide_drive_t *pair = ide_get_pair_dev(drive);
+	const u8 pio = drive->pio_mode - XFER_PIO_0;
 	u8 unit = drive->dn & 1, set_pio = pio;
 
 	/* Spec says 89 ref driver uses 88 */
@@ -252,7 +253,7 @@ static void it821x_set_pio_mode(ide_drive_t *drive, const u8 pio)
 	 * on the cable.
 	 */
 	if (pair) {
-		u8 pair_pio = ide_get_best_pio_mode(pair, 255, 4);
+		u8 pair_pio = pair->pio_mode - XFER_PIO_0;
 		/* trim PIO to the slowest of the master/slave */
 		if (pair_pio < set_pio)
 			set_pio = pair_pio;
@@ -393,14 +394,16 @@ static int it821x_dma_end(ide_drive_t *drive)
 
 /**
  *	it821x_set_dma_mode	-	set host controller for DMA mode
+ *	@hwif: port
  *	@drive: drive
- *	@speed: DMA mode
  *
  *	Tune the ITE chipset for the desired DMA mode.
  */
 
-static void it821x_set_dma_mode(ide_drive_t *drive, const u8 speed)
+static void it821x_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
+	const u8 speed = drive->dma_mode;
+
 	/*
 	 * MWDMA tuning is really hard because our MWDMA and PIO
 	 * timings are kept in the same place.  We can switch in the
@@ -505,7 +508,7 @@ static void it821x_quirkproc(ide_drive_t *drive)
 
 }
 
-static struct ide_dma_ops it821x_pass_through_dma_ops = {
+static const struct ide_dma_ops it821x_pass_through_dma_ops = {
 	.dma_host_set		= ide_dma_host_set,
 	.dma_setup		= ide_dma_setup,
 	.dma_start		= it821x_dma_start,
@@ -525,7 +528,7 @@ static struct ide_dma_ops it821x_pass_through_dma_ops = {
  *	ide DMA handlers appropriately
  */
 
-static void __devinit init_hwif_it821x(ide_hwif_t *hwif)
+static void init_hwif_it821x(ide_hwif_t *hwif)
 {
 	struct pci_dev *dev = to_pci_dev(hwif->dev);
 	struct ide_host *host = pci_get_drvdata(dev);
@@ -627,7 +630,7 @@ static const struct ide_port_ops it821x_port_ops = {
 	.cable_detect		= it821x_cable_detect,
 };
 
-static const struct ide_port_info it821x_chipset __devinitdata = {
+static const struct ide_port_info it821x_chipset = {
 	.name		= DRV_NAME,
 	.init_chipset	= init_chipset_it821x,
 	.init_hwif	= init_hwif_it821x,
@@ -644,12 +647,12 @@ static const struct ide_port_info it821x_chipset __devinitdata = {
  *	We then use the IDE PCI generic helper to do most of the work.
  */
 
-static int __devinit it821x_init_one(struct pci_dev *dev, const struct pci_device_id *id)
+static int it821x_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 {
 	struct it821x_dev *itdevs;
 	int rc;
 
-	itdevs = kzalloc(2 * sizeof(*itdevs), GFP_KERNEL);
+	itdevs = kcalloc(2, sizeof(*itdevs), GFP_KERNEL);
 	if (itdevs == NULL) {
 		printk(KERN_ERR DRV_NAME " %s: out of memory\n", pci_name(dev));
 		return -ENOMEM;
@@ -664,7 +667,7 @@ static int __devinit it821x_init_one(struct pci_dev *dev, const struct pci_devic
 	return rc;
 }
 
-static void __devexit it821x_remove(struct pci_dev *dev)
+static void it821x_remove(struct pci_dev *dev)
 {
 	struct ide_host *host = pci_get_drvdata(dev);
 	struct it821x_dev *itdevs = host->host_priv;
@@ -686,7 +689,7 @@ static struct pci_driver it821x_pci_driver = {
 	.name		= "ITE821x IDE",
 	.id_table	= it821x_pci_tbl,
 	.probe		= it821x_init_one,
-	.remove		= __devexit_p(it821x_remove),
+	.remove		= it821x_remove,
 	.suspend	= ide_pci_suspend,
 	.resume		= ide_pci_resume,
 };

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  Copyright (C) 1996-1998  Linus Torvalds & authors (see below)
  */
@@ -8,77 +9,6 @@
  * Jan Harkes <jaharkes@cwi.nl>,
  * Mark Lord <mlord@pobox.com>
  * Some parts of code are from ali14xx.c and from rz1000.c.
- *
- * OPTi is trademark of OPTi, Octek is trademark of Octek.
- *
- * I used docs from OPTi databook, from ftp.opti.com, file 9123-0002.ps
- * and disassembled/traced setupvic.exe (DOS program).
- * It increases kernel code about 2 kB.
- * I don't have this card no more, but I hope I can get some in case
- * of needed development.
- * My card is Octek PIDE 1.01 (on card) or OPTiViC (program).
- * It has a place for a secondary connector in circuit, but nothing
- * is there. Also BIOS says no address for
- * secondary controller (see bellow in ide_init_opti621).
- * I've only tested this on my system, which only has one disk.
- * It's Western Digital WDAC2850, with PIO mode 3. The PCI bus
- * is at 20 MHz (I have DX2/80, I tried PCI at 40, but I got random
- * lockups). I tried the OCTEK double speed CD-ROM and
- * it does not work! But I can't boot DOS also, so it's probably
- * hardware fault. I have connected Conner 80MB, the Seagate 850MB (no
- * problems) and Seagate 1GB (as slave, WD as master). My experiences
- * with the third, 1GB drive: I got 3MB/s (hdparm), but sometimes
- * it slows to about 100kB/s! I don't know why and I have
- * not this drive now, so I can't try it again.
- * I write this driver because I lost the paper ("manual") with
- * settings of jumpers on the card and I have to boot Linux with
- * Loadlin except LILO, cause I have to run the setupvic.exe program
- * already or I get disk errors (my test: rpm -Vf
- * /usr/X11R6/bin/XF86_SVGA - or any big file).
- * Some numbers from hdparm -t /dev/hda:
- * Timing buffer-cache reads:   32 MB in  3.02 seconds =10.60 MB/sec
- * Timing buffered disk reads:  16 MB in  5.52 seconds = 2.90 MB/sec
- * I have 4 Megs/s before, but I don't know why (maybe changes
- * in hdparm test).
- * After release of 0.1, I got some successful reports, so it might work.
- *
- * The main problem with OPTi is that some timings for master
- * and slave must be the same. For example, if you have master
- * PIO 3 and slave PIO 0, driver have to set some timings of
- * master for PIO 0. Second problem is that opti621_set_pio_mode
- * got only one drive to set, but have to set both drives.
- * This is solved in compute_pios. If you don't set
- * the second drive, compute_pios use ide_get_best_pio_mode
- * for autoselect mode (you can change it to PIO 0, if you want).
- * If you then set the second drive to another PIO, the old value
- * (automatically selected) will be overrided by yours.
- * There is a 25/33MHz switch in configuration
- * register, but driver is written for use at any frequency.
- *
- * Version 0.1, Nov 8, 1996
- * by Jaromir Koutek, for 2.1.8.
- * Initial version of driver.
- *
- * Version 0.2
- * Number 0.2 skipped.
- *
- * Version 0.3, Nov 29, 1997
- * by Mark Lord (probably), for 2.1.68
- * Updates for use with new IDE block driver.
- *
- * Version 0.4, Dec 14, 1997
- * by Jan Harkes
- * Fixed some errors and cleaned the code.
- *
- * Version 0.5, Jan 2, 1998
- * by Jaromir Koutek
- * Updates for use with (again) new IDE block driver.
- * Update of documentation.
- *
- * Version 0.6, Jan 2, 1999
- * by Jaromir Koutek
- * Reversed to version 0.3 of the driver, because
- * 0.5 doesn't work.
  */
 
 #include <linux/types.h>
@@ -133,12 +63,12 @@ static u8 read_reg(int reg)
 	return ret;
 }
 
-static void opti621_set_pio_mode(ide_drive_t *drive, const u8 pio)
+static void opti621_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
-	ide_hwif_t *hwif = drive->hwif;
 	ide_drive_t *pair = ide_get_pair_dev(drive);
 	unsigned long flags;
-	unsigned long mode = XFER_PIO_0 + pio, pair_mode;
+	unsigned long mode = drive->pio_mode, pair_mode;
+	const u8 pio = mode - XFER_PIO_0;
 	u8 tim, misc, addr_pio = pio, clk;
 
 	/* DRDY is default 2 (by OPTi Databook) */
@@ -202,7 +132,7 @@ static const struct ide_port_ops opti621_port_ops = {
 	.set_pio_mode		= opti621_set_pio_mode,
 };
 
-static const struct ide_port_info opti621_chipset __devinitdata = {
+static const struct ide_port_info opti621_chipset = {
 	.name		= DRV_NAME,
 	.enablebits	= { {0x45, 0x80, 0x00}, {0x40, 0x08, 0x00} },
 	.port_ops	= &opti621_port_ops,
@@ -210,7 +140,7 @@ static const struct ide_port_info opti621_chipset __devinitdata = {
 	.pio_mask	= ATA_PIO4,
 };
 
-static int __devinit opti621_init_one(struct pci_dev *dev, const struct pci_device_id *id)
+static int opti621_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 {
 	return ide_pci_init_one(dev, &opti621_chipset, NULL);
 }

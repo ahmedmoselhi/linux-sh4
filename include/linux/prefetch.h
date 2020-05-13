@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *  Generic cache management functions. Everything is arch-specific,  
  *  but this header exists to make sure the defines/functions can be
@@ -29,7 +30,7 @@
 	prefetchw(x)	- prefetches the cacheline at "x" for write
 	spin_lock_prefetch(x) - prefetches the spinlock *x for taking
 	
-	there is also PREFETCH_STRIDE which is the architecure-prefered 
+	there is also PREFETCH_STRIDE which is the architecure-preferred 
 	"lookahead" size for prefetching streamed operations.
 	
 */

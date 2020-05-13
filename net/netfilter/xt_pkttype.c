@@ -1,8 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* (C) 1999-2001 Michal Ludvig <michal@logix.cz>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/module.h>
@@ -23,18 +20,17 @@ MODULE_ALIAS("ipt_pkttype");
 MODULE_ALIAS("ip6t_pkttype");
 
 static bool
-pkttype_mt(const struct sk_buff *skb, const struct xt_match_param *par)
+pkttype_mt(const struct sk_buff *skb, struct xt_action_param *par)
 {
 	const struct xt_pkttype_info *info = par->matchinfo;
 	u_int8_t type;
 
 	if (skb->pkt_type != PACKET_LOOPBACK)
 		type = skb->pkt_type;
-	else if (par->family == NFPROTO_IPV4 &&
+	else if (xt_family(par) == NFPROTO_IPV4 &&
 	    ipv4_is_multicast(ip_hdr(skb)->daddr))
 		type = PACKET_MULTICAST;
-	else if (par->family == NFPROTO_IPV6 &&
-	    ipv6_hdr(skb)->daddr.s6_addr[0] == 0xFF)
+	else if (xt_family(par) == NFPROTO_IPV6)
 		type = PACKET_MULTICAST;
 	else
 		type = PACKET_BROADCAST;

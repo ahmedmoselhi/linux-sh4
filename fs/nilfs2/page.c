@@ -1,24 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * page.c - buffer/page management specific to NILFS
  *
  * Copyright (C) 2005-2008 Nippon Telegraph and Telephone Corporation.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- *
- * Written by Ryusuke Konishi <ryusuke@osrg.net>,
- *            Seiji Kihara <kihara@osrg.net>.
+ * Written by Ryusuke Konishi and Seiji Kihara.
  */
 
 #include <linux/pagemap.h>
@@ -29,14 +15,15 @@
 #include <linux/list.h>
 #include <linux/highmem.h>
 #include <linux/pagevec.h>
+#include <linux/gfp.h>
 #include "nilfs.h"
 #include "page.h"
 #include "mdt.h"
 
 
-#define NILFS_BUFFER_INHERENT_BITS  \
-	((1UL << BH_Uptodate) | (1UL << BH_Mapped) | (1UL << BH_NILFS_Node) | \
-	 (1UL << BH_NILFS_Volatile) | (1UL << BH_NILFS_Allocated))
+#define NILFS_BUFFER_INHERENT_BITS					\
+	(BIT(BH_Uptodate) | BIT(BH_Mapped) | BIT(BH_NILFS_Node) |	\
+	 BIT(BH_NILFS_Volatile) | BIT(BH_NILFS_Checked))
 
 static struct buffer_head *
 __nilfs_get_page_block(struct page *page, unsigned long block, pgoff_t index,
@@ -49,25 +36,12 @@ __nilfs_get_page_block(struct page *page, unsigned long block, pgoff_t index,
 	if (!page_has_buffers(page))
 		create_empty_buffers(page, 1 << blkbits, b_state);
 
-	first_block = (unsigned long)index << (PAGE_CACHE_SHIFT - blkbits);
+	first_block = (unsigned long)index << (PAGE_SHIFT - blkbits);
 	bh = nilfs_page_get_nth_block(page, block - first_block);
 
 	touch_buffer(bh);
 	wait_on_buffer(bh);
 	return bh;
-}
-
-/*
- * Since the page cache of B-tree node pages or data page cache of pseudo
- * inodes does not have a valid mapping->host pointer, calling
- * mark_buffer_dirty() for their buffers causes a NULL pointer dereference;
- * it calls __mark_inode_dirty(NULL) through __set_page_dirty().
- * To avoid this problem, the old style mark_buffer_dirty() is used instead.
- */
-void nilfs_mark_buffer_dirty(struct buffer_head *bh)
-{
-	if (!buffer_dirty(bh) && !test_set_buffer_dirty(bh))
-		__set_page_dirty_nobuffers(bh->b_page);
 }
 
 struct buffer_head *nilfs_grab_buffer(struct inode *inode,
@@ -76,9 +50,9 @@ struct buffer_head *nilfs_grab_buffer(struct inode *inode,
 				      unsigned long b_state)
 {
 	int blkbits = inode->i_blkbits;
-	pgoff_t index = blkoff >> (PAGE_CACHE_SHIFT - blkbits);
-	struct page *page, *opage;
-	struct buffer_head *bh, *obh;
+	pgoff_t index = blkoff >> (PAGE_SHIFT - blkbits);
+	struct page *page;
+	struct buffer_head *bh;
 
 	page = grab_cache_page(mapping, index);
 	if (unlikely(!page))
@@ -87,32 +61,8 @@ struct buffer_head *nilfs_grab_buffer(struct inode *inode,
 	bh = __nilfs_get_page_block(page, blkoff, index, blkbits, b_state);
 	if (unlikely(!bh)) {
 		unlock_page(page);
-		page_cache_release(page);
+		put_page(page);
 		return NULL;
-	}
-	if (!buffer_uptodate(bh) && mapping->assoc_mapping != NULL) {
-		/*
-		 * Shadow page cache uses assoc_mapping to point its original
-		 * page cache.  The following code tries the original cache
-		 * if the given cache is a shadow and it didn't hit.
-		 */
-		opage = find_lock_page(mapping->assoc_mapping, index);
-		if (!opage)
-			return bh;
-
-		obh = __nilfs_get_page_block(opage, blkoff, index, blkbits,
-					     b_state);
-		if (buffer_uptodate(obh)) {
-			nilfs_copy_buffer(bh, obh);
-			if (buffer_dirty(obh)) {
-				nilfs_mark_buffer_dirty(bh);
-				if (!buffer_nilfs_node(bh) && NILFS_MDT(inode))
-					nilfs_mdt_mark_dirty(inode);
-			}
-		}
-		brelse(obh);
-		unlock_page(opage);
-		page_cache_release(opage);
 	}
 	return bh;
 }
@@ -125,15 +75,16 @@ struct buffer_head *nilfs_grab_buffer(struct inode *inode,
 void nilfs_forget_buffer(struct buffer_head *bh)
 {
 	struct page *page = bh->b_page;
+	const unsigned long clear_bits =
+		(BIT(BH_Uptodate) | BIT(BH_Dirty) | BIT(BH_Mapped) |
+		 BIT(BH_Async_Write) | BIT(BH_NILFS_Volatile) |
+		 BIT(BH_NILFS_Checked) | BIT(BH_NILFS_Redirected));
 
 	lock_buffer(bh);
-	clear_buffer_nilfs_volatile(bh);
-	clear_buffer_dirty(bh);
+	set_mask_bits(&bh->b_state, clear_bits, 0);
 	if (nilfs_page_buffers_clean(page))
 		__nilfs_clear_page_dirty(page);
 
-	clear_buffer_uptodate(bh);
-	clear_buffer_mapped(bh);
 	bh->b_blocknr = -1;
 	ClearPageUptodate(page);
 	ClearPageMappedToDisk(page);
@@ -153,28 +104,28 @@ void nilfs_copy_buffer(struct buffer_head *dbh, struct buffer_head *sbh)
 	struct page *spage = sbh->b_page, *dpage = dbh->b_page;
 	struct buffer_head *bh;
 
-	kaddr0 = kmap_atomic(spage, KM_USER0);
-	kaddr1 = kmap_atomic(dpage, KM_USER1);
+	kaddr0 = kmap_atomic(spage);
+	kaddr1 = kmap_atomic(dpage);
 	memcpy(kaddr1 + bh_offset(dbh), kaddr0 + bh_offset(sbh), sbh->b_size);
-	kunmap_atomic(kaddr1, KM_USER1);
-	kunmap_atomic(kaddr0, KM_USER0);
+	kunmap_atomic(kaddr1);
+	kunmap_atomic(kaddr0);
 
 	dbh->b_state = sbh->b_state & NILFS_BUFFER_INHERENT_BITS;
 	dbh->b_blocknr = sbh->b_blocknr;
 	dbh->b_bdev = sbh->b_bdev;
 
 	bh = dbh;
-	bits = sbh->b_state & ((1UL << BH_Uptodate) | (1UL << BH_Mapped));
+	bits = sbh->b_state & (BIT(BH_Uptodate) | BIT(BH_Mapped));
 	while ((bh = bh->b_this_page) != dbh) {
 		lock_buffer(bh);
 		bits &= bh->b_state;
 		unlock_buffer(bh);
 	}
-	if (bits & (1UL << BH_Uptodate))
+	if (bits & BIT(BH_Uptodate))
 		SetPageUptodate(dpage);
 	else
 		ClearPageUptodate(dpage);
-	if (bits & (1UL << BH_Mapped))
+	if (bits & BIT(BH_Mapped))
 		SetPageMappedToDisk(dpage);
 	else
 		ClearPageMappedToDisk(dpage);
@@ -203,7 +154,7 @@ int nilfs_page_buffers_clean(struct page *page)
 void nilfs_page_bug(struct page *page)
 {
 	struct address_space *m;
-	unsigned long ino = 0;
+	unsigned long ino;
 
 	if (unlikely(!page)) {
 		printk(KERN_CRIT "NILFS_PAGE_BUG(NULL)\n");
@@ -211,14 +162,11 @@ void nilfs_page_bug(struct page *page)
 	}
 
 	m = page->mapping;
-	if (m) {
-		struct inode *inode = NILFS_AS_I(m);
-		if (inode != NULL)
-			ino = inode->i_ino;
-	}
+	ino = m ? m->host->i_ino : 0;
+
 	printk(KERN_CRIT "NILFS_PAGE_BUG(%p): cnt=%d index#=%llu flags=0x%lx "
 	       "mapping=%p ino=%lu\n",
-	       page, atomic_read(&page->_count),
+	       page, page_ref_count(page),
 	       (unsigned long long)page->index, page->flags, m, ino);
 
 	if (page_has_buffers(page)) {
@@ -237,62 +185,12 @@ void nilfs_page_bug(struct page *page)
 }
 
 /**
- * nilfs_alloc_private_page - allocate a private page with buffer heads
- *
- * Return Value: On success, a pointer to the allocated page is returned.
- * On error, NULL is returned.
- */
-struct page *nilfs_alloc_private_page(struct block_device *bdev, int size,
-				      unsigned long state)
-{
-	struct buffer_head *bh, *head, *tail;
-	struct page *page;
-
-	page = alloc_page(GFP_NOFS); /* page_count of the returned page is 1 */
-	if (unlikely(!page))
-		return NULL;
-
-	lock_page(page);
-	head = alloc_page_buffers(page, size, 0);
-	if (unlikely(!head)) {
-		unlock_page(page);
-		__free_page(page);
-		return NULL;
-	}
-
-	bh = head;
-	do {
-		bh->b_state = (1UL << BH_NILFS_Allocated) | state;
-		tail = bh;
-		bh->b_bdev = bdev;
-		bh = bh->b_this_page;
-	} while (bh);
-
-	tail->b_this_page = head;
-	attach_page_buffers(page, head);
-
-	return page;
-}
-
-void nilfs_free_private_page(struct page *page)
-{
-	BUG_ON(!PageLocked(page));
-	BUG_ON(page->mapping);
-
-	if (page_has_buffers(page) && !try_to_free_buffers(page))
-		NILFS_PAGE_BUG(page, "failed to free page");
-
-	unlock_page(page);
-	__free_page(page);
-}
-
-/**
  * nilfs_copy_page -- copy the page with buffers
  * @dst: destination page
  * @src: source page
  * @copy_dirty: flag whether to copy dirty states on the page's buffer heads.
  *
- * This fuction is for both data pages and btnode pages.  The dirty flag
+ * This function is for both data pages and btnode pages.  The dirty flag
  * should be treated by caller.  The page must not be under i/o.
  * Both src and dst page must be locked
  */
@@ -308,7 +206,7 @@ static void nilfs_copy_page(struct page *dst, struct page *src, int copy_dirty)
 		create_empty_buffers(dst, sbh->b_size, 0);
 
 	if (copy_dirty)
-		mask |= (1UL << BH_Dirty);
+		mask |= BIT(BH_Dirty);
 
 	dbh = dbufs = page_buffers(dst);
 	do {
@@ -348,10 +246,9 @@ int nilfs_copy_dirty_pages(struct address_space *dmap,
 	pgoff_t index = 0;
 	int err = 0;
 
-	pagevec_init(&pvec, 0);
+	pagevec_init(&pvec);
 repeat:
-	if (!pagevec_lookup_tag(&pvec, smap, &index, PAGECACHE_TAG_DIRTY,
-				PAGEVEC_SIZE))
+	if (!pagevec_lookup_tag(&pvec, smap, &index, PAGECACHE_TAG_DIRTY))
 		return 0;
 
 	for (i = 0; i < pagevec_count(&pvec); i++) {
@@ -376,7 +273,7 @@ repeat:
 		__set_page_dirty_nobuffers(dpage);
 
 		unlock_page(dpage);
-		page_cache_release(dpage);
+		put_page(dpage);
 		unlock_page(page);
 	}
 	pagevec_release(&pvec);
@@ -388,11 +285,11 @@ repeat:
 }
 
 /**
- * nilfs_copy_back_pages -- copy back pages to orignal cache from shadow cache
+ * nilfs_copy_back_pages -- copy back pages to original cache from shadow cache
  * @dmap: destination page cache
  * @smap: source page cache
  *
- * No pages must no be added to the cache during this process.
+ * No pages must be added to the cache during this process.
  * This must be ensured by the caller.
  */
 void nilfs_copy_back_pages(struct address_space *dmap,
@@ -401,14 +298,12 @@ void nilfs_copy_back_pages(struct address_space *dmap,
 	struct pagevec pvec;
 	unsigned int i, n;
 	pgoff_t index = 0;
-	int err;
 
-	pagevec_init(&pvec, 0);
+	pagevec_init(&pvec);
 repeat:
-	n = pagevec_lookup(&pvec, smap, index, PAGEVEC_SIZE);
+	n = pagevec_lookup(&pvec, smap, &index);
 	if (!n)
 		return;
-	index = pvec.pages[n - 1]->index + 1;
 
 	for (i = 0; i < pagevec_count(&pvec); i++) {
 		struct page *page = pvec.pages[i], *dpage;
@@ -417,37 +312,36 @@ repeat:
 		lock_page(page);
 		dpage = find_lock_page(dmap, offset);
 		if (dpage) {
-			/* override existing page on the destination cache */
+			/* overwrite existing page in the destination cache */
 			WARN_ON(PageDirty(dpage));
 			nilfs_copy_page(dpage, page, 0);
 			unlock_page(dpage);
-			page_cache_release(dpage);
+			put_page(dpage);
+			/* Do we not need to remove page from smap here? */
 		} else {
-			struct page *page2;
+			struct page *p;
 
 			/* move the page to the destination cache */
-			spin_lock_irq(&smap->tree_lock);
-			page2 = radix_tree_delete(&smap->page_tree, offset);
-			WARN_ON(page2 != page);
-
+			xa_lock_irq(&smap->i_pages);
+			p = __xa_erase(&smap->i_pages, offset);
+			WARN_ON(page != p);
 			smap->nrpages--;
-			spin_unlock_irq(&smap->tree_lock);
+			xa_unlock_irq(&smap->i_pages);
 
-			spin_lock_irq(&dmap->tree_lock);
-			err = radix_tree_insert(&dmap->page_tree, offset, page);
-			if (unlikely(err < 0)) {
-				WARN_ON(err == -EEXIST);
+			xa_lock_irq(&dmap->i_pages);
+			p = __xa_store(&dmap->i_pages, offset, page, GFP_NOFS);
+			if (unlikely(p)) {
+				/* Probably -ENOMEM */
 				page->mapping = NULL;
-				page_cache_release(page); /* for cache */
+				put_page(page);
 			} else {
 				page->mapping = dmap;
 				dmap->nrpages++;
 				if (PageDirty(page))
-					radix_tree_tag_set(&dmap->page_tree,
-							   offset,
-							   PAGECACHE_TAG_DIRTY);
+					__xa_set_mark(&dmap->i_pages, offset,
+							PAGECACHE_TAG_DIRTY);
 			}
-			spin_unlock_irq(&dmap->tree_lock);
+			xa_unlock_irq(&dmap->i_pages);
 		}
 		unlock_page(page);
 	}
@@ -457,35 +351,26 @@ repeat:
 	goto repeat;
 }
 
-void nilfs_clear_dirty_pages(struct address_space *mapping)
+/**
+ * nilfs_clear_dirty_pages - discard dirty pages in address space
+ * @mapping: address space with dirty pages for discarding
+ * @silent: suppress [true] or print [false] warning messages
+ */
+void nilfs_clear_dirty_pages(struct address_space *mapping, bool silent)
 {
 	struct pagevec pvec;
 	unsigned int i;
 	pgoff_t index = 0;
 
-	pagevec_init(&pvec, 0);
+	pagevec_init(&pvec);
 
-	while (pagevec_lookup_tag(&pvec, mapping, &index, PAGECACHE_TAG_DIRTY,
-				  PAGEVEC_SIZE)) {
+	while (pagevec_lookup_tag(&pvec, mapping, &index,
+					PAGECACHE_TAG_DIRTY)) {
 		for (i = 0; i < pagevec_count(&pvec); i++) {
 			struct page *page = pvec.pages[i];
-			struct buffer_head *bh, *head;
 
 			lock_page(page);
-			ClearPageUptodate(page);
-			ClearPageMappedToDisk(page);
-			bh = head = page_buffers(page);
-			do {
-				lock_buffer(bh);
-				clear_buffer_dirty(bh);
-				clear_buffer_nilfs_volatile(bh);
-				clear_buffer_uptodate(bh);
-				clear_buffer_mapped(bh);
-				unlock_buffer(bh);
-				bh = bh->b_this_page;
-			} while (bh != head);
-
-			__nilfs_clear_page_dirty(page);
+			nilfs_clear_dirty_page(page, silent);
 			unlock_page(page);
 		}
 		pagevec_release(&pvec);
@@ -493,12 +378,55 @@ void nilfs_clear_dirty_pages(struct address_space *mapping)
 	}
 }
 
-unsigned nilfs_page_count_clean_buffers(struct page *page,
-					unsigned from, unsigned to)
+/**
+ * nilfs_clear_dirty_page - discard dirty page
+ * @page: dirty page that will be discarded
+ * @silent: suppress [true] or print [false] warning messages
+ */
+void nilfs_clear_dirty_page(struct page *page, bool silent)
 {
-	unsigned block_start, block_end;
+	struct inode *inode = page->mapping->host;
+	struct super_block *sb = inode->i_sb;
+
+	BUG_ON(!PageLocked(page));
+
+	if (!silent)
+		nilfs_msg(sb, KERN_WARNING,
+			  "discard dirty page: offset=%lld, ino=%lu",
+			  page_offset(page), inode->i_ino);
+
+	ClearPageUptodate(page);
+	ClearPageMappedToDisk(page);
+
+	if (page_has_buffers(page)) {
+		struct buffer_head *bh, *head;
+		const unsigned long clear_bits =
+			(BIT(BH_Uptodate) | BIT(BH_Dirty) | BIT(BH_Mapped) |
+			 BIT(BH_Async_Write) | BIT(BH_NILFS_Volatile) |
+			 BIT(BH_NILFS_Checked) | BIT(BH_NILFS_Redirected));
+
+		bh = head = page_buffers(page);
+		do {
+			lock_buffer(bh);
+			if (!silent)
+				nilfs_msg(sb, KERN_WARNING,
+					  "discard dirty block: blocknr=%llu, size=%zu",
+					  (u64)bh->b_blocknr, bh->b_size);
+
+			set_mask_bits(&bh->b_state, clear_bits, 0);
+			unlock_buffer(bh);
+		} while (bh = bh->b_this_page, bh != head);
+	}
+
+	__nilfs_clear_page_dirty(page);
+}
+
+unsigned int nilfs_page_count_clean_buffers(struct page *page,
+					    unsigned int from, unsigned int to)
+{
+	unsigned int block_start, block_end;
 	struct buffer_head *bh, *head;
-	unsigned nc = 0;
+	unsigned int nc = 0;
 
 	for (bh = head = page_buffers(page), block_start = 0;
 	     bh != head || !block_start;
@@ -508,6 +436,15 @@ unsigned nilfs_page_count_clean_buffers(struct page *page,
 			nc++;
 	}
 	return nc;
+}
+
+void nilfs_mapping_init(struct address_space *mapping, struct inode *inode)
+{
+	mapping->host = inode;
+	mapping->flags = 0;
+	mapping_set_gfp_mask(mapping, GFP_NOFS);
+	mapping->private_data = NULL;
+	mapping->a_ops = &empty_aops;
 }
 
 /*
@@ -526,16 +463,99 @@ int __nilfs_clear_page_dirty(struct page *page)
 	struct address_space *mapping = page->mapping;
 
 	if (mapping) {
-		spin_lock_irq(&mapping->tree_lock);
+		xa_lock_irq(&mapping->i_pages);
 		if (test_bit(PG_dirty, &page->flags)) {
-			radix_tree_tag_clear(&mapping->page_tree,
-					     page_index(page),
+			__xa_clear_mark(&mapping->i_pages, page_index(page),
 					     PAGECACHE_TAG_DIRTY);
-			spin_unlock_irq(&mapping->tree_lock);
+			xa_unlock_irq(&mapping->i_pages);
 			return clear_page_dirty_for_io(page);
 		}
-		spin_unlock_irq(&mapping->tree_lock);
+		xa_unlock_irq(&mapping->i_pages);
 		return 0;
 	}
 	return TestClearPageDirty(page);
+}
+
+/**
+ * nilfs_find_uncommitted_extent - find extent of uncommitted data
+ * @inode: inode
+ * @start_blk: start block offset (in)
+ * @blkoff: start offset of the found extent (out)
+ *
+ * This function searches an extent of buffers marked "delayed" which
+ * starts from a block offset equal to or larger than @start_blk.  If
+ * such an extent was found, this will store the start offset in
+ * @blkoff and return its length in blocks.  Otherwise, zero is
+ * returned.
+ */
+unsigned long nilfs_find_uncommitted_extent(struct inode *inode,
+					    sector_t start_blk,
+					    sector_t *blkoff)
+{
+	unsigned int i;
+	pgoff_t index;
+	unsigned int nblocks_in_page;
+	unsigned long length = 0;
+	sector_t b;
+	struct pagevec pvec;
+	struct page *page;
+
+	if (inode->i_mapping->nrpages == 0)
+		return 0;
+
+	index = start_blk >> (PAGE_SHIFT - inode->i_blkbits);
+	nblocks_in_page = 1U << (PAGE_SHIFT - inode->i_blkbits);
+
+	pagevec_init(&pvec);
+
+repeat:
+	pvec.nr = find_get_pages_contig(inode->i_mapping, index, PAGEVEC_SIZE,
+					pvec.pages);
+	if (pvec.nr == 0)
+		return length;
+
+	if (length > 0 && pvec.pages[0]->index > index)
+		goto out;
+
+	b = pvec.pages[0]->index << (PAGE_SHIFT - inode->i_blkbits);
+	i = 0;
+	do {
+		page = pvec.pages[i];
+
+		lock_page(page);
+		if (page_has_buffers(page)) {
+			struct buffer_head *bh, *head;
+
+			bh = head = page_buffers(page);
+			do {
+				if (b < start_blk)
+					continue;
+				if (buffer_delay(bh)) {
+					if (length == 0)
+						*blkoff = b;
+					length++;
+				} else if (length > 0) {
+					goto out_locked;
+				}
+			} while (++b, bh = bh->b_this_page, bh != head);
+		} else {
+			if (length > 0)
+				goto out_locked;
+
+			b += nblocks_in_page;
+		}
+		unlock_page(page);
+
+	} while (++i < pagevec_count(&pvec));
+
+	index = page->index + 1;
+	pagevec_release(&pvec);
+	cond_resched();
+	goto repeat;
+
+out_locked:
+	unlock_page(page);
+out:
+	pagevec_release(&pvec);
+	return length;
 }

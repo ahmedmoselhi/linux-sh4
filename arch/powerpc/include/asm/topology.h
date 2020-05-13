@@ -1,25 +1,25 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_POWERPC_TOPOLOGY_H
 #define _ASM_POWERPC_TOPOLOGY_H
 #ifdef __KERNEL__
 
 
-struct sys_device;
+struct device;
 struct device_node;
 
 #ifdef CONFIG_NUMA
 
+/*
+ * If zone_reclaim_mode is enabled, a RECLAIM_DISTANCE of 10 will mean that
+ * all zones on all nodes will be eligible for zone_reclaim().
+ */
+#define RECLAIM_DISTANCE 10
+
 #include <asm/mmzone.h>
 
-static inline int cpu_to_node(int cpu)
-{
-	return numa_cpu_lookup_table[cpu];
-}
-
-#define parent_node(node)	(node)
-
-#define cpumask_of_node(node) (&numa_cpumask_lookup_table[node])
-
-int of_node_to_nid(struct device_node *device);
+#define cpumask_of_node(node) ((node) == -1 ?				\
+			       cpu_all_mask :				\
+			       node_to_cpumask_map[node])
 
 struct pci_bus;
 #ifdef CONFIG_PCI
@@ -35,68 +35,113 @@ static inline int pcibus_to_node(struct pci_bus *bus)
 				 cpu_all_mask :				\
 				 cpumask_of_node(pcibus_to_node(bus)))
 
-/* sched_domains SD_NODE_INIT for PPC64 machines */
-#define SD_NODE_INIT (struct sched_domain) {		\
-	.parent			= NULL,			\
-	.child			= NULL,			\
-	.groups			= NULL,			\
-	.min_interval		= 8,			\
-	.max_interval		= 32,			\
-	.busy_factor		= 32,			\
-	.imbalance_pct		= 125,			\
-	.cache_nice_tries	= 1,			\
-	.busy_idx		= 3,			\
-	.idle_idx		= 1,			\
-	.newidle_idx		= 0,			\
-	.wake_idx		= 0,			\
-	.flags			= SD_LOAD_BALANCE	\
-				| SD_BALANCE_EXEC	\
-				| SD_BALANCE_FORK	\
-				| SD_BALANCE_NEWIDLE	\
-				| SD_SERIALIZE,		\
-	.last_balance		= jiffies,		\
-	.balance_interval	= 1,			\
-	.nr_balance_failed	= 0,			\
-}
+extern int cpu_distance(__be32 *cpu1_assoc, __be32 *cpu2_assoc);
+extern int __node_distance(int, int);
+#define node_distance(a, b) __node_distance(a, b)
 
 extern void __init dump_numa_cpu_topology(void);
 
-extern int sysfs_add_device_to_node(struct sys_device *dev, int nid);
-extern void sysfs_remove_device_from_node(struct sys_device *dev, int nid);
+extern int sysfs_add_device_to_node(struct device *dev, int nid);
+extern void sysfs_remove_device_from_node(struct device *dev, int nid);
+extern int numa_update_cpu_topology(bool cpus_locked);
 
+static inline void update_numa_cpu_lookup_table(unsigned int cpu, int node)
+{
+	numa_cpu_lookup_table[cpu] = node;
+}
+
+static inline int early_cpu_to_node(int cpu)
+{
+	int nid;
+
+	nid = numa_cpu_lookup_table[cpu];
+
+	/*
+	 * Fall back to node 0 if nid is unset (it should be, except bugs).
+	 * This allows callers to safely do NODE_DATA(early_cpu_to_node(cpu)).
+	 */
+	return (nid < 0) ? 0 : nid;
+}
 #else
 
-static inline int of_node_to_nid(struct device_node *device)
-{
-	return 0;
-}
+static inline int early_cpu_to_node(int cpu) { return 0; }
 
 static inline void dump_numa_cpu_topology(void) {}
 
-static inline int sysfs_add_device_to_node(struct sys_device *dev, int nid)
+static inline int sysfs_add_device_to_node(struct device *dev, int nid)
 {
 	return 0;
 }
 
-static inline void sysfs_remove_device_from_node(struct sys_device *dev,
+static inline void sysfs_remove_device_from_node(struct device *dev,
 						int nid)
 {
 }
 
+static inline int numa_update_cpu_topology(bool cpus_locked)
+{
+	return 0;
+}
+
+static inline void update_numa_cpu_lookup_table(unsigned int cpu, int node) {}
+
+static inline int cpu_distance(__be32 *cpu1_assoc, __be32 *cpu2_assoc)
+{
+	return 0;
+}
+
 #endif /* CONFIG_NUMA */
+
+#if defined(CONFIG_NUMA) && defined(CONFIG_PPC_SPLPAR)
+extern int start_topology_update(void);
+extern int stop_topology_update(void);
+extern int prrn_is_enabled(void);
+extern int find_and_online_cpu_nid(int cpu);
+extern int timed_topology_update(int nsecs);
+#else
+static inline int start_topology_update(void)
+{
+	return 0;
+}
+static inline int stop_topology_update(void)
+{
+	return 0;
+}
+static inline int prrn_is_enabled(void)
+{
+	return 0;
+}
+static inline int find_and_online_cpu_nid(int cpu)
+{
+	return 0;
+}
+static inline int timed_topology_update(int nsecs)
+{
+	return 0;
+}
+
+#endif /* CONFIG_NUMA && CONFIG_PPC_SPLPAR */
 
 #include <asm-generic/topology.h>
 
 #ifdef CONFIG_SMP
 #include <asm/cputable.h>
-#define smt_capable()		(cpu_has_feature(CPU_FTR_SMT))
 
 #ifdef CONFIG_PPC64
 #include <asm/smp.h>
 
-#define topology_thread_cpumask(cpu)	(&per_cpu(cpu_sibling_map, cpu))
-#define topology_core_cpumask(cpu)	(&per_cpu(cpu_core_map, cpu))
+#ifdef CONFIG_PPC_SPLPAR
+int get_physical_package_id(int cpu);
+#define topology_physical_package_id(cpu)	(get_physical_package_id(cpu))
+#else
+#define topology_physical_package_id(cpu)	(cpu_to_chip_id(cpu))
+#endif
+
+#define topology_sibling_cpumask(cpu)	(per_cpu(cpu_sibling_map, cpu))
+#define topology_core_cpumask(cpu)	(per_cpu(cpu_core_map, cpu))
 #define topology_core_id(cpu)		(cpu_to_core_id(cpu))
+
+int dlpar_cpu_readd(int cpu);
 #endif
 #endif
 

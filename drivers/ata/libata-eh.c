@@ -1,39 +1,19 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  libata-eh.c - libata error handling
  *
- *  Maintained by:  Jeff Garzik <jgarzik@pobox.com>
- *    		    Please ALWAYS copy linux-ide@vger.kernel.org
- *		    on emails.
- *
  *  Copyright 2006 Tejun Heo <htejun@gmail.com>
  *
- *
- *  This program is free software; you can redistribute it and/or
- *  modify it under the terms of the GNU General Public License as
- *  published by the Free Software Foundation; either version 2, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- *  General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; see the file COPYING.  If not, write to
- *  the Free Software Foundation, 675 Mass Ave, Cambridge, MA 02139,
- *  USA.
- *
- *
  *  libata documentation is available via 'make {ps|pdf}docs',
- *  as Documentation/DocBook/libata.*
+ *  as Documentation/driver-api/libata.rst
  *
  *  Hardware documentation available from http://www.t13.org/ and
  *  http://www.sata-io.org/
- *
  */
 
 #include <linux/kernel.h>
 #include <linux/blkdev.h>
+#include <linux/export.h>
 #include <linux/pci.h>
 #include <scsi/scsi.h>
 #include <scsi/scsi_host.h>
@@ -45,6 +25,7 @@
 
 #include <linux/libata.h>
 
+#include <trace/events/libata.h>
 #include "libata.h"
 
 enum {
@@ -57,6 +38,7 @@ enum {
 	/* error flags */
 	ATA_EFLAG_IS_IO			= (1 << 0),
 	ATA_EFLAG_DUBIOUS_XFER		= (1 << 1),
+	ATA_EFLAG_OLD_ER                = (1 << 31),
 
 	/* error categories */
 	ATA_ECAT_NONE			= 0,
@@ -93,12 +75,13 @@ enum {
  * represents timeout for that try.  The first try can be soft or
  * hardreset.  All others are hardreset if available.  In most cases
  * the first reset w/ 10sec timeout should succeed.  Following entries
- * are mostly for error handling, hotplug and retarded devices.
+ * are mostly for error handling, hotplug and those outlier devices that
+ * take an exceptionally long time to recover from reset.
  */
 static const unsigned long ata_eh_reset_timeouts[] = {
 	10000,	/* most drives spin up by 10sec */
 	10000,	/* > 99% working drives spin up before 20sec */
-	35000,	/* give > 30 secs of idleness for retarded devices */
+	35000,	/* give > 30 secs of idleness for outlier devices */
 	 5000,	/* and sweet one last chance */
 	ULONG_MAX, /* > 1 min has elapsed, give up */
 };
@@ -107,6 +90,13 @@ static const unsigned long ata_eh_identify_timeouts[] = {
 	 5000,	/* covers > 99% of successes and not too boring on failures */
 	10000,  /* combined time till here is enough even for media access */
 	30000,	/* for true idiots */
+	ULONG_MAX,
+};
+
+static const unsigned long ata_eh_flush_timeouts[] = {
+	15000,	/* be generous with flush */
+	15000,  /* ditto */
+	30000,	/* and even more generous */
 	ULONG_MAX,
 };
 
@@ -147,6 +137,8 @@ ata_eh_cmd_timeout_table[ATA_EH_CMD_TIMEOUT_TABLE_SIZE] = {
 	  .timeouts = ata_eh_other_timeouts, },
 	{ .commands = CMDS(ATA_CMD_INIT_DEV_PARAMS),
 	  .timeouts = ata_eh_other_timeouts, },
+	{ .commands = CMDS(ATA_CMD_FLUSH, ATA_CMD_FLUSH_EXT),
+	  .timeouts = ata_eh_flush_timeouts },
 };
 #undef CMDS
 
@@ -162,8 +154,8 @@ static void ata_eh_handle_port_resume(struct ata_port *ap)
 { }
 #endif /* CONFIG_PM */
 
-static void __ata_ehi_pushv_desc(struct ata_eh_info *ehi, const char *fmt,
-				 va_list args)
+static __printf(2, 0) void __ata_ehi_pushv_desc(struct ata_eh_info *ehi,
+				 const char *fmt, va_list args)
 {
 	ehi->desc_len += vscnprintf(ehi->desc + ehi->desc_len,
 				     ATA_EH_DESC_LEN - ehi->desc_len,
@@ -188,6 +180,7 @@ void __ata_ehi_push_desc(struct ata_eh_info *ehi, const char *fmt, ...)
 	__ata_ehi_pushv_desc(ehi, fmt, args);
 	va_end(args);
 }
+EXPORT_SYMBOL_GPL(__ata_ehi_push_desc);
 
 /**
  *	ata_ehi_push_desc - push error description with separator
@@ -211,6 +204,7 @@ void ata_ehi_push_desc(struct ata_eh_info *ehi, const char *fmt, ...)
 	__ata_ehi_pushv_desc(ehi, fmt, args);
 	va_end(args);
 }
+EXPORT_SYMBOL_GPL(ata_ehi_push_desc);
 
 /**
  *	ata_ehi_clear_desc - clean error description
@@ -226,6 +220,7 @@ void ata_ehi_clear_desc(struct ata_eh_info *ehi)
 	ehi->desc[0] = '\0';
 	ehi->desc_len = 0;
 }
+EXPORT_SYMBOL_GPL(ata_ehi_clear_desc);
 
 /**
  *	ata_port_desc - append port description
@@ -253,9 +248,9 @@ void ata_port_desc(struct ata_port *ap, const char *fmt, ...)
 	__ata_ehi_pushv_desc(&ap->link.eh_info, fmt, args);
 	va_end(args);
 }
+EXPORT_SYMBOL_GPL(ata_port_desc);
 
 #ifdef CONFIG_PCI
-
 /**
  *	ata_port_pbar_desc - append PCI BAR description
  *	@ap: target ATA port
@@ -292,7 +287,7 @@ void ata_port_pbar_desc(struct ata_port *ap, int bar, ssize_t offset,
 		ata_port_desc(ap, "%s 0x%llx", name,
 				start + (unsigned long long)offset);
 }
-
+EXPORT_SYMBOL_GPL(ata_port_pbar_desc);
 #endif /* CONFIG_PCI */
 
 static int ata_lookup_timeout_table(u8 cmd)
@@ -387,14 +382,9 @@ static struct ata_ering_entry *ata_ering_top(struct ata_ering *ering)
 	return NULL;
 }
 
-static void ata_ering_clear(struct ata_ering *ering)
-{
-	memset(ering, 0, sizeof(*ering));
-}
-
-static int ata_ering_map(struct ata_ering *ering,
-			 int (*map_fn)(struct ata_ering_entry *, void *),
-			 void *arg)
+int ata_ering_map(struct ata_ering *ering,
+		  int (*map_fn)(struct ata_ering_entry *, void *),
+		  void *arg)
 {
 	int idx, rc = 0;
 	struct ata_ering_entry *ent;
@@ -411,6 +401,17 @@ static int ata_ering_map(struct ata_ering *ering,
 	} while (idx != ering->cursor);
 
 	return rc;
+}
+
+static int ata_ering_clear_cb(struct ata_ering_entry *ent, void *void_arg)
+{
+	ent->eflags |= ATA_EFLAG_OLD_ER;
+	return 0;
+}
+
+static void ata_ering_clear(struct ata_ering *ering)
+{
+	ata_ering_map(ering, ata_ering_clear_cb, NULL);
 }
 
 static unsigned int ata_eh_dev_action(struct ata_device *dev)
@@ -447,53 +448,38 @@ static void ata_eh_clear_action(struct ata_link *link, struct ata_device *dev,
 }
 
 /**
- *	ata_scsi_timed_out - SCSI layer time out callback
- *	@cmd: timed out SCSI command
+ *	ata_eh_acquire - acquire EH ownership
+ *	@ap: ATA port to acquire EH ownership for
  *
- *	Handles SCSI layer timeout.  We race with normal completion of
- *	the qc for @cmd.  If the qc is already gone, we lose and let
- *	the scsi command finish (EH_HANDLED).  Otherwise, the qc has
- *	timed out and EH should be invoked.  Prevent ata_qc_complete()
- *	from finishing it by setting EH_SCHEDULED and return
- *	EH_NOT_HANDLED.
- *
- *	TODO: kill this function once old EH is gone.
+ *	Acquire EH ownership for @ap.  This is the basic exclusion
+ *	mechanism for ports sharing a host.  Only one port hanging off
+ *	the same host can claim the ownership of EH.
  *
  *	LOCKING:
- *	Called from timer context
- *
- *	RETURNS:
- *	EH_HANDLED or EH_NOT_HANDLED
+ *	EH context.
  */
-enum blk_eh_timer_return ata_scsi_timed_out(struct scsi_cmnd *cmd)
+void ata_eh_acquire(struct ata_port *ap)
 {
-	struct Scsi_Host *host = cmd->device->host;
-	struct ata_port *ap = ata_shost_to_port(host);
-	unsigned long flags;
-	struct ata_queued_cmd *qc;
-	enum blk_eh_timer_return ret;
+	mutex_lock(&ap->host->eh_mutex);
+	WARN_ON_ONCE(ap->host->eh_owner);
+	ap->host->eh_owner = current;
+}
 
-	DPRINTK("ENTER\n");
-
-	if (ap->ops->error_handler) {
-		ret = BLK_EH_NOT_HANDLED;
-		goto out;
-	}
-
-	ret = BLK_EH_HANDLED;
-	spin_lock_irqsave(ap->lock, flags);
-	qc = ata_qc_from_tag(ap, ap->link.active_tag);
-	if (qc) {
-		WARN_ON(qc->scsicmd != cmd);
-		qc->flags |= ATA_QCFLAG_EH_SCHEDULED;
-		qc->err_mask |= AC_ERR_TIMEOUT;
-		ret = BLK_EH_NOT_HANDLED;
-	}
-	spin_unlock_irqrestore(ap->lock, flags);
-
- out:
-	DPRINTK("EXIT, ret=%d\n", ret);
-	return ret;
+/**
+ *	ata_eh_release - release EH ownership
+ *	@ap: ATA port to release EH ownership for
+ *
+ *	Release EH ownership for @ap if the caller.  The caller must
+ *	have acquired EH ownership using ata_eh_acquire() previously.
+ *
+ *	LOCKING:
+ *	EH context.
+ */
+void ata_eh_release(struct ata_port *ap)
+{
+	WARN_ON_ONCE(ap->host->eh_owner != current);
+	ap->host->eh_owner = NULL;
+	mutex_unlock(&ap->host->eh_mutex);
 }
 
 static void ata_eh_unload(struct ata_port *ap)
@@ -536,13 +522,45 @@ static void ata_eh_unload(struct ata_port *ap)
 void ata_scsi_error(struct Scsi_Host *host)
 {
 	struct ata_port *ap = ata_shost_to_port(host);
-	int i;
 	unsigned long flags;
+	LIST_HEAD(eh_work_q);
 
 	DPRINTK("ENTER\n");
 
-	/* synchronize with port task */
-	ata_port_flush_task(ap);
+	spin_lock_irqsave(host->host_lock, flags);
+	list_splice_init(&host->eh_cmd_q, &eh_work_q);
+	spin_unlock_irqrestore(host->host_lock, flags);
+
+	ata_scsi_cmd_error_handler(host, ap, &eh_work_q);
+
+	/* If we timed raced normal completion and there is nothing to
+	   recover nr_timedout == 0 why exactly are we doing error recovery ? */
+	ata_scsi_port_error_handler(host, ap);
+
+	/* finish or retry handled scmd's and clean up */
+	WARN_ON(!list_empty(&eh_work_q));
+
+	DPRINTK("EXIT\n");
+}
+
+/**
+ * ata_scsi_cmd_error_handler - error callback for a list of commands
+ * @host:	scsi host containing the port
+ * @ap:		ATA port within the host
+ * @eh_work_q:	list of commands to process
+ *
+ * process the given list of commands and return those finished to the
+ * ap->eh_done_q.  This function is the first part of the libata error
+ * handler which processes a given list of failed commands.
+ */
+void ata_scsi_cmd_error_handler(struct Scsi_Host *host, struct ata_port *ap,
+				struct list_head *eh_work_q)
+{
+	int i;
+	unsigned long flags;
+
+	/* make sure sff pio task is not running */
+	ata_sff_flush_pio_task(ap);
 
 	/* synchronize with host lock and sort out timeouts */
 
@@ -558,29 +576,27 @@ void ata_scsi_error(struct Scsi_Host *host)
 	 * completions are honored.  A scmd is determined to have
 	 * timed out iff its associated qc is active and not failed.
 	 */
+	spin_lock_irqsave(ap->lock, flags);
 	if (ap->ops->error_handler) {
 		struct scsi_cmnd *scmd, *tmp;
 		int nr_timedout = 0;
 
-		spin_lock_irqsave(ap->lock, flags);
-		
 		/* This must occur under the ap->lock as we don't want
 		   a polled recovery to race the real interrupt handler
-		   
+
 		   The lost_interrupt handler checks for any completed but
 		   non-notified command and completes much like an IRQ handler.
-		   
+
 		   We then fall into the error recovery code which will treat
 		   this as if normal completion won the race */
 
 		if (ap->ops->lost_interrupt)
 			ap->ops->lost_interrupt(ap);
-			
-		list_for_each_entry_safe(scmd, tmp, &host->eh_cmd_q, eh_entry) {
+
+		list_for_each_entry_safe(scmd, tmp, eh_work_q, eh_entry) {
 			struct ata_queued_cmd *qc;
 
-			for (i = 0; i < ATA_MAX_QUEUE; i++) {
-				qc = __ata_qc_from_tag(ap, i);
+			ata_qc_for_each_raw(ap, qc, i) {
 				if (qc->flags & ATA_QCFLAG_ACTIVE &&
 				    qc->scsicmd == scmd)
 					break;
@@ -613,21 +629,34 @@ void ata_scsi_error(struct Scsi_Host *host)
 		if (nr_timedout)
 			__ata_port_freeze(ap);
 
-		spin_unlock_irqrestore(ap->lock, flags);
 
 		/* initialize eh_tries */
 		ap->eh_tries = ATA_EH_MAX_TRIES;
-	} else
-		spin_unlock_wait(ap->lock);
-		
-	/* If we timed raced normal completion and there is nothing to
-	   recover nr_timedout == 0 why exactly are we doing error recovery ? */
+	}
+	spin_unlock_irqrestore(ap->lock, flags);
 
- repeat:
+}
+EXPORT_SYMBOL(ata_scsi_cmd_error_handler);
+
+/**
+ * ata_scsi_port_error_handler - recover the port after the commands
+ * @host:	SCSI host containing the port
+ * @ap:		the ATA port
+ *
+ * Handle the recovery of the port @ap after all the commands
+ * have been recovered.
+ */
+void ata_scsi_port_error_handler(struct Scsi_Host *host, struct ata_port *ap)
+{
+	unsigned long flags;
+
 	/* invoke error handler */
 	if (ap->ops->error_handler) {
 		struct ata_link *link;
 
+		/* acquire EH ownership */
+		ata_eh_acquire(ap);
+ repeat:
 		/* kill fast drain timer */
 		del_timer_sync(&ap->fastdrain_timer);
 
@@ -674,7 +703,7 @@ void ata_scsi_error(struct Scsi_Host *host)
 		/* process port suspend request */
 		ata_eh_handle_port_suspend(ap);
 
-		/* Exception might have happend after ->error_handler
+		/* Exception might have happened after ->error_handler
 		 * recovered the port but before this point.  Repeat
 		 * EH in such case.
 		 */
@@ -685,8 +714,9 @@ void ata_scsi_error(struct Scsi_Host *host)
 				spin_unlock_irqrestore(ap->lock, flags);
 				goto repeat;
 			}
-			ata_port_printk(ap, KERN_ERR, "EH pending after %d "
-					"tries, giving up\n", ATA_EH_MAX_TRIES);
+			ata_port_err(ap,
+				     "EH pending after %d tries, giving up\n",
+				     ATA_EH_MAX_TRIES);
 			ap->pflags &= ~ATA_PFLAG_EH_PENDING;
 		}
 
@@ -694,21 +724,19 @@ void ata_scsi_error(struct Scsi_Host *host)
 		ata_for_each_link(link, ap, HOST_FIRST)
 			memset(&link->eh_info, 0, sizeof(link->eh_info));
 
-		/* Clear host_eh_scheduled while holding ap->lock such
-		 * that if exception occurs after this point but
-		 * before EH completion, SCSI midlayer will
+		/* end eh (clear host_eh_scheduled) while holding
+		 * ap->lock such that if exception occurs after this
+		 * point but before EH completion, SCSI midlayer will
 		 * re-initiate EH.
 		 */
-		host->host_eh_scheduled = 0;
+		ap->ops->end_eh(ap);
 
 		spin_unlock_irqrestore(ap->lock, flags);
+		ata_eh_release(ap);
 	} else {
 		WARN_ON(ata_qc_from_tag(ap, ap->link.active_tag) == NULL);
 		ap->ops->eng_timeout(ap);
 	}
-
-	/* finish or retry handled scmd's and clean up */
-	WARN_ON(host->host_failed || !list_empty(&host->eh_cmd_q));
 
 	scsi_eh_flush_done_q(&ap->eh_done_q);
 
@@ -717,11 +745,12 @@ void ata_scsi_error(struct Scsi_Host *host)
 
 	if (ap->pflags & ATA_PFLAG_LOADING)
 		ap->pflags &= ~ATA_PFLAG_LOADING;
-	else if (ap->pflags & ATA_PFLAG_SCSI_HOTPLUG)
-		queue_delayed_work(ata_aux_wq, &ap->hotplug_task, 0);
+	else if ((ap->pflags & ATA_PFLAG_SCSI_HOTPLUG) &&
+		!(ap->flags & ATA_FLAG_SAS_HOST))
+		schedule_delayed_work(&ap->hotplug_task, 0);
 
 	if (ap->pflags & ATA_PFLAG_RECOVERED)
-		ata_port_printk(ap, KERN_INFO, "EH complete\n");
+		ata_port_info(ap, "EH complete\n");
 
 	ap->pflags &= ~(ATA_PFLAG_SCSI_HOTPLUG | ATA_PFLAG_RECOVERED);
 
@@ -730,9 +759,8 @@ void ata_scsi_error(struct Scsi_Host *host)
 	wake_up_all(&ap->eh_wait_q);
 
 	spin_unlock_irqrestore(ap->lock, flags);
-
-	DPRINTK("EXIT\n");
 }
+EXPORT_SYMBOL_GPL(ata_scsi_port_error_handler);
 
 /**
  *	ata_port_wait_eh - Wait for the currently pending EH to complete
@@ -763,27 +791,30 @@ void ata_port_wait_eh(struct ata_port *ap)
 
 	/* make sure SCSI EH is complete */
 	if (scsi_host_in_recovery(ap->scsi_host)) {
-		msleep(10);
+		ata_msleep(ap, 10);
 		goto retry;
 	}
 }
+EXPORT_SYMBOL_GPL(ata_port_wait_eh);
 
 static int ata_eh_nr_in_flight(struct ata_port *ap)
 {
+	struct ata_queued_cmd *qc;
 	unsigned int tag;
 	int nr = 0;
 
 	/* count only non-internal commands */
-	for (tag = 0; tag < ATA_MAX_QUEUE - 1; tag++)
-		if (ata_qc_from_tag(ap, tag))
+	ata_qc_for_each(ap, qc, tag) {
+		if (qc)
 			nr++;
+	}
 
 	return nr;
 }
 
-void ata_eh_fastdrain_timerfn(unsigned long arg)
+void ata_eh_fastdrain_timerfn(struct timer_list *t)
 {
-	struct ata_port *ap = (void *)arg;
+	struct ata_port *ap = from_timer(ap, t, fastdrain_timer);
 	unsigned long flags;
 	int cnt;
 
@@ -796,13 +827,13 @@ void ata_eh_fastdrain_timerfn(unsigned long arg)
 		goto out_unlock;
 
 	if (cnt == ap->fastdrain_cnt) {
+		struct ata_queued_cmd *qc;
 		unsigned int tag;
 
 		/* No progress during the last interval, tag all
 		 * in-flight qcs as timed out and freeze the port.
 		 */
-		for (tag = 0; tag < ATA_MAX_QUEUE - 1; tag++) {
-			struct ata_queued_cmd *qc = ata_qc_from_tag(ap, tag);
+		ata_qc_for_each(ap, qc, tag) {
 			if (qc)
 				qc->err_mask |= AC_ERR_TIMEOUT;
 		}
@@ -870,8 +901,6 @@ static void ata_eh_set_pending(struct ata_port *ap, int fastdrain)
 void ata_qc_schedule_eh(struct ata_queued_cmd *qc)
 {
 	struct ata_port *ap = qc->ap;
-	struct request_queue *q = qc->scsicmd->device->request_queue;
-	unsigned long flags;
 
 	WARN_ON(!ap->ops->error_handler);
 
@@ -883,10 +912,50 @@ void ata_qc_schedule_eh(struct ata_queued_cmd *qc)
 	 * Note that ATA_QCFLAG_FAILED is unconditionally set after
 	 * this function completes.
 	 */
-	spin_lock_irqsave(q->queue_lock, flags);
 	blk_abort_request(qc->scsicmd->request);
-	spin_unlock_irqrestore(q->queue_lock, flags);
 }
+
+/**
+ * ata_std_sched_eh - non-libsas ata_ports issue eh with this common routine
+ * @ap: ATA port to schedule EH for
+ *
+ *	LOCKING: inherited from ata_port_schedule_eh
+ *	spin_lock_irqsave(host lock)
+ */
+void ata_std_sched_eh(struct ata_port *ap)
+{
+	WARN_ON(!ap->ops->error_handler);
+
+	if (ap->pflags & ATA_PFLAG_INITIALIZING)
+		return;
+
+	ata_eh_set_pending(ap, 1);
+	scsi_schedule_eh(ap->scsi_host);
+
+	DPRINTK("port EH scheduled\n");
+}
+EXPORT_SYMBOL_GPL(ata_std_sched_eh);
+
+/**
+ * ata_std_end_eh - non-libsas ata_ports complete eh with this common routine
+ * @ap: ATA port to end EH for
+ *
+ * In the libata object model there is a 1:1 mapping of ata_port to
+ * shost, so host fields can be directly manipulated under ap->lock, in
+ * the libsas case we need to hold a lock at the ha->level to coordinate
+ * these events.
+ *
+ *	LOCKING:
+ *	spin_lock_irqsave(host lock)
+ */
+void ata_std_end_eh(struct ata_port *ap)
+{
+	struct Scsi_Host *host = ap->scsi_host;
+
+	host->host_eh_scheduled = 0;
+}
+EXPORT_SYMBOL(ata_std_end_eh);
+
 
 /**
  *	ata_port_schedule_eh - schedule error handling without a qc
@@ -900,19 +969,14 @@ void ata_qc_schedule_eh(struct ata_queued_cmd *qc)
  */
 void ata_port_schedule_eh(struct ata_port *ap)
 {
-	WARN_ON(!ap->ops->error_handler);
-
-	if (ap->pflags & ATA_PFLAG_INITIALIZING)
-		return;
-
-	ata_eh_set_pending(ap, 1);
-	scsi_schedule_eh(ap->scsi_host);
-
-	DPRINTK("port EH scheduled\n");
+	/* see: ata_std_sched_eh, unless you know better */
+	ap->ops->sched_eh(ap);
 }
+EXPORT_SYMBOL_GPL(ata_port_schedule_eh);
 
 static int ata_do_link_abort(struct ata_port *ap, struct ata_link *link)
 {
+	struct ata_queued_cmd *qc;
 	int tag, nr_aborted = 0;
 
 	WARN_ON(!ap->ops->error_handler);
@@ -920,9 +984,8 @@ static int ata_do_link_abort(struct ata_port *ap, struct ata_link *link)
 	/* we're gonna abort all commands, no need for fast drain */
 	ata_eh_set_pending(ap, 0);
 
-	for (tag = 0; tag < ATA_MAX_QUEUE; tag++) {
-		struct ata_queued_cmd *qc = ata_qc_from_tag(ap, tag);
-
+	/* include internal tag in iteration */
+	ata_qc_for_each_with_internal(ap, qc, tag) {
 		if (qc && (!link || qc->dev->link == link)) {
 			qc->flags |= ATA_QCFLAG_FAILED;
 			ata_qc_complete(qc);
@@ -952,6 +1015,7 @@ int ata_link_abort(struct ata_link *link)
 {
 	return ata_do_link_abort(link->ap, link);
 }
+EXPORT_SYMBOL_GPL(ata_link_abort);
 
 /**
  *	ata_port_abort - abort all qc's on the port
@@ -969,6 +1033,7 @@ int ata_port_abort(struct ata_port *ap)
 {
 	return ata_do_link_abort(ap, NULL);
 }
+EXPORT_SYMBOL_GPL(ata_port_abort);
 
 /**
  *	__ata_port_freeze - freeze port
@@ -1025,79 +1090,7 @@ int ata_port_freeze(struct ata_port *ap)
 
 	return nr_aborted;
 }
-
-/**
- *	sata_async_notification - SATA async notification handler
- *	@ap: ATA port where async notification is received
- *
- *	Handler to be called when async notification via SDB FIS is
- *	received.  This function schedules EH if necessary.
- *
- *	LOCKING:
- *	spin_lock_irqsave(host lock)
- *
- *	RETURNS:
- *	1 if EH is scheduled, 0 otherwise.
- */
-int sata_async_notification(struct ata_port *ap)
-{
-	u32 sntf;
-	int rc;
-
-	if (!(ap->flags & ATA_FLAG_AN))
-		return 0;
-
-	rc = sata_scr_read(&ap->link, SCR_NOTIFICATION, &sntf);
-	if (rc == 0)
-		sata_scr_write(&ap->link, SCR_NOTIFICATION, sntf);
-
-	if (!sata_pmp_attached(ap) || rc) {
-		/* PMP is not attached or SNTF is not available */
-		if (!sata_pmp_attached(ap)) {
-			/* PMP is not attached.  Check whether ATAPI
-			 * AN is configured.  If so, notify media
-			 * change.
-			 */
-			struct ata_device *dev = ap->link.device;
-
-			if ((dev->class == ATA_DEV_ATAPI) &&
-			    (dev->flags & ATA_DFLAG_AN))
-				ata_scsi_media_change_notify(dev);
-			return 0;
-		} else {
-			/* PMP is attached but SNTF is not available.
-			 * ATAPI async media change notification is
-			 * not used.  The PMP must be reporting PHY
-			 * status change, schedule EH.
-			 */
-			ata_port_schedule_eh(ap);
-			return 1;
-		}
-	} else {
-		/* PMP is attached and SNTF is available */
-		struct ata_link *link;
-
-		/* check and notify ATAPI AN */
-		ata_for_each_link(link, ap, EDGE) {
-			if (!(sntf & (1 << link->pmp)))
-				continue;
-
-			if ((link->device->class == ATA_DEV_ATAPI) &&
-			    (link->device->flags & ATA_DFLAG_AN))
-				ata_scsi_media_change_notify(link->device);
-		}
-
-		/* If PMP is reporting that PHY status of some
-		 * downstream ports has changed, schedule EH.
-		 */
-		if (sntf & (1 << SATA_PMP_CTRL_PORT)) {
-			ata_port_schedule_eh(ap);
-			return 1;
-		}
-
-		return 0;
-	}
-}
+EXPORT_SYMBOL_GPL(ata_port_freeze);
 
 /**
  *	ata_eh_freeze_port - EH helper to freeze port
@@ -1119,6 +1112,7 @@ void ata_eh_freeze_port(struct ata_port *ap)
 	__ata_port_freeze(ap);
 	spin_unlock_irqrestore(ap->lock, flags);
 }
+EXPORT_SYMBOL_GPL(ata_eh_freeze_port);
 
 /**
  *	ata_port_thaw_port - EH helper to thaw port
@@ -1190,14 +1184,14 @@ void ata_eh_qc_complete(struct ata_queued_cmd *qc)
  *	should be retried.  To be used from EH.
  *
  *	SCSI midlayer limits the number of retries to scmd->allowed.
- *	scmd->retries is decremented for commands which get retried
+ *	scmd->allowed is incremented for commands which get retried
  *	due to unrelated failures (qc->err_mask is zero).
  */
 void ata_eh_qc_retry(struct ata_queued_cmd *qc)
 {
 	struct scsi_cmnd *scmd = qc->scsicmd;
-	if (!qc->err_mask && scmd->retries)
-		scmd->retries--;
+	if (!qc->err_mask)
+		scmd->allowed++;
 	__ata_eh_qc_complete(qc);
 }
 
@@ -1216,7 +1210,7 @@ void ata_dev_disable(struct ata_device *dev)
 		return;
 
 	if (ata_msg_drv(dev->link->ap))
-		ata_dev_printk(dev, KERN_WARNING, "disabled\n");
+		ata_dev_warn(dev, "disabled\n");
 	ata_acpi_on_disable(dev);
 	ata_down_xfermask_limit(dev, ATA_DNXFER_FORCE_PIO0 | ATA_DNXFER_QUIET);
 	dev->class++;
@@ -1226,6 +1220,7 @@ void ata_dev_disable(struct ata_device *dev)
 	 */
 	ata_ering_clear(&dev->ering);
 }
+EXPORT_SYMBOL_GPL(ata_dev_disable);
 
 /**
  *	ata_eh_detach_dev - detach ATA device
@@ -1299,7 +1294,7 @@ void ata_eh_about_to_do(struct ata_link *link, struct ata_device *dev,
 
 /**
  *	ata_eh_done - EH action complete
-*	@ap: target ATA port
+ *	@link: ATA link for which EH actions are complete
  *	@dev: target ATA dev for per-dev action (can be NULL)
  *	@action: action just completed
  *
@@ -1349,99 +1344,11 @@ static const char *ata_err_string(unsigned int err_mask)
 		return "invalid argument";
 	if (err_mask & AC_ERR_DEV)
 		return "device error";
+	if (err_mask & AC_ERR_NCQ)
+		return "NCQ error";
+	if (err_mask & AC_ERR_NODEV_HINT)
+		return "Polling detection error";
 	return "unknown error";
-}
-
-/**
- *	ata_read_log_page - read a specific log page
- *	@dev: target device
- *	@page: page to read
- *	@buf: buffer to store read page
- *	@sectors: number of sectors to read
- *
- *	Read log page using READ_LOG_EXT command.
- *
- *	LOCKING:
- *	Kernel thread context (may sleep).
- *
- *	RETURNS:
- *	0 on success, AC_ERR_* mask otherwise.
- */
-static unsigned int ata_read_log_page(struct ata_device *dev,
-				      u8 page, void *buf, unsigned int sectors)
-{
-	struct ata_taskfile tf;
-	unsigned int err_mask;
-
-	DPRINTK("read log page - page %d\n", page);
-
-	ata_tf_init(dev, &tf);
-	tf.command = ATA_CMD_READ_LOG_EXT;
-	tf.lbal = page;
-	tf.nsect = sectors;
-	tf.hob_nsect = sectors >> 8;
-	tf.flags |= ATA_TFLAG_ISADDR | ATA_TFLAG_LBA48 | ATA_TFLAG_DEVICE;
-	tf.protocol = ATA_PROT_PIO;
-
-	err_mask = ata_exec_internal(dev, &tf, NULL, DMA_FROM_DEVICE,
-				     buf, sectors * ATA_SECT_SIZE, 0);
-
-	DPRINTK("EXIT, err_mask=%x\n", err_mask);
-	return err_mask;
-}
-
-/**
- *	ata_eh_read_log_10h - Read log page 10h for NCQ error details
- *	@dev: Device to read log page 10h from
- *	@tag: Resulting tag of the failed command
- *	@tf: Resulting taskfile registers of the failed command
- *
- *	Read log page 10h to obtain NCQ error details and clear error
- *	condition.
- *
- *	LOCKING:
- *	Kernel thread context (may sleep).
- *
- *	RETURNS:
- *	0 on success, -errno otherwise.
- */
-static int ata_eh_read_log_10h(struct ata_device *dev,
-			       int *tag, struct ata_taskfile *tf)
-{
-	u8 *buf = dev->link->ap->sector_buf;
-	unsigned int err_mask;
-	u8 csum;
-	int i;
-
-	err_mask = ata_read_log_page(dev, ATA_LOG_SATA_NCQ, buf, 1);
-	if (err_mask)
-		return -EIO;
-
-	csum = 0;
-	for (i = 0; i < ATA_SECT_SIZE; i++)
-		csum += buf[i];
-	if (csum)
-		ata_dev_printk(dev, KERN_WARNING,
-			       "invalid checksum 0x%x on log page 10h\n", csum);
-
-	if (buf[0] & 0x80)
-		return -ENOENT;
-
-	*tag = buf[0] & 0x1f;
-
-	tf->command = buf[2];
-	tf->feature = buf[3];
-	tf->lbal = buf[4];
-	tf->lbam = buf[5];
-	tf->lbah = buf[6];
-	tf->device = buf[7];
-	tf->hob_lbal = buf[8];
-	tf->hob_lbam = buf[9];
-	tf->hob_lbah = buf[10];
-	tf->nsect = buf[12];
-	tf->hob_nsect = buf[13];
-
-	return 0;
 }
 
 /**
@@ -1457,7 +1364,7 @@ static int ata_eh_read_log_10h(struct ata_device *dev,
  *	RETURNS:
  *	0 on success, AC_ERR_* mask on failure.
  */
-static unsigned int atapi_eh_tur(struct ata_device *dev, u8 *r_sense_key)
+unsigned int atapi_eh_tur(struct ata_device *dev, u8 *r_sense_key)
 {
 	u8 cdb[ATAPI_CDB_LEN] = { TEST_UNIT_READY, 0, 0, 0, 0, 0 };
 	struct ata_taskfile tf;
@@ -1476,6 +1383,56 @@ static unsigned int atapi_eh_tur(struct ata_device *dev, u8 *r_sense_key)
 }
 
 /**
+ *	ata_eh_request_sense - perform REQUEST_SENSE_DATA_EXT
+ *	@qc: qc to perform REQUEST_SENSE_SENSE_DATA_EXT to
+ *	@cmd: scsi command for which the sense code should be set
+ *
+ *	Perform REQUEST_SENSE_DATA_EXT after the device reported CHECK
+ *	SENSE.  This function is an EH helper.
+ *
+ *	LOCKING:
+ *	Kernel thread context (may sleep).
+ */
+static void ata_eh_request_sense(struct ata_queued_cmd *qc,
+				 struct scsi_cmnd *cmd)
+{
+	struct ata_device *dev = qc->dev;
+	struct ata_taskfile tf;
+	unsigned int err_mask;
+
+	if (qc->ap->pflags & ATA_PFLAG_FROZEN) {
+		ata_dev_warn(dev, "sense data available but port frozen\n");
+		return;
+	}
+
+	if (!cmd || qc->flags & ATA_QCFLAG_SENSE_VALID)
+		return;
+
+	if (!ata_id_sense_reporting_enabled(dev->id)) {
+		ata_dev_warn(qc->dev, "sense data reporting disabled\n");
+		return;
+	}
+
+	DPRINTK("ATA request sense\n");
+
+	ata_tf_init(dev, &tf);
+	tf.flags |= ATA_TFLAG_ISADDR | ATA_TFLAG_DEVICE;
+	tf.flags |= ATA_TFLAG_LBA | ATA_TFLAG_LBA48;
+	tf.command = ATA_CMD_REQ_SENSE_DATA;
+	tf.protocol = ATA_PROT_NODATA;
+
+	err_mask = ata_exec_internal(dev, &tf, NULL, DMA_NONE, NULL, 0, 0);
+	/* Ignore err_mask; ATA_ERR might be set */
+	if (tf.command & ATA_SENSE) {
+		ata_scsi_set_sense(dev, cmd, tf.lbah, tf.lbam, tf.lbal);
+		qc->flags |= ATA_QCFLAG_SENSE_VALID;
+	} else {
+		ata_dev_warn(dev, "request sense failed stat %02x emask %x\n",
+			     tf.command, err_mask);
+	}
+}
+
+/**
  *	atapi_eh_request_sense - perform ATAPI REQUEST_SENSE
  *	@dev: device to perform REQUEST_SENSE to
  *	@sense_buf: result sense data buffer (SCSI_SENSE_BUFFERSIZE bytes long)
@@ -1490,7 +1447,7 @@ static unsigned int atapi_eh_tur(struct ata_device *dev, u8 *r_sense_key)
  *	RETURNS:
  *	0 on success, AC_ERR_* mask on failure
  */
-static unsigned int atapi_eh_request_sense(struct ata_device *dev,
+unsigned int atapi_eh_request_sense(struct ata_device *dev,
 					   u8 *sense_buf, u8 dfl_sense_key)
 {
 	u8 cdb[ATAPI_CDB_LEN] =
@@ -1500,7 +1457,6 @@ static unsigned int atapi_eh_request_sense(struct ata_device *dev,
 
 	DPRINTK("ATAPI request sense\n");
 
-	/* FIXME: is this needed? */
 	memset(sense_buf, 0, SCSI_SENSE_BUFFERSIZE);
 
 	/* initialize sense_buf with the error register,
@@ -1564,9 +1520,9 @@ static void ata_eh_analyze_serror(struct ata_link *link)
 	 * host links.  For disabled PMP links, only N bit is
 	 * considered as X bit is left at 1 for link plugging.
 	 */
-	hotplug_mask = 0;
-
-	if (!(link->flags & ATA_LFLAG_DISABLED) || ata_is_host_link(link))
+	if (link->lpm_policy > ATA_LPM_MAX_POWER)
+		hotplug_mask = 0;	/* hotplug doesn't work w/ LPM */
+	else if (!(link->flags & ATA_LFLAG_DISABLED) || ata_is_host_link(link))
 		hotplug_mask = SERR_PHYRDY_CHG | SERR_DEV_XCHG;
 	else
 		hotplug_mask = SERR_PHYRDY_CHG;
@@ -1579,76 +1535,13 @@ static void ata_eh_analyze_serror(struct ata_link *link)
 }
 
 /**
- *	ata_eh_analyze_ncq_error - analyze NCQ error
- *	@link: ATA link to analyze NCQ error for
- *
- *	Read log page 10h, determine the offending qc and acquire
- *	error status TF.  For NCQ device errors, all LLDDs have to do
- *	is setting AC_ERR_DEV in ehi->err_mask.  This function takes
- *	care of the rest.
- *
- *	LOCKING:
- *	Kernel thread context (may sleep).
- */
-void ata_eh_analyze_ncq_error(struct ata_link *link)
-{
-	struct ata_port *ap = link->ap;
-	struct ata_eh_context *ehc = &link->eh_context;
-	struct ata_device *dev = link->device;
-	struct ata_queued_cmd *qc;
-	struct ata_taskfile tf;
-	int tag, rc;
-
-	/* if frozen, we can't do much */
-	if (ap->pflags & ATA_PFLAG_FROZEN)
-		return;
-
-	/* is it NCQ device error? */
-	if (!link->sactive || !(ehc->i.err_mask & AC_ERR_DEV))
-		return;
-
-	/* has LLDD analyzed already? */
-	for (tag = 0; tag < ATA_MAX_QUEUE; tag++) {
-		qc = __ata_qc_from_tag(ap, tag);
-
-		if (!(qc->flags & ATA_QCFLAG_FAILED))
-			continue;
-
-		if (qc->err_mask)
-			return;
-	}
-
-	/* okay, this error is ours */
-	memset(&tf, 0, sizeof(tf));
-	rc = ata_eh_read_log_10h(dev, &tag, &tf);
-	if (rc) {
-		ata_link_printk(link, KERN_ERR, "failed to read log page 10h "
-				"(errno=%d)\n", rc);
-		return;
-	}
-
-	if (!(link->sactive & (1 << tag))) {
-		ata_link_printk(link, KERN_ERR, "log page 10h reported "
-				"inactive tag %d\n", tag);
-		return;
-	}
-
-	/* we've got the perpetrator, condemn it */
-	qc = __ata_qc_from_tag(ap, tag);
-	memcpy(&qc->result_tf, &tf, sizeof(tf));
-	qc->result_tf.flags = ATA_TFLAG_ISADDR | ATA_TFLAG_LBA | ATA_TFLAG_LBA48;
-	qc->err_mask |= AC_ERR_DEV | AC_ERR_NCQ;
-	ehc->i.err_mask &= ~AC_ERR_DEV;
-}
-
-/**
  *	ata_eh_analyze_tf - analyze taskfile of a failed qc
  *	@qc: qc to analyze
  *	@tf: Taskfile registers to analyze
  *
  *	Analyze taskfile of @qc and further determine cause of
  *	failure.  This function also requests ATAPI sense data if
- *	avaliable.
+ *	available.
  *
  *	LOCKING:
  *	Kernel thread context (may sleep).
@@ -1667,16 +1560,27 @@ static unsigned int ata_eh_analyze_tf(struct ata_queued_cmd *qc,
 		return ATA_EH_RESET;
 	}
 
-	if (stat & (ATA_ERR | ATA_DF))
+	if (stat & (ATA_ERR | ATA_DF)) {
 		qc->err_mask |= AC_ERR_DEV;
-	else
+		/*
+		 * Sense data reporting does not work if the
+		 * device fault bit is set.
+		 */
+		if (stat & ATA_DF)
+			stat &= ~ATA_SENSE;
+	} else {
 		return 0;
+	}
 
 	switch (qc->dev->class) {
+	case ATA_DEV_ZAC:
+		if (stat & ATA_SENSE)
+			ata_eh_request_sense(qc, qc->scsicmd);
+		/* fall through */
 	case ATA_DEV_ATA:
 		if (err & ATA_ICRC)
 			qc->err_mask |= AC_ERR_ATA_BUS;
-		if (err & ATA_UNC)
+		if (err & (ATA_UNC | ATA_AMNF))
 			qc->err_mask |= AC_ERR_MEDIA;
 		if (err & ATA_IDNF)
 			qc->err_mask |= AC_ERR_INVALID;
@@ -1687,20 +1591,31 @@ static unsigned int ata_eh_analyze_tf(struct ata_queued_cmd *qc,
 			tmp = atapi_eh_request_sense(qc->dev,
 						qc->scsicmd->sense_buffer,
 						qc->result_tf.feature >> 4);
-			if (!tmp) {
-				/* ATA_QCFLAG_SENSE_VALID is used to
-				 * tell atapi_qc_complete() that sense
-				 * data is already valid.
-				 *
-				 * TODO: interpret sense data and set
-				 * appropriate err_mask.
-				 */
+			if (!tmp)
 				qc->flags |= ATA_QCFLAG_SENSE_VALID;
-			} else
+			else
 				qc->err_mask |= tmp;
 		}
 	}
 
+	if (qc->flags & ATA_QCFLAG_SENSE_VALID) {
+		int ret = scsi_check_sense(qc->scsicmd);
+		/*
+		 * SUCCESS here means that the sense code could be
+		 * evaluated and should be passed to the upper layers
+		 * for correct evaluation.
+		 * FAILED means the sense code could not be interpreted
+		 * and the device would need to be reset.
+		 * NEEDS_RETRY and ADD_TO_MLQUEUE means that the
+		 * command would need to be retried.
+		 */
+		if (ret == NEEDS_RETRY || ret == ADD_TO_MLQUEUE) {
+			qc->flags |= ATA_QCFLAG_RETRY;
+			qc->err_mask |= AC_ERR_OTHER;
+		} else if (ret != SUCCESS) {
+			qc->err_mask |= AC_ERR_HSM;
+		}
+	}
 	if (qc->err_mask & (AC_ERR_HSM | AC_ERR_TIMEOUT | AC_ERR_ATA_BUS))
 		action |= ATA_EH_RESET;
 
@@ -1746,7 +1661,7 @@ static int speed_down_verdict_cb(struct ata_ering_entry *ent, void *void_arg)
 	struct speed_down_verdict_arg *arg = void_arg;
 	int cat;
 
-	if (ent->timestamp < arg->since)
+	if ((ent->eflags & ATA_EFLAG_OLD_ER) || (ent->timestamp < arg->since))
 		return -1;
 
 	cat = ata_eh_categorize_error(ent->eflags, ent->err_mask,
@@ -1789,7 +1704,7 @@ static int speed_down_verdict_cb(struct ata_ering_entry *ent, void *void_arg)
  *	This is to expedite speed down decisions right after device is
  *	initially configured.
  *
- *	The followings are speed down rules.  #1 and #2 deal with
+ *	The following are speed down rules.  #1 and #2 deal with
  *	DUBIOUS errors.
  *
  *	1. If more than one DUBIOUS_ATA_BUS or DUBIOUS_TOUT_HSM errors
@@ -1799,7 +1714,7 @@ static int speed_down_verdict_cb(struct ata_ering_entry *ent, void *void_arg)
  *	   occurred during last 5 mins, NCQ_OFF.
  *
  *	3. If more than 8 ATA_BUS, TOUT_HSM or UNK_DEV errors
- *	   ocurred during last 5 mins, FALLBACK_TO_PIO
+ *	   occurred during last 5 mins, FALLBACK_TO_PIO
  *
  *	4. If more than 3 TOUT_HSM or UNK_DEV errors occurred
  *	   during last 10 mins, NCQ_OFF.
@@ -1894,8 +1809,7 @@ static unsigned int ata_eh_speed_down(struct ata_device *dev,
 	    (dev->flags & (ATA_DFLAG_PIO | ATA_DFLAG_NCQ |
 			   ATA_DFLAG_NCQ_OFF)) == ATA_DFLAG_NCQ) {
 		dev->flags |= ATA_DFLAG_NCQ_OFF;
-		ata_dev_printk(dev, KERN_WARNING,
-			       "NCQ disabled due to excessive errors\n");
+		ata_dev_warn(dev, "NCQ disabled due to excessive errors\n");
 		goto done;
 	}
 
@@ -1951,6 +1865,41 @@ static unsigned int ata_eh_speed_down(struct ata_device *dev,
 }
 
 /**
+ *	ata_eh_worth_retry - analyze error and decide whether to retry
+ *	@qc: qc to possibly retry
+ *
+ *	Look at the cause of the error and decide if a retry
+ * 	might be useful or not.  We don't want to retry media errors
+ *	because the drive itself has probably already taken 10-30 seconds
+ *	doing its own internal retries before reporting the failure.
+ */
+static inline int ata_eh_worth_retry(struct ata_queued_cmd *qc)
+{
+	if (qc->err_mask & AC_ERR_MEDIA)
+		return 0;	/* don't retry media errors */
+	if (qc->flags & ATA_QCFLAG_IO)
+		return 1;	/* otherwise retry anything from fs stack */
+	if (qc->err_mask & AC_ERR_INVALID)
+		return 0;	/* don't retry these */
+	return qc->err_mask != AC_ERR_DEV;  /* retry if not dev error */
+}
+
+/**
+ *      ata_eh_quiet - check if we need to be quiet about a command error
+ *      @qc: qc to check
+ *
+ *      Look at the qc flags anbd its scsi command request flags to determine
+ *      if we need to be quiet about the command failure.
+ */
+static inline bool ata_eh_quiet(struct ata_queued_cmd *qc)
+{
+	if (qc->scsicmd &&
+	    qc->scsicmd->request->rq_flags & RQF_QUIET)
+		qc->flags |= ATA_QCFLAG_QUIET;
+	return qc->flags & ATA_QCFLAG_QUIET;
+}
+
+/**
  *	ata_eh_link_autopsy - analyze error and determine recovery action
  *	@link: host link to perform autopsy on
  *
@@ -1965,9 +1914,10 @@ static void ata_eh_link_autopsy(struct ata_link *link)
 {
 	struct ata_port *ap = link->ap;
 	struct ata_eh_context *ehc = &link->eh_context;
+	struct ata_queued_cmd *qc;
 	struct ata_device *dev;
 	unsigned int all_err_mask = 0, eflags = 0;
-	int tag;
+	int tag, nr_failed = 0, nr_quiet = 0;
 	u32 serror;
 	int rc;
 
@@ -1997,9 +1947,7 @@ static void ata_eh_link_autopsy(struct ata_link *link)
 
 	all_err_mask |= ehc->i.err_mask;
 
-	for (tag = 0; tag < ATA_MAX_QUEUE; tag++) {
-		struct ata_queued_cmd *qc = __ata_qc_from_tag(ap, tag);
-
+	ata_qc_for_each_raw(ap, qc, tag) {
 		if (!(qc->flags & ATA_QCFLAG_FAILED) ||
 		    ata_dev_phys_link(qc->dev) != link)
 			continue;
@@ -2019,14 +1967,16 @@ static void ata_eh_link_autopsy(struct ata_link *link)
 		if (qc->err_mask & ~AC_ERR_OTHER)
 			qc->err_mask &= ~AC_ERR_OTHER;
 
-		/* SENSE_VALID trumps dev/unknown error and revalidation */
+		/*
+		 * SENSE_VALID trumps dev/unknown error and revalidation. Upper
+		 * layers will determine whether the command is worth retrying
+		 * based on the sense data and device class/type. Otherwise,
+		 * determine directly if the command is worth retrying using its
+		 * error mask and flags.
+		 */
 		if (qc->flags & ATA_QCFLAG_SENSE_VALID)
 			qc->err_mask &= ~(AC_ERR_DEV | AC_ERR_OTHER);
-
-		/* determine whether the command is worth retrying */
-		if (qc->flags & ATA_QCFLAG_IO ||
-		    (!(qc->err_mask & AC_ERR_INVALID) &&
-		     qc->err_mask != AC_ERR_DEV))
+		else if (ata_eh_worth_retry(qc))
 			qc->flags |= ATA_QCFLAG_RETRY;
 
 		/* accumulate error info */
@@ -2034,7 +1984,17 @@ static void ata_eh_link_autopsy(struct ata_link *link)
 		all_err_mask |= qc->err_mask;
 		if (qc->flags & ATA_QCFLAG_IO)
 			eflags |= ATA_EFLAG_IS_IO;
+		trace_ata_eh_link_autopsy_qc(qc);
+
+		/* Count quiet errors */
+		if (ata_eh_quiet(qc))
+			nr_quiet++;
+		nr_failed++;
 	}
+
+	/* If all failed commands requested silence, then be quiet */
+	if (nr_quiet == nr_failed)
+		ehc->i.flags |= ATA_EHI_QUIET;
 
 	/* enforce default EH actions */
 	if (ap->pflags & ATA_PFLAG_FROZEN ||
@@ -2067,8 +2027,8 @@ static void ata_eh_link_autopsy(struct ata_link *link)
 		if (dev->flags & ATA_DFLAG_DUBIOUS_XFER)
 			eflags |= ATA_EFLAG_DUBIOUS_XFER;
 		ehc->i.action |= ata_eh_speed_down(dev, eflags, all_err_mask);
+		trace_ata_eh_link_autopsy(dev, ehc->i.action, all_err_mask);
 	}
-
 	DPRINTK("EXIT\n");
 }
 
@@ -2137,31 +2097,34 @@ const char *ata_get_cmd_descript(u8 command)
 		const char *text;
 	} cmd_descr[] = {
 		{ ATA_CMD_DEV_RESET,		"DEVICE RESET" },
-		{ ATA_CMD_CHK_POWER, 		"CHECK POWER MODE" },
-		{ ATA_CMD_STANDBY, 		"STANDBY" },
-		{ ATA_CMD_IDLE, 		"IDLE" },
-		{ ATA_CMD_EDD, 			"EXECUTE DEVICE DIAGNOSTIC" },
-		{ ATA_CMD_DOWNLOAD_MICRO,   	"DOWNLOAD MICROCODE" },
+		{ ATA_CMD_CHK_POWER,		"CHECK POWER MODE" },
+		{ ATA_CMD_STANDBY,		"STANDBY" },
+		{ ATA_CMD_IDLE,			"IDLE" },
+		{ ATA_CMD_EDD,			"EXECUTE DEVICE DIAGNOSTIC" },
+		{ ATA_CMD_DOWNLOAD_MICRO,	"DOWNLOAD MICROCODE" },
+		{ ATA_CMD_DOWNLOAD_MICRO_DMA,	"DOWNLOAD MICROCODE DMA" },
 		{ ATA_CMD_NOP,			"NOP" },
-		{ ATA_CMD_FLUSH, 		"FLUSH CACHE" },
-		{ ATA_CMD_FLUSH_EXT, 		"FLUSH CACHE EXT" },
-		{ ATA_CMD_ID_ATA,  		"IDENTIFY DEVICE" },
-		{ ATA_CMD_ID_ATAPI, 		"IDENTIFY PACKET DEVICE" },
-		{ ATA_CMD_SERVICE, 		"SERVICE" },
-		{ ATA_CMD_READ, 		"READ DMA" },
-		{ ATA_CMD_READ_EXT, 		"READ DMA EXT" },
-		{ ATA_CMD_READ_QUEUED, 		"READ DMA QUEUED" },
-		{ ATA_CMD_READ_STREAM_EXT, 	"READ STREAM EXT" },
+		{ ATA_CMD_FLUSH,		"FLUSH CACHE" },
+		{ ATA_CMD_FLUSH_EXT,		"FLUSH CACHE EXT" },
+		{ ATA_CMD_ID_ATA,		"IDENTIFY DEVICE" },
+		{ ATA_CMD_ID_ATAPI,		"IDENTIFY PACKET DEVICE" },
+		{ ATA_CMD_SERVICE,		"SERVICE" },
+		{ ATA_CMD_READ,			"READ DMA" },
+		{ ATA_CMD_READ_EXT,		"READ DMA EXT" },
+		{ ATA_CMD_READ_QUEUED,		"READ DMA QUEUED" },
+		{ ATA_CMD_READ_STREAM_EXT,	"READ STREAM EXT" },
 		{ ATA_CMD_READ_STREAM_DMA_EXT,  "READ STREAM DMA EXT" },
-		{ ATA_CMD_WRITE, 		"WRITE DMA" },
-		{ ATA_CMD_WRITE_EXT, 		"WRITE DMA EXT" },
-		{ ATA_CMD_WRITE_QUEUED, 	"WRITE DMA QUEUED EXT" },
-		{ ATA_CMD_WRITE_STREAM_EXT, 	"WRITE STREAM EXT" },
+		{ ATA_CMD_WRITE,		"WRITE DMA" },
+		{ ATA_CMD_WRITE_EXT,		"WRITE DMA EXT" },
+		{ ATA_CMD_WRITE_QUEUED,		"WRITE DMA QUEUED EXT" },
+		{ ATA_CMD_WRITE_STREAM_EXT,	"WRITE STREAM EXT" },
 		{ ATA_CMD_WRITE_STREAM_DMA_EXT, "WRITE STREAM DMA EXT" },
 		{ ATA_CMD_WRITE_FUA_EXT,	"WRITE DMA FUA EXT" },
 		{ ATA_CMD_WRITE_QUEUED_FUA_EXT, "WRITE DMA QUEUED FUA EXT" },
 		{ ATA_CMD_FPDMA_READ,		"READ FPDMA QUEUED" },
 		{ ATA_CMD_FPDMA_WRITE,		"WRITE FPDMA QUEUED" },
+		{ ATA_CMD_FPDMA_SEND,		"SEND FPDMA QUEUED" },
+		{ ATA_CMD_FPDMA_RECV,		"RECEIVE FPDMA QUEUED" },
 		{ ATA_CMD_PIO_READ,		"READ SECTOR(S)" },
 		{ ATA_CMD_PIO_READ_EXT,		"READ SECTOR(S) EXT" },
 		{ ATA_CMD_PIO_WRITE,		"WRITE SECTOR(S)" },
@@ -2170,7 +2133,7 @@ const char *ata_get_cmd_descript(u8 command)
 		{ ATA_CMD_READ_MULTI_EXT,	"READ MULTIPLE EXT" },
 		{ ATA_CMD_WRITE_MULTI,		"WRITE MULTIPLE" },
 		{ ATA_CMD_WRITE_MULTI_EXT,	"WRITE MULTIPLE EXT" },
-		{ ATA_CMD_WRITE_MULTI_FUA_EXT, 	"WRITE MULTIPLE FUA EXT" },
+		{ ATA_CMD_WRITE_MULTI_FUA_EXT,	"WRITE MULTIPLE FUA EXT" },
 		{ ATA_CMD_SET_FEATURES,		"SET FEATURES" },
 		{ ATA_CMD_SET_MULTI,		"SET MULTIPLE MODE" },
 		{ ATA_CMD_VERIFY,		"READ VERIFY SECTOR(S)" },
@@ -2187,13 +2150,16 @@ const char *ata_get_cmd_descript(u8 command)
 		{ ATA_CMD_READ_LOG_EXT,		"READ LOG EXT" },
 		{ ATA_CMD_WRITE_LOG_EXT,	"WRITE LOG EXT" },
 		{ ATA_CMD_READ_LOG_DMA_EXT,	"READ LOG DMA EXT" },
-		{ ATA_CMD_WRITE_LOG_DMA_EXT, 	"WRITE LOG DMA EXT" },
+		{ ATA_CMD_WRITE_LOG_DMA_EXT,	"WRITE LOG DMA EXT" },
+		{ ATA_CMD_TRUSTED_NONDATA,	"TRUSTED NON-DATA" },
 		{ ATA_CMD_TRUSTED_RCV,		"TRUSTED RECEIVE" },
-		{ ATA_CMD_TRUSTED_RCV_DMA, 	"TRUSTED RECEIVE DMA" },
+		{ ATA_CMD_TRUSTED_RCV_DMA,	"TRUSTED RECEIVE DMA" },
 		{ ATA_CMD_TRUSTED_SND,		"TRUSTED SEND" },
-		{ ATA_CMD_TRUSTED_SND_DMA, 	"TRUSTED SEND DMA" },
+		{ ATA_CMD_TRUSTED_SND_DMA,	"TRUSTED SEND DMA" },
 		{ ATA_CMD_PMP_READ,		"READ BUFFER" },
+		{ ATA_CMD_PMP_READ_DMA,		"READ BUFFER DMA" },
 		{ ATA_CMD_PMP_WRITE,		"WRITE BUFFER" },
+		{ ATA_CMD_PMP_WRITE_DMA,	"WRITE BUFFER DMA" },
 		{ ATA_CMD_CONF_OVERLAY,		"DEVICE CONFIGURATION OVERLAY" },
 		{ ATA_CMD_SEC_SET_PASS,		"SECURITY SET PASSWORD" },
 		{ ATA_CMD_SEC_UNLOCK,		"SECURITY UNLOCK" },
@@ -2205,12 +2171,17 @@ const char *ata_get_cmd_descript(u8 command)
 		{ ATA_CMD_SMART,		"SMART" },
 		{ ATA_CMD_MEDIA_LOCK,		"DOOR LOCK" },
 		{ ATA_CMD_MEDIA_UNLOCK,		"DOOR UNLOCK" },
-		{ ATA_CMD_CHK_MED_CRD_TYP, 	"CHECK MEDIA CARD TYPE" },
-		{ ATA_CMD_CFA_REQ_EXT_ERR, 	"CFA REQUEST EXTENDED ERROR" },
+		{ ATA_CMD_DSM,			"DATA SET MANAGEMENT" },
+		{ ATA_CMD_CHK_MED_CRD_TYP,	"CHECK MEDIA CARD TYPE" },
+		{ ATA_CMD_CFA_REQ_EXT_ERR,	"CFA REQUEST EXTENDED ERROR" },
 		{ ATA_CMD_CFA_WRITE_NE,		"CFA WRITE SECTORS WITHOUT ERASE" },
 		{ ATA_CMD_CFA_TRANS_SECT,	"CFA TRANSLATE SECTOR" },
 		{ ATA_CMD_CFA_ERASE,		"CFA ERASE SECTORS" },
-		{ ATA_CMD_CFA_WRITE_MULT_NE, 	"CFA WRITE MULTIPLE WITHOUT ERASE" },
+		{ ATA_CMD_CFA_WRITE_MULT_NE,	"CFA WRITE MULTIPLE WITHOUT ERASE" },
+		{ ATA_CMD_REQ_SENSE_DATA,	"REQUEST SENSE DATA EXT" },
+		{ ATA_CMD_SANITIZE_DEVICE,	"SANITIZE DEVICE" },
+		{ ATA_CMD_ZAC_MGMT_IN,		"ZAC MANAGEMENT IN" },
+		{ ATA_CMD_ZAC_MGMT_OUT,		"ZAC MANAGEMENT OUT" },
 		{ ATA_CMD_READ_LONG,		"READ LONG (with retries)" },
 		{ ATA_CMD_READ_LONG_ONCE,	"READ LONG (without retries)" },
 		{ ATA_CMD_WRITE_LONG,		"WRITE LONG (with retries)" },
@@ -2227,6 +2198,7 @@ const char *ata_get_cmd_descript(u8 command)
 
 	return NULL;
 }
+EXPORT_SYMBOL_GPL(ata_get_cmd_descript);
 
 /**
  *	ata_eh_link_report - report error handling to user
@@ -2241,8 +2213,9 @@ static void ata_eh_link_report(struct ata_link *link)
 {
 	struct ata_port *ap = link->ap;
 	struct ata_eh_context *ehc = &link->eh_context;
+	struct ata_queued_cmd *qc;
 	const char *frozen, *desc;
-	char tries_buf[6];
+	char tries_buf[6] = "";
 	int tag, nr_failed = 0;
 
 	if (ehc->i.flags & ATA_EHI_QUIET)
@@ -2252,9 +2225,7 @@ static void ata_eh_link_report(struct ata_link *link)
 	if (ehc->i.desc[0] != '\0')
 		desc = ehc->i.desc;
 
-	for (tag = 0; tag < ATA_MAX_QUEUE; tag++) {
-		struct ata_queued_cmd *qc = __ata_qc_from_tag(ap, tag);
-
+	ata_qc_for_each_raw(ap, qc, tag) {
 		if (!(qc->flags & ATA_QCFLAG_FAILED) ||
 		    ata_dev_phys_link(qc->dev) != link ||
 		    ((qc->flags & ATA_QCFLAG_QUIET) &&
@@ -2273,30 +2244,29 @@ static void ata_eh_link_report(struct ata_link *link)
 	if (ap->pflags & ATA_PFLAG_FROZEN)
 		frozen = " frozen";
 
-	memset(tries_buf, 0, sizeof(tries_buf));
 	if (ap->eh_tries < ATA_EH_MAX_TRIES)
-		snprintf(tries_buf, sizeof(tries_buf) - 1, " t%d",
+		snprintf(tries_buf, sizeof(tries_buf), " t%d",
 			 ap->eh_tries);
 
 	if (ehc->i.dev) {
-		ata_dev_printk(ehc->i.dev, KERN_ERR, "exception Emask 0x%x "
-			       "SAct 0x%x SErr 0x%x action 0x%x%s%s\n",
-			       ehc->i.err_mask, link->sactive, ehc->i.serror,
-			       ehc->i.action, frozen, tries_buf);
+		ata_dev_err(ehc->i.dev, "exception Emask 0x%x "
+			    "SAct 0x%x SErr 0x%x action 0x%x%s%s\n",
+			    ehc->i.err_mask, link->sactive, ehc->i.serror,
+			    ehc->i.action, frozen, tries_buf);
 		if (desc)
-			ata_dev_printk(ehc->i.dev, KERN_ERR, "%s\n", desc);
+			ata_dev_err(ehc->i.dev, "%s\n", desc);
 	} else {
-		ata_link_printk(link, KERN_ERR, "exception Emask 0x%x "
-				"SAct 0x%x SErr 0x%x action 0x%x%s%s\n",
-				ehc->i.err_mask, link->sactive, ehc->i.serror,
-				ehc->i.action, frozen, tries_buf);
+		ata_link_err(link, "exception Emask 0x%x "
+			     "SAct 0x%x SErr 0x%x action 0x%x%s%s\n",
+			     ehc->i.err_mask, link->sactive, ehc->i.serror,
+			     ehc->i.action, frozen, tries_buf);
 		if (desc)
-			ata_link_printk(link, KERN_ERR, "%s\n", desc);
+			ata_link_err(link, "%s\n", desc);
 	}
 
 #ifdef CONFIG_ATA_VERBOSE_ERROR
 	if (ehc->i.serror)
-		ata_link_printk(link, KERN_ERR,
+		ata_link_err(link,
 		  "SError: { %s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s}\n",
 		  ehc->i.serror & SERR_DATA_RECOVERED ? "RecovData " : "",
 		  ehc->i.serror & SERR_COMM_RECOVERED ? "RecovComm " : "",
@@ -2317,10 +2287,8 @@ static void ata_eh_link_report(struct ata_link *link)
 		  ehc->i.serror & SERR_DEV_XCHG ? "DevExch " : "");
 #endif
 
-	for (tag = 0; tag < ATA_MAX_QUEUE; tag++) {
-		struct ata_queued_cmd *qc = __ata_qc_from_tag(ap, tag);
+	ata_qc_for_each_raw(ap, qc, tag) {
 		struct ata_taskfile *cmd = &qc->tf, *res = &qc->result_tf;
-		const u8 *cdb = qc->cdb;
 		char data_buf[20] = "";
 		char cdb_buf[70] = "";
 
@@ -2334,38 +2302,59 @@ static void ata_eh_link_report(struct ata_link *link)
 				[DMA_TO_DEVICE]		= "out",
 				[DMA_FROM_DEVICE]	= "in",
 			};
-			static const char *prot_str[] = {
-				[ATA_PROT_PIO]		= "pio",
-				[ATA_PROT_DMA]		= "dma",
-				[ATA_PROT_NCQ]		= "ncq",
-				[ATAPI_PROT_PIO]	= "pio",
-				[ATAPI_PROT_DMA]	= "dma",
-			};
+			const char *prot_str = NULL;
 
+			switch (qc->tf.protocol) {
+			case ATA_PROT_UNKNOWN:
+				prot_str = "unknown";
+				break;
+			case ATA_PROT_NODATA:
+				prot_str = "nodata";
+				break;
+			case ATA_PROT_PIO:
+				prot_str = "pio";
+				break;
+			case ATA_PROT_DMA:
+				prot_str = "dma";
+				break;
+			case ATA_PROT_NCQ:
+				prot_str = "ncq dma";
+				break;
+			case ATA_PROT_NCQ_NODATA:
+				prot_str = "ncq nodata";
+				break;
+			case ATAPI_PROT_NODATA:
+				prot_str = "nodata";
+				break;
+			case ATAPI_PROT_PIO:
+				prot_str = "pio";
+				break;
+			case ATAPI_PROT_DMA:
+				prot_str = "dma";
+				break;
+			}
 			snprintf(data_buf, sizeof(data_buf), " %s %u %s",
-				 prot_str[qc->tf.protocol], qc->nbytes,
-				 dma_str[qc->dma_dir]);
+				 prot_str, qc->nbytes, dma_str[qc->dma_dir]);
 		}
 
 		if (ata_is_atapi(qc->tf.protocol)) {
-			if (qc->scsicmd)
-				scsi_print_command(qc->scsicmd);
-			else
-				snprintf(cdb_buf, sizeof(cdb_buf),
-				 "cdb %02x %02x %02x %02x %02x %02x %02x %02x  "
-				 "%02x %02x %02x %02x %02x %02x %02x %02x\n         ",
-				 cdb[0], cdb[1], cdb[2], cdb[3],
-				 cdb[4], cdb[5], cdb[6], cdb[7],
-				 cdb[8], cdb[9], cdb[10], cdb[11],
-				 cdb[12], cdb[13], cdb[14], cdb[15]);
+			const u8 *cdb = qc->cdb;
+			size_t cdb_len = qc->dev->cdb_len;
+
+			if (qc->scsicmd) {
+				cdb = qc->scsicmd->cmnd;
+				cdb_len = qc->scsicmd->cmd_len;
+			}
+			__scsi_format_command(cdb_buf, sizeof(cdb_buf),
+					      cdb, cdb_len);
 		} else {
 			const char *descr = ata_get_cmd_descript(cmd->command);
 			if (descr)
-				ata_dev_printk(qc->dev, KERN_ERR,
-					"failed command: %s\n", descr);
+				ata_dev_err(qc->dev, "failed command: %s\n",
+					    descr);
 		}
 
-		ata_dev_printk(qc->dev, KERN_ERR,
+		ata_dev_err(qc->dev,
 			"cmd %02x/%02x:%02x:%02x:%02x:%02x/%02x:%02x:%02x:%02x:%02x/%02x "
 			"tag %d%s\n         %s"
 			"res %02x/%02x:%02x:%02x:%02x:%02x/%02x:%02x:%02x:%02x:%02x/%02x "
@@ -2384,26 +2373,25 @@ static void ata_eh_link_report(struct ata_link *link)
 
 #ifdef CONFIG_ATA_VERBOSE_ERROR
 		if (res->command & (ATA_BUSY | ATA_DRDY | ATA_DF | ATA_DRQ |
-				    ATA_ERR)) {
+				    ATA_SENSE | ATA_ERR)) {
 			if (res->command & ATA_BUSY)
-				ata_dev_printk(qc->dev, KERN_ERR,
-				  "status: { Busy }\n");
+				ata_dev_err(qc->dev, "status: { Busy }\n");
 			else
-				ata_dev_printk(qc->dev, KERN_ERR,
-				  "status: { %s%s%s%s}\n",
+				ata_dev_err(qc->dev, "status: { %s%s%s%s%s}\n",
 				  res->command & ATA_DRDY ? "DRDY " : "",
 				  res->command & ATA_DF ? "DF " : "",
 				  res->command & ATA_DRQ ? "DRQ " : "",
+				  res->command & ATA_SENSE ? "SENSE " : "",
 				  res->command & ATA_ERR ? "ERR " : "");
 		}
 
 		if (cmd->command != ATA_CMD_PACKET &&
-		    (res->feature & (ATA_ICRC | ATA_UNC | ATA_IDNF |
-				     ATA_ABORTED)))
-			ata_dev_printk(qc->dev, KERN_ERR,
-			  "error: { %s%s%s%s}\n",
+		    (res->feature & (ATA_ICRC | ATA_UNC | ATA_AMNF |
+				     ATA_IDNF | ATA_ABORTED)))
+			ata_dev_err(qc->dev, "error: { %s%s%s%s%s}\n",
 			  res->feature & ATA_ICRC ? "ICRC " : "",
 			  res->feature & ATA_UNC ? "UNC " : "",
+			  res->feature & ATA_AMNF ? "AMNF " : "",
 			  res->feature & ATA_IDNF ? "IDNF " : "",
 			  res->feature & ATA_ABORTED ? "ABRT " : "");
 #endif
@@ -2440,8 +2428,7 @@ static int ata_do_reset(struct ata_link *link, ata_reset_fn_t reset,
 	return reset(link, classes, deadline);
 }
 
-static int ata_eh_followup_srst_needed(struct ata_link *link,
-				       int rc, const unsigned int *classes)
+static int ata_eh_followup_srst_needed(struct ata_link *link, int rc)
 {
 	if ((link->flags & ATA_LFLAG_NO_SRST) || ata_link_offline(link))
 		return 0;
@@ -2477,12 +2464,14 @@ int ata_eh_reset(struct ata_link *link, int classify,
 	 */
 	while (ata_eh_reset_timeouts[max_tries] != ULONG_MAX)
 		max_tries++;
+	if (link->flags & ATA_LFLAG_RST_ONCE)
+		max_tries = 1;
 	if (link->flags & ATA_LFLAG_NO_HRST)
 		hardreset = NULL;
 	if (link->flags & ATA_LFLAG_NO_SRST)
 		softreset = NULL;
 
-	/* make sure each reset attemp is at least COOL_DOWN apart */
+	/* make sure each reset attempt is at least COOL_DOWN apart */
 	if (ehc->i.flags & ATA_EHI_DID_RESET) {
 		now = jiffies;
 		WARN_ON(time_after(ehc->last_reset, now));
@@ -2507,6 +2496,7 @@ int ata_eh_reset(struct ata_link *link, int classify,
 		 * bus as we may be talking too fast.
 		 */
 		dev->pio_mode = XFER_PIO_0;
+		dev->dma_mode = 0xff;
 
 		/* If the controller has a pio mode setup function
 		 * then use it to set the chipset to rights. Don't
@@ -2555,8 +2545,7 @@ int ata_eh_reset(struct ata_link *link, int classify,
 
 		if (rc) {
 			if (rc == -ENOENT) {
-				ata_link_printk(link, KERN_DEBUG,
-						"port disabled. ignoring.\n");
+				ata_link_dbg(link, "port disabled--ignoring\n");
 				ehc->i.action &= ~ATA_EH_RESET;
 
 				ata_for_each_dev(dev, link, ALL)
@@ -2564,8 +2553,9 @@ int ata_eh_reset(struct ata_link *link, int classify,
 
 				rc = 0;
 			} else
-				ata_link_printk(link, KERN_ERR,
-					"prereset failed (errno=%d)\n", rc);
+				ata_link_err(link,
+					     "prereset failed (errno=%d)\n",
+					     rc);
 			goto out;
 		}
 
@@ -2594,8 +2584,8 @@ int ata_eh_reset(struct ata_link *link, int classify,
 
 	if (reset) {
 		if (verbose)
-			ata_link_printk(link, KERN_INFO, "%s resetting link\n",
-					reset == softreset ? "soft" : "hard");
+			ata_link_info(link, "%s resetting link\n",
+				      reset == softreset ? "soft" : "hard");
 
 		/* mark that this EH session started with reset */
 		ehc->last_reset = jiffies;
@@ -2615,8 +2605,7 @@ int ata_eh_reset(struct ata_link *link, int classify,
 			int tmp;
 
 			if (verbose)
-				ata_link_printk(slave, KERN_INFO,
-						"hard resetting link\n");
+				ata_link_info(slave, "hard resetting link\n");
 
 			ata_eh_about_to_do(slave, NULL, ATA_EH_RESET);
 			tmp = ata_do_reset(slave, reset, classes, deadline,
@@ -2635,13 +2624,12 @@ int ata_eh_reset(struct ata_link *link, int classify,
 
 		/* perform follow-up SRST if necessary */
 		if (reset == hardreset &&
-		    ata_eh_followup_srst_needed(link, rc, classes)) {
+		    ata_eh_followup_srst_needed(link, rc)) {
 			reset = softreset;
 
 			if (!reset) {
-				ata_link_printk(link, KERN_ERR,
-						"follow-up softreset required "
-						"but no softreset avaliable\n");
+				ata_link_err(link,
+	     "follow-up softreset required but no softreset available\n");
 				failed_link = link;
 				rc = -EINVAL;
 				goto fail;
@@ -2656,8 +2644,8 @@ int ata_eh_reset(struct ata_link *link, int classify,
 		}
 	} else {
 		if (verbose)
-			ata_link_printk(link, KERN_INFO, "no reset method "
-					"available, skipping reset\n");
+			ata_link_info(link,
+	"no reset method available, skipping reset\n");
 		if (!(lflags & ATA_LFLAG_ASSUME_CLASS))
 			lflags |= ATA_LFLAG_ASSUME_ATA;
 	}
@@ -2735,44 +2723,44 @@ int ata_eh_reset(struct ata_link *link, int classify,
 	ata_for_each_dev(dev, link, ALL) {
 		if (ata_phys_link_online(ata_dev_phys_link(dev))) {
 			if (classes[dev->devno] == ATA_DEV_UNKNOWN) {
-				ata_dev_printk(dev, KERN_DEBUG, "link online "
-					       "but device misclassifed\n");
+				ata_dev_dbg(dev, "link online but device misclassified\n");
 				classes[dev->devno] = ATA_DEV_NONE;
 				nr_unknown++;
 			}
 		} else if (ata_phys_link_offline(ata_dev_phys_link(dev))) {
 			if (ata_class_enabled(classes[dev->devno]))
-				ata_dev_printk(dev, KERN_DEBUG, "link offline, "
-					       "clearing class %d to NONE\n",
-					       classes[dev->devno]);
+				ata_dev_dbg(dev,
+					    "link offline, clearing class %d to NONE\n",
+					    classes[dev->devno]);
 			classes[dev->devno] = ATA_DEV_NONE;
 		} else if (classes[dev->devno] == ATA_DEV_UNKNOWN) {
-			ata_dev_printk(dev, KERN_DEBUG, "link status unknown, "
-				       "clearing UNKNOWN to NONE\n");
+			ata_dev_dbg(dev,
+				    "link status unknown, clearing UNKNOWN to NONE\n");
 			classes[dev->devno] = ATA_DEV_NONE;
 		}
 	}
 
 	if (classify && nr_unknown) {
 		if (try < max_tries) {
-			ata_link_printk(link, KERN_WARNING, "link online but "
-					"%d devices misclassified, retrying\n",
-					nr_unknown);
+			ata_link_warn(link,
+				      "link online but %d devices misclassified, retrying\n",
+				      nr_unknown);
 			failed_link = link;
 			rc = -EAGAIN;
 			goto fail;
 		}
-		ata_link_printk(link, KERN_WARNING,
-				"link online but %d devices misclassified, "
-				"device detection might fail\n", nr_unknown);
+		ata_link_warn(link,
+			      "link online but %d devices misclassified, "
+			      "device detection might fail\n", nr_unknown);
 	}
 
 	/* reset successful, schedule revalidation */
 	ata_eh_done(link, NULL, ATA_EH_RESET);
 	if (slave)
 		ata_eh_done(slave, NULL, ATA_EH_RESET);
-	ehc->last_reset = jiffies;	/* update to completion time */
+	ehc->last_reset = jiffies;		/* update to completion time */
 	ehc->i.action |= ATA_EH_REVALIDATE;
+	link->lpm_policy = ATA_LPM_UNKNOWN;	/* reset LPM state */
 
 	rc = 0;
  out:
@@ -2793,19 +2781,40 @@ int ata_eh_reset(struct ata_link *link, int classify,
 	    sata_scr_read(link, SCR_STATUS, &sstatus))
 		rc = -ERESTART;
 
-	if (rc == -ERESTART || try >= max_tries)
+	if (try >= max_tries) {
+		/*
+		 * Thaw host port even if reset failed, so that the port
+		 * can be retried on the next phy event.  This risks
+		 * repeated EH runs but seems to be a better tradeoff than
+		 * shutting down a port after a botched hotplug attempt.
+		 */
+		if (ata_is_host_link(link))
+			ata_eh_thaw_port(ap);
 		goto out;
+	}
 
 	now = jiffies;
 	if (time_before(now, deadline)) {
 		unsigned long delta = deadline - now;
 
-		ata_link_printk(failed_link, KERN_WARNING,
+		ata_link_warn(failed_link,
 			"reset failed (errno=%d), retrying in %u secs\n",
 			rc, DIV_ROUND_UP(jiffies_to_msecs(delta), 1000));
 
+		ata_eh_release(ap);
 		while (delta)
 			delta = schedule_timeout_uninterruptible(delta);
+		ata_eh_acquire(ap);
+	}
+
+	/*
+	 * While disks spinup behind PMP, some controllers fail sending SRST.
+	 * They need to be reset - as well as the PMP - before retrying.
+	 */
+	if (rc == -ERESTART) {
+		if (ata_is_host_link(link))
+			ata_eh_thaw_port(ap);
+		goto out;
 	}
 
 	if (try == max_tries - 1) {
@@ -2839,7 +2848,7 @@ static inline void ata_eh_pull_park_action(struct ata_port *ap)
 	 * ourselves at the beginning of each pass over the loop.
 	 *
 	 * Additionally, all write accesses to &ap->park_req_pending
-	 * through INIT_COMPLETION() (see below) or complete_all()
+	 * through reinit_completion() (see below) or complete_all()
 	 * (see ata_scsi_park_store()) are protected by the host lock.
 	 * As a result we have that park_req_pending.done is zero on
 	 * exit from this function, i.e. when ATA_EH_PARK actions for
@@ -2853,7 +2862,7 @@ static inline void ata_eh_pull_park_action(struct ata_port *ap)
 	 */
 
 	spin_lock_irqsave(ap->lock, flags);
-	INIT_COMPLETION(ap->park_req_pending);
+	reinit_completion(&ap->park_req_pending);
 	ata_for_each_link(link, ap, EDGE) {
 		ata_for_each_dev(dev, link, ALL) {
 			struct ata_eh_info *ehi = &link->eh_info;
@@ -2886,10 +2895,10 @@ static void ata_eh_park_issue_cmd(struct ata_device *dev, int park)
 	}
 
 	tf.flags |= ATA_TFLAG_DEVICE | ATA_TFLAG_ISADDR;
-	tf.protocol |= ATA_PROT_NODATA;
+	tf.protocol = ATA_PROT_NODATA;
 	err_mask = ata_exec_internal(dev, &tf, NULL, DMA_NONE, NULL, 0, 0);
 	if (park && (err_mask || tf.lbal != 0xc4)) {
-		ata_dev_printk(dev, KERN_ERR, "head unload failed!\n");
+		ata_dev_err(dev, "head unload failed!\n");
 		ehc->unloaded_mask &= ~(1 << dev->devno);
 	}
 }
@@ -2939,7 +2948,7 @@ static int ata_eh_revalidate_and_attach(struct ata_link *link,
 			ehc->i.flags |= ATA_EHI_SETMODE;
 
 			/* schedule the scsi_rescan_device() here */
-			queue_work(ata_aux_wq, &(ap->scsi_rescan_task));
+			schedule_work(&(ap->scsi_rescan_task));
 		} else if (dev->class == ATA_DEV_UNKNOWN &&
 			   ehc->tries[dev->devno] &&
 			   ata_class_enabled(ehc->classes[dev->devno])) {
@@ -3100,8 +3109,9 @@ static int atapi_eh_clear_ua(struct ata_device *dev)
 
 		err_mask = atapi_eh_tur(dev, &sense_key);
 		if (err_mask != 0 && err_mask != AC_ERR_DEV) {
-			ata_dev_printk(dev, KERN_WARNING, "TEST_UNIT_READY "
-				"failed (err_mask=0x%x)\n", err_mask);
+			ata_dev_warn(dev,
+				     "TEST_UNIT_READY failed (err_mask=0x%x)\n",
+				     err_mask);
 			return -EIO;
 		}
 
@@ -3110,19 +3120,229 @@ static int atapi_eh_clear_ua(struct ata_device *dev)
 
 		err_mask = atapi_eh_request_sense(dev, sense_buffer, sense_key);
 		if (err_mask) {
-			ata_dev_printk(dev, KERN_WARNING, "failed to clear "
+			ata_dev_warn(dev, "failed to clear "
 				"UNIT ATTENTION (err_mask=0x%x)\n", err_mask);
 			return -EIO;
 		}
 	}
 
-	ata_dev_printk(dev, KERN_WARNING,
-		"UNIT ATTENTION persists after %d tries\n", ATA_EH_UA_TRIES);
+	ata_dev_warn(dev, "UNIT ATTENTION persists after %d tries\n",
+		     ATA_EH_UA_TRIES);
 
 	return 0;
 }
 
-static int ata_link_nr_enabled(struct ata_link *link)
+/**
+ *	ata_eh_maybe_retry_flush - Retry FLUSH if necessary
+ *	@dev: ATA device which may need FLUSH retry
+ *
+ *	If @dev failed FLUSH, it needs to be reported upper layer
+ *	immediately as it means that @dev failed to remap and already
+ *	lost at least a sector and further FLUSH retrials won't make
+ *	any difference to the lost sector.  However, if FLUSH failed
+ *	for other reasons, for example transmission error, FLUSH needs
+ *	to be retried.
+ *
+ *	This function determines whether FLUSH failure retry is
+ *	necessary and performs it if so.
+ *
+ *	RETURNS:
+ *	0 if EH can continue, -errno if EH needs to be repeated.
+ */
+static int ata_eh_maybe_retry_flush(struct ata_device *dev)
+{
+	struct ata_link *link = dev->link;
+	struct ata_port *ap = link->ap;
+	struct ata_queued_cmd *qc;
+	struct ata_taskfile tf;
+	unsigned int err_mask;
+	int rc = 0;
+
+	/* did flush fail for this device? */
+	if (!ata_tag_valid(link->active_tag))
+		return 0;
+
+	qc = __ata_qc_from_tag(ap, link->active_tag);
+	if (qc->dev != dev || (qc->tf.command != ATA_CMD_FLUSH_EXT &&
+			       qc->tf.command != ATA_CMD_FLUSH))
+		return 0;
+
+	/* if the device failed it, it should be reported to upper layers */
+	if (qc->err_mask & AC_ERR_DEV)
+		return 0;
+
+	/* flush failed for some other reason, give it another shot */
+	ata_tf_init(dev, &tf);
+
+	tf.command = qc->tf.command;
+	tf.flags |= ATA_TFLAG_DEVICE;
+	tf.protocol = ATA_PROT_NODATA;
+
+	ata_dev_warn(dev, "retrying FLUSH 0x%x Emask 0x%x\n",
+		       tf.command, qc->err_mask);
+
+	err_mask = ata_exec_internal(dev, &tf, NULL, DMA_NONE, NULL, 0, 0);
+	if (!err_mask) {
+		/*
+		 * FLUSH is complete but there's no way to
+		 * successfully complete a failed command from EH.
+		 * Making sure retry is allowed at least once and
+		 * retrying it should do the trick - whatever was in
+		 * the cache is already on the platter and this won't
+		 * cause infinite loop.
+		 */
+		qc->scsicmd->allowed = max(qc->scsicmd->allowed, 1);
+	} else {
+		ata_dev_warn(dev, "FLUSH failed Emask 0x%x\n",
+			       err_mask);
+		rc = -EIO;
+
+		/* if device failed it, report it to upper layers */
+		if (err_mask & AC_ERR_DEV) {
+			qc->err_mask |= AC_ERR_DEV;
+			qc->result_tf = tf;
+			if (!(ap->pflags & ATA_PFLAG_FROZEN))
+				rc = 0;
+		}
+	}
+	return rc;
+}
+
+/**
+ *	ata_eh_set_lpm - configure SATA interface power management
+ *	@link: link to configure power management
+ *	@policy: the link power management policy
+ *	@r_failed_dev: out parameter for failed device
+ *
+ *	Enable SATA Interface power management.  This will enable
+ *	Device Interface Power Management (DIPM) for min_power and
+ *	medium_power_with_dipm policies, and then call driver specific
+ *	callbacks for enabling Host Initiated Power management.
+ *
+ *	LOCKING:
+ *	EH context.
+ *
+ *	RETURNS:
+ *	0 on success, -errno on failure.
+ */
+static int ata_eh_set_lpm(struct ata_link *link, enum ata_lpm_policy policy,
+			  struct ata_device **r_failed_dev)
+{
+	struct ata_port *ap = ata_is_host_link(link) ? link->ap : NULL;
+	struct ata_eh_context *ehc = &link->eh_context;
+	struct ata_device *dev, *link_dev = NULL, *lpm_dev = NULL;
+	enum ata_lpm_policy old_policy = link->lpm_policy;
+	bool no_dipm = link->ap->flags & ATA_FLAG_NO_DIPM;
+	unsigned int hints = ATA_LPM_EMPTY | ATA_LPM_HIPM;
+	unsigned int err_mask;
+	int rc;
+
+	/* if the link or host doesn't do LPM, noop */
+	if (!IS_ENABLED(CONFIG_SATA_HOST) ||
+	    (link->flags & ATA_LFLAG_NO_LPM) || (ap && !ap->ops->set_lpm))
+		return 0;
+
+	/*
+	 * DIPM is enabled only for MIN_POWER as some devices
+	 * misbehave when the host NACKs transition to SLUMBER.  Order
+	 * device and link configurations such that the host always
+	 * allows DIPM requests.
+	 */
+	ata_for_each_dev(dev, link, ENABLED) {
+		bool hipm = ata_id_has_hipm(dev->id);
+		bool dipm = ata_id_has_dipm(dev->id) && !no_dipm;
+
+		/* find the first enabled and LPM enabled devices */
+		if (!link_dev)
+			link_dev = dev;
+
+		if (!lpm_dev && (hipm || dipm))
+			lpm_dev = dev;
+
+		hints &= ~ATA_LPM_EMPTY;
+		if (!hipm)
+			hints &= ~ATA_LPM_HIPM;
+
+		/* disable DIPM before changing link config */
+		if (policy < ATA_LPM_MED_POWER_WITH_DIPM && dipm) {
+			err_mask = ata_dev_set_feature(dev,
+					SETFEATURES_SATA_DISABLE, SATA_DIPM);
+			if (err_mask && err_mask != AC_ERR_DEV) {
+				ata_dev_warn(dev,
+					     "failed to disable DIPM, Emask 0x%x\n",
+					     err_mask);
+				rc = -EIO;
+				goto fail;
+			}
+		}
+	}
+
+	if (ap) {
+		rc = ap->ops->set_lpm(link, policy, hints);
+		if (!rc && ap->slave_link)
+			rc = ap->ops->set_lpm(ap->slave_link, policy, hints);
+	} else
+		rc = sata_pmp_set_lpm(link, policy, hints);
+
+	/*
+	 * Attribute link config failure to the first (LPM) enabled
+	 * device on the link.
+	 */
+	if (rc) {
+		if (rc == -EOPNOTSUPP) {
+			link->flags |= ATA_LFLAG_NO_LPM;
+			return 0;
+		}
+		dev = lpm_dev ? lpm_dev : link_dev;
+		goto fail;
+	}
+
+	/*
+	 * Low level driver acked the transition.  Issue DIPM command
+	 * with the new policy set.
+	 */
+	link->lpm_policy = policy;
+	if (ap && ap->slave_link)
+		ap->slave_link->lpm_policy = policy;
+
+	/* host config updated, enable DIPM if transitioning to MIN_POWER */
+	ata_for_each_dev(dev, link, ENABLED) {
+		if (policy >= ATA_LPM_MED_POWER_WITH_DIPM && !no_dipm &&
+		    ata_id_has_dipm(dev->id)) {
+			err_mask = ata_dev_set_feature(dev,
+					SETFEATURES_SATA_ENABLE, SATA_DIPM);
+			if (err_mask && err_mask != AC_ERR_DEV) {
+				ata_dev_warn(dev,
+					"failed to enable DIPM, Emask 0x%x\n",
+					err_mask);
+				rc = -EIO;
+				goto fail;
+			}
+		}
+	}
+
+	link->last_lpm_change = jiffies;
+	link->flags |= ATA_LFLAG_CHANGED;
+
+	return 0;
+
+fail:
+	/* restore the old policy */
+	link->lpm_policy = old_policy;
+	if (ap && ap->slave_link)
+		ap->slave_link->lpm_policy = old_policy;
+
+	/* if no device or only one more chance is left, disable LPM */
+	if (!dev || ehc->tries[dev->devno] <= 2) {
+		ata_link_warn(link, "disabling LPM on the link\n");
+		link->flags |= ATA_LFLAG_NO_LPM;
+	}
+	if (r_failed_dev)
+		*r_failed_dev = dev;
+	return rc;
+}
+
+int ata_link_nr_enabled(struct ata_link *link)
 {
 	struct ata_device *dev;
 	int cnt = 0;
@@ -3182,7 +3402,8 @@ static int ata_count_probe_trials_cb(struct ata_ering_entry *ent, void *void_arg
 	u64 now = get_jiffies_64();
 	int *trials = void_arg;
 
-	if (ent->timestamp < now - min(now, interval))
+	if ((ent->eflags & ATA_EFLAG_OLD_ER) ||
+	    (ent->timestamp < now - min(now, interval)))
 		return -1;
 
 	(*trials)++;
@@ -3205,6 +3426,16 @@ static int ata_eh_schedule_probe(struct ata_device *dev)
 	ehc->i.action |= ATA_EH_RESET;
 	ehc->saved_xfer_mode[dev->devno] = 0;
 	ehc->saved_ncq_enabled &= ~(1 << dev->devno);
+
+	/* the link maybe in a deep sleep, wake it up */
+	if (link->lpm_policy > ATA_LPM_MAX_POWER) {
+		if (ata_is_host_link(link))
+			link->ap->ops->set_lpm(link, ATA_LPM_MAX_POWER,
+					       ATA_LPM_EMPTY);
+		else
+			sata_pmp_set_lpm(link, ATA_LPM_MAX_POWER,
+					 ATA_LPM_EMPTY);
+	}
 
 	/* Record and count probe trials on the ering.  The specific
 	 * error mask used is irrelevant.  Because a successful device
@@ -3242,9 +3473,11 @@ static int ata_eh_handle_dev_fail(struct ata_device *dev, int err)
 	case -ENODEV:
 		/* device missing or wrong IDENTIFY data, schedule probing */
 		ehc->i.probe_mask |= (1 << dev->devno);
+		/* fall through */
 	case -EINVAL:
 		/* give it just one more chance */
 		ehc->tries[dev->devno] = min(ehc->tries[dev->devno], 1);
+		/* fall through */
 	case -EIO:
 		if (ehc->tries[dev->devno] == 1) {
 			/* This is the last chance, better to slow
@@ -3307,8 +3540,7 @@ int ata_eh_recover(struct ata_port *ap, ata_prereset_fn_t prereset,
 {
 	struct ata_link *link;
 	struct ata_device *dev;
-	int nr_failed_devs;
-	int rc;
+	int rc, nr_fails;
 	unsigned long flags, deadline;
 
 	DPRINTK("ENTER\n");
@@ -3349,7 +3581,6 @@ int ata_eh_recover(struct ata_port *ap, ata_prereset_fn_t prereset,
 
  retry:
 	rc = 0;
-	nr_failed_devs = 0;
 
 	/* if UNLOADING, finish immediately */
 	if (ap->pflags & ATA_PFLAG_UNLOADING)
@@ -3377,8 +3608,7 @@ int ata_eh_recover(struct ata_port *ap, ata_prereset_fn_t prereset,
 		rc = ata_eh_reset(link, ata_link_nr_vacant(link),
 				  prereset, softreset, hardreset, postreset);
 		if (rc) {
-			ata_link_printk(link, KERN_ERR,
-					"reset failed, giving up\n");
+			ata_link_err(link, "reset failed, giving up\n");
 			goto out;
 		}
 	}
@@ -3398,7 +3628,8 @@ int ata_eh_recover(struct ata_port *ap, ata_prereset_fn_t prereset,
 				struct ata_eh_context *ehc = &link->eh_context;
 				unsigned long tmp;
 
-				if (dev->class != ATA_DEV_ATA)
+				if (dev->class != ATA_DEV_ATA &&
+				    dev->class != ATA_DEV_ZAC)
 					continue;
 				if (!(ehc->i.dev_action[dev->devno] &
 				      ATA_EH_PARK))
@@ -3419,8 +3650,10 @@ int ata_eh_recover(struct ata_port *ap, ata_prereset_fn_t prereset,
 		if (time_before_eq(deadline, now))
 			break;
 
+		ata_eh_release(ap);
 		deadline = wait_for_completion_timeout(&ap->park_req_pending,
 						       deadline - now);
+		ata_eh_acquire(ap);
 	} while (deadline);
 	ata_for_each_link(link, ap, EDGE) {
 		ata_for_each_dev(dev, link, ALL) {
@@ -3434,13 +3667,17 @@ int ata_eh_recover(struct ata_port *ap, ata_prereset_fn_t prereset,
 	}
 
 	/* the rest */
-	ata_for_each_link(link, ap, EDGE) {
+	nr_fails = 0;
+	ata_for_each_link(link, ap, PMP_FIRST) {
 		struct ata_eh_context *ehc = &link->eh_context;
+
+		if (sata_pmp_attached(ap) && ata_is_host_link(link))
+			goto config_lpm;
 
 		/* revalidate existing devices and attach new ones */
 		rc = ata_eh_revalidate_and_attach(link, &dev);
 		if (rc)
-			goto dev_fail;
+			goto rest_fail;
 
 		/* if PMP got attached, return, pmp EH will take care of it */
 		if (link->device->class == ATA_DEV_PMP) {
@@ -3452,7 +3689,7 @@ int ata_eh_recover(struct ata_port *ap, ata_prereset_fn_t prereset,
 		if (ehc->i.flags & ATA_EHI_SETMODE) {
 			rc = ata_set_mode(link, &dev);
 			if (rc)
-				goto dev_fail;
+				goto rest_fail;
 			ehc->i.flags &= ~ATA_EHI_SETMODE;
 		}
 
@@ -3465,22 +3702,38 @@ int ata_eh_recover(struct ata_port *ap, ata_prereset_fn_t prereset,
 					continue;
 				rc = atapi_eh_clear_ua(dev);
 				if (rc)
-					goto dev_fail;
+					goto rest_fail;
+				if (zpodd_dev_enabled(dev))
+					zpodd_post_poweron(dev);
 			}
 		}
 
+		/* retry flush if necessary */
+		ata_for_each_dev(dev, link, ALL) {
+			if (dev->class != ATA_DEV_ATA &&
+			    dev->class != ATA_DEV_ZAC)
+				continue;
+			rc = ata_eh_maybe_retry_flush(dev);
+			if (rc)
+				goto rest_fail;
+		}
+
+	config_lpm:
 		/* configure link power saving */
-		if (ehc->i.action & ATA_EH_LPM)
-			ata_for_each_dev(dev, link, ALL)
-				ata_dev_enable_pm(dev, ap->pm_policy);
+		if (link->lpm_policy != ap->target_lpm_policy) {
+			rc = ata_eh_set_lpm(link, ap->target_lpm_policy, &dev);
+			if (rc)
+				goto rest_fail;
+		}
 
 		/* this link is okay now */
 		ehc->i.flags = 0;
 		continue;
 
-dev_fail:
-		nr_failed_devs++;
-		ata_eh_handle_dev_fail(dev, rc);
+	rest_fail:
+		nr_fails++;
+		if (dev)
+			ata_eh_handle_dev_fail(dev, rc);
 
 		if (ap->pflags & ATA_PFLAG_FROZEN) {
 			/* PMP reset requires working host port.
@@ -3492,7 +3745,7 @@ dev_fail:
 		}
 	}
 
-	if (nr_failed_devs)
+	if (nr_fails)
 		goto retry;
 
  out:
@@ -3515,12 +3768,11 @@ dev_fail:
  */
 void ata_eh_finish(struct ata_port *ap)
 {
+	struct ata_queued_cmd *qc;
 	int tag;
 
 	/* retry or finish qcs */
-	for (tag = 0; tag < ATA_MAX_QUEUE; tag++) {
-		struct ata_queued_cmd *qc = __ata_qc_from_tag(ap, tag);
-
+	ata_qc_for_each_raw(ap, qc, tag) {
 		if (!(qc->flags & ATA_QCFLAG_FAILED))
 			continue;
 
@@ -3598,11 +3850,12 @@ void ata_std_error_handler(struct ata_port *ap)
 	ata_reset_fn_t hardreset = ops->hardreset;
 
 	/* ignore built-in hardreset if SCR access is not available */
-	if (ata_is_builtin_hardreset(hardreset) && !sata_scr_valid(&ap->link))
+	if (hardreset == sata_std_hardreset && !sata_scr_valid(&ap->link))
 		hardreset = NULL;
 
 	ata_do_eh(ap, ops->prereset, ops->softreset, hardreset, ops->postreset);
 }
+EXPORT_SYMBOL_GPL(ata_std_error_handler);
 
 #ifdef CONFIG_PM
 /**
@@ -3618,17 +3871,30 @@ static void ata_eh_handle_port_suspend(struct ata_port *ap)
 {
 	unsigned long flags;
 	int rc = 0;
+	struct ata_device *dev;
 
 	/* are we suspending? */
 	spin_lock_irqsave(ap->lock, flags);
 	if (!(ap->pflags & ATA_PFLAG_PM_PENDING) ||
-	    ap->pm_mesg.event == PM_EVENT_ON) {
+	    ap->pm_mesg.event & PM_EVENT_RESUME) {
 		spin_unlock_irqrestore(ap->lock, flags);
 		return;
 	}
 	spin_unlock_irqrestore(ap->lock, flags);
 
 	WARN_ON(ap->pflags & ATA_PFLAG_SUSPENDED);
+
+	/*
+	 * If we have a ZPODD attached, check its zero
+	 * power ready status before the port is frozen.
+	 * Only needed for runtime suspend.
+	 */
+	if (PMSG_IS_AUTO(ap->pm_mesg)) {
+		ata_for_each_dev(dev, &ap->link, ENABLED) {
+			if (zpodd_dev_enabled(dev))
+				zpodd_on_suspend(dev);
+		}
+	}
 
 	/* tell ACPI we're suspending */
 	rc = ata_acpi_on_suspend(ap);
@@ -3641,9 +3907,9 @@ static void ata_eh_handle_port_suspend(struct ata_port *ap)
 	if (ap->ops->port_suspend)
 		rc = ap->ops->port_suspend(ap, ap->pm_mesg);
 
-	ata_acpi_set_state(ap, PMSG_SUSPEND);
+	ata_acpi_set_state(ap, ap->pm_mesg);
  out:
-	/* report result */
+	/* update the flags */
 	spin_lock_irqsave(ap->lock, flags);
 
 	ap->pflags &= ~ATA_PFLAG_PM_PENDING;
@@ -3651,11 +3917,6 @@ static void ata_eh_handle_port_suspend(struct ata_port *ap)
 		ap->pflags |= ATA_PFLAG_SUSPENDED;
 	else if (ap->pflags & ATA_PFLAG_FROZEN)
 		ata_port_schedule_eh(ap);
-
-	if (ap->pm_result) {
-		*ap->pm_result = rc;
-		ap->pm_result = NULL;
-	}
 
 	spin_unlock_irqrestore(ap->lock, flags);
 
@@ -3676,12 +3937,11 @@ static void ata_eh_handle_port_resume(struct ata_port *ap)
 	struct ata_link *link;
 	struct ata_device *dev;
 	unsigned long flags;
-	int rc = 0;
 
 	/* are we resuming? */
 	spin_lock_irqsave(ap->lock, flags);
 	if (!(ap->pflags & ATA_PFLAG_PM_PENDING) ||
-	    ap->pm_mesg.event != PM_EVENT_ON) {
+	    !(ap->pm_mesg.event & PM_EVENT_RESUME)) {
 		spin_unlock_irqrestore(ap->lock, flags);
 		return;
 	}
@@ -3700,21 +3960,17 @@ static void ata_eh_handle_port_resume(struct ata_port *ap)
 		ata_for_each_dev(dev, link, ALL)
 			ata_ering_clear(&dev->ering);
 
-	ata_acpi_set_state(ap, PMSG_ON);
+	ata_acpi_set_state(ap, ap->pm_mesg);
 
 	if (ap->ops->port_resume)
-		rc = ap->ops->port_resume(ap);
+		ap->ops->port_resume(ap);
 
 	/* tell ACPI that we're resuming */
 	ata_acpi_on_resume(ap);
 
-	/* report result */
+	/* update the flags */
 	spin_lock_irqsave(ap->lock, flags);
 	ap->pflags &= ~(ATA_PFLAG_PM_PENDING | ATA_PFLAG_SUSPENDED);
-	if (ap->pm_result) {
-		*ap->pm_result = rc;
-		ap->pm_result = NULL;
-	}
 	spin_unlock_irqrestore(ap->lock, flags);
 }
 #endif /* CONFIG_PM */

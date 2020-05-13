@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Copyright (c) by Jaroslav Kysela <perex@perex.cz>
  *  Routines for control of CS4231(A)/CS4232/InterWave & compatible chips
@@ -7,21 +8,6 @@
  *       Yamaha OPL3-SA3 chip
  *     - CS4231 (GUS MAX) - still trouble with occasional noises
  *			  - broken initialization?
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
- *
  */
 
 #include <linux/delay.h>
@@ -30,12 +16,13 @@
 #include <linux/interrupt.h>
 #include <linux/slab.h>
 #include <linux/ioport.h>
+#include <linux/module.h>
+#include <linux/io.h>
 #include <sound/core.h>
 #include <sound/wss.h>
 #include <sound/pcm_params.h>
 #include <sound/tlv.h>
 
-#include <asm/io.h>
 #include <asm/dma.h>
 #include <asm/irq.h>
 
@@ -51,7 +38,7 @@ MODULE_LICENSE("GPL");
  *  Some variables
  */
 
-static unsigned char freq_bits[14] = {
+static const unsigned char freq_bits[14] = {
 	/* 5510 */	0x00 | CS4231_XTAL2,
 	/* 6620 */	0x0E | CS4231_XTAL2,
 	/* 8000 */	0x00 | CS4231_XTAL1,
@@ -68,12 +55,12 @@ static unsigned char freq_bits[14] = {
 	/* 48000 */	0x0C | CS4231_XTAL1
 };
 
-static unsigned int rates[14] = {
+static const unsigned int rates[14] = {
 	5510, 6620, 8000, 9600, 11025, 16000, 18900, 22050,
 	27042, 32000, 33075, 37800, 44100, 48000
 };
 
-static struct snd_pcm_hw_constraint_list hw_constraints_rates = {
+static const struct snd_pcm_hw_constraint_list hw_constraints_rates = {
 	.count = ARRAY_SIZE(rates),
 	.list = rates,
 	.mask = 0,
@@ -85,7 +72,7 @@ static int snd_wss_xrate(struct snd_pcm_runtime *runtime)
 					  &hw_constraints_rates);
 }
 
-static unsigned char snd_wss_original_image[32] =
+static const unsigned char snd_wss_original_image[32] =
 {
 	0x00,			/* 00/00 - lic */
 	0x00,			/* 01/01 - ric */
@@ -121,7 +108,7 @@ static unsigned char snd_wss_original_image[32] =
 	0x00,			/* 1f/31 - cbrl */
 };
 
-static unsigned char snd_opti93x_original_image[32] =
+static const unsigned char snd_opti93x_original_image[32] =
 {
 	0x00,		/* 00/00 - l_mixout_outctrl */
 	0x00,		/* 01/01 - r_mixout_outctrl */
@@ -424,7 +411,7 @@ void snd_wss_mce_down(struct snd_wss *chip)
 
 	/*
 	 * Wait for (possible -- during init auto-calibration may not be set)
-	 * calibration process to start. Needs upto 5 sample periods on AD1848
+	 * calibration process to start. Needs up to 5 sample periods on AD1848
 	 * which at the slowest possible rate of 5.5125 kHz means 907 us.
 	 */
 	msleep(1);
@@ -540,7 +527,7 @@ static unsigned char snd_wss_get_rate(unsigned int rate)
 }
 
 static unsigned char snd_wss_get_format(struct snd_wss *chip,
-					int format,
+					snd_pcm_format_t format,
 					int channels)
 {
 	unsigned char rformat;
@@ -974,7 +961,7 @@ static int snd_wss_timer_close(struct snd_timer *timer)
 	return 0;
 }
 
-static struct snd_timer_hardware snd_wss_timer_table =
+static const struct snd_timer_hardware snd_wss_timer_table =
 {
 	.flags =	SNDRV_TIMER_HW_AUTO,
 	.resolution =	9945,
@@ -995,20 +982,12 @@ static int snd_wss_playback_hw_params(struct snd_pcm_substream *substream,
 {
 	struct snd_wss *chip = snd_pcm_substream_chip(substream);
 	unsigned char new_pdfr;
-	int err;
 
-	if ((err = snd_pcm_lib_malloc_pages(substream, params_buffer_bytes(hw_params))) < 0)
-		return err;
 	new_pdfr = snd_wss_get_format(chip, params_format(hw_params),
 				params_channels(hw_params)) |
 				snd_wss_get_rate(params_rate(hw_params));
 	chip->set_playback_format(chip, hw_params, new_pdfr);
 	return 0;
-}
-
-static int snd_wss_playback_hw_free(struct snd_pcm_substream *substream)
-{
-	return snd_pcm_lib_free_pages(substream);
 }
 
 static int snd_wss_playback_prepare(struct snd_pcm_substream *substream)
@@ -1038,20 +1017,12 @@ static int snd_wss_capture_hw_params(struct snd_pcm_substream *substream,
 {
 	struct snd_wss *chip = snd_pcm_substream_chip(substream);
 	unsigned char new_cdfr;
-	int err;
 
-	if ((err = snd_pcm_lib_malloc_pages(substream, params_buffer_bytes(hw_params))) < 0)
-		return err;
 	new_cdfr = snd_wss_get_format(chip, params_format(hw_params),
 			   params_channels(hw_params)) |
 			   snd_wss_get_rate(params_rate(hw_params));
 	chip->set_capture_format(chip, hw_params, new_cdfr);
 	return 0;
-}
-
-static int snd_wss_capture_hw_free(struct snd_pcm_substream *substream)
-{
-	return snd_pcm_lib_free_pages(substream);
 }
 
 static int snd_wss_capture_prepare(struct snd_pcm_substream *substream)
@@ -1451,11 +1422,10 @@ static int snd_wss_probe(struct snd_wss *chip)
 
  */
 
-static struct snd_pcm_hardware snd_wss_playback =
+static const struct snd_pcm_hardware snd_wss_playback =
 {
 	.info =			(SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_INTERLEAVED |
 				 SNDRV_PCM_INFO_MMAP_VALID |
-				 SNDRV_PCM_INFO_RESUME |
 				 SNDRV_PCM_INFO_SYNC_START),
 	.formats =		(SNDRV_PCM_FMTBIT_MU_LAW | SNDRV_PCM_FMTBIT_A_LAW | SNDRV_PCM_FMTBIT_IMA_ADPCM |
 				 SNDRV_PCM_FMTBIT_U8 | SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S16_BE),
@@ -1472,7 +1442,7 @@ static struct snd_pcm_hardware snd_wss_playback =
 	.fifo_size =		0,
 };
 
-static struct snd_pcm_hardware snd_wss_capture =
+static const struct snd_pcm_hardware snd_wss_capture =
 {
 	.info =			(SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_INTERLEAVED |
 				 SNDRV_PCM_INFO_MMAP_VALID |
@@ -1531,7 +1501,6 @@ static int snd_wss_playback_open(struct snd_pcm_substream *substream)
 	if (err < 0) {
 		if (chip->release_dma)
 			chip->release_dma(chip, chip->dma_private_data, chip->dma1);
-		snd_free_pages(runtime->dma_area, runtime->dma_bytes);
 		return err;
 	}
 	chip->playback_substream = substream;
@@ -1572,7 +1541,6 @@ static int snd_wss_capture_open(struct snd_pcm_substream *substream)
 	if (err < 0) {
 		if (chip->release_dma)
 			chip->release_dma(chip, chip->dma_private_data, chip->dma2);
-		snd_free_pages(runtime->dma_area, runtime->dma_bytes);
 		return err;
 	}
 	chip->capture_substream = substream;
@@ -1627,7 +1595,6 @@ static void snd_wss_suspend(struct snd_wss *chip)
 	int reg;
 	unsigned long flags;
 
-	snd_pcm_suspend_all(chip->pcm);
 	spin_lock_irqsave(&chip->reg_lock, flags);
 	for (reg = 0; reg < 32; reg++)
 		chip->image[reg] = snd_wss_in(chip, reg);
@@ -1656,6 +1623,10 @@ static void snd_wss_resume(struct snd_wss *chip)
 			break;
 		}
 	}
+	/* Yamaha needs this to resume properly */
+	if (chip->hardware == WSS_HW_OPL3SA2)
+		snd_wss_out(chip, CS4231_PLAYBK_FORMAT,
+			    chip->image[CS4231_PLAYBK_FORMAT]);
 	spin_unlock_irqrestore(&chip->reg_lock, flags);
 #if 1
 	snd_wss_mce_down(chip);
@@ -1682,7 +1653,7 @@ static void snd_wss_resume(struct snd_wss *chip)
 }
 #endif /* CONFIG_PM */
 
-int snd_wss_free(struct snd_wss *chip)
+static int snd_wss_free(struct snd_wss *chip)
 {
 	release_and_free_resource(chip->res_port);
 	release_and_free_resource(chip->res_cport);
@@ -1705,7 +1676,6 @@ int snd_wss_free(struct snd_wss *chip)
 	kfree(chip);
 	return 0;
 }
-EXPORT_SYMBOL(snd_wss_free);
 
 static int snd_wss_dev_free(struct snd_device *device)
 {
@@ -1802,7 +1772,7 @@ int snd_wss_create(struct snd_card *card,
 		      unsigned short hwshare,
 		      struct snd_wss **rchip)
 {
-	static struct snd_device_ops ops = {
+	static const struct snd_device_ops ops = {
 		.dev_free =	snd_wss_dev_free,
 	};
 	struct snd_wss *chip;
@@ -1834,13 +1804,14 @@ int snd_wss_create(struct snd_card *card,
 	}
 	chip->cport = cport;
 	if (!(hwshare & WSS_HWSHARE_IRQ))
-		if (request_irq(irq, snd_wss_interrupt, IRQF_DISABLED,
+		if (request_irq(irq, snd_wss_interrupt, 0,
 				"WSS", (void *) chip)) {
 			snd_printk(KERN_ERR "wss: can't grab IRQ %d\n", irq);
 			snd_wss_free(chip);
 			return -EBUSY;
 		}
 	chip->irq = irq;
+	card->sync_irq = chip->irq;
 	if (!(hwshare & WSS_HWSHARE_DMA1) && request_dma(dma1, "WSS - 1")) {
 		snd_printk(KERN_ERR "wss: can't grab DMA1 %d\n", dma1);
 		snd_wss_free(chip);
@@ -1898,29 +1869,25 @@ int snd_wss_create(struct snd_card *card,
 }
 EXPORT_SYMBOL(snd_wss_create);
 
-static struct snd_pcm_ops snd_wss_playback_ops = {
+static const struct snd_pcm_ops snd_wss_playback_ops = {
 	.open =		snd_wss_playback_open,
 	.close =	snd_wss_playback_close,
-	.ioctl =	snd_pcm_lib_ioctl,
 	.hw_params =	snd_wss_playback_hw_params,
-	.hw_free =	snd_wss_playback_hw_free,
 	.prepare =	snd_wss_playback_prepare,
 	.trigger =	snd_wss_trigger,
 	.pointer =	snd_wss_playback_pointer,
 };
 
-static struct snd_pcm_ops snd_wss_capture_ops = {
+static const struct snd_pcm_ops snd_wss_capture_ops = {
 	.open =		snd_wss_capture_open,
 	.close =	snd_wss_capture_close,
-	.ioctl =	snd_pcm_lib_ioctl,
 	.hw_params =	snd_wss_capture_hw_params,
-	.hw_free =	snd_wss_capture_hw_free,
 	.prepare =	snd_wss_capture_prepare,
 	.trigger =	snd_wss_trigger,
 	.pointer =	snd_wss_capture_pointer,
 };
 
-int snd_wss_pcm(struct snd_wss *chip, int device, struct snd_pcm **rpcm)
+int snd_wss_pcm(struct snd_wss *chip, int device)
 {
 	struct snd_pcm *pcm;
 	int err;
@@ -1941,13 +1908,10 @@ int snd_wss_pcm(struct snd_wss *chip, int device, struct snd_pcm **rpcm)
 		pcm->info_flags |= SNDRV_PCM_INFO_JOINT_DUPLEX;
 	strcpy(pcm->name, snd_wss_chip_id(chip));
 
-	snd_pcm_lib_preallocate_pages_for_all(pcm, SNDRV_DMA_TYPE_DEV,
-					      snd_dma_isa_data(),
-					      64*1024, chip->dma1 > 3 || chip->dma2 > 3 ? 128*1024 : 64*1024);
+	snd_pcm_set_managed_buffer_all(pcm, SNDRV_DMA_TYPE_DEV, chip->card->dev,
+				       64*1024, chip->dma1 > 3 || chip->dma2 > 3 ? 128*1024 : 64*1024);
 
 	chip->pcm = pcm;
-	if (rpcm)
-		*rpcm = pcm;
 	return 0;
 }
 EXPORT_SYMBOL(snd_wss_pcm);
@@ -1958,7 +1922,7 @@ static void snd_wss_timer_free(struct snd_timer *timer)
 	chip->timer = NULL;
 }
 
-int snd_wss_timer(struct snd_wss *chip, int device, struct snd_timer **rtimer)
+int snd_wss_timer(struct snd_wss *chip, int device)
 {
 	struct snd_timer *timer;
 	struct snd_timer_id tid;
@@ -1977,8 +1941,6 @@ int snd_wss_timer(struct snd_wss *chip, int device, struct snd_timer **rtimer)
 	timer->private_free = snd_wss_timer_free;
 	timer->hw = snd_wss_timer_table;
 	chip->timer = timer;
-	if (rtimer)
-		*rtimer = timer;
 	return 0;
 }
 EXPORT_SYMBOL(snd_wss_timer);
@@ -1990,37 +1952,32 @@ EXPORT_SYMBOL(snd_wss_timer);
 static int snd_wss_info_mux(struct snd_kcontrol *kcontrol,
 			    struct snd_ctl_elem_info *uinfo)
 {
-	static char *texts[4] = {
+	static const char * const texts[4] = {
 		"Line", "Aux", "Mic", "Mix"
 	};
-	static char *opl3sa_texts[4] = {
+	static const char * const opl3sa_texts[4] = {
 		"Line", "CD", "Mic", "Mix"
 	};
-	static char *gusmax_texts[4] = {
+	static const char * const gusmax_texts[4] = {
 		"Line", "Synth", "Mic", "Mix"
 	};
-	char **ptexts = texts;
+	const char * const *ptexts = texts;
 	struct snd_wss *chip = snd_kcontrol_chip(kcontrol);
 
 	if (snd_BUG_ON(!chip->card))
 		return -EINVAL;
-	uinfo->type = SNDRV_CTL_ELEM_TYPE_ENUMERATED;
-	uinfo->count = 2;
-	uinfo->value.enumerated.items = 4;
-	if (uinfo->value.enumerated.item > 3)
-		uinfo->value.enumerated.item = 3;
 	if (!strcmp(chip->card->driver, "GUS MAX"))
 		ptexts = gusmax_texts;
 	switch (chip->hardware) {
 	case WSS_HW_INTERWAVE:
 		ptexts = gusmax_texts;
 		break;
+	case WSS_HW_OPTI93X:
 	case WSS_HW_OPL3SA2:
 		ptexts = opl3sa_texts;
 		break;
 	}
-	strcpy(uinfo->value.enumerated.name, ptexts[uinfo->value.enumerated.item]);
-	return 0;
+	return snd_ctl_enum_info(uinfo, 2, 4, ptexts);
 }
 
 static int snd_wss_get_mux(struct snd_kcontrol *kcontrol,
@@ -2198,119 +2155,53 @@ EXPORT_SYMBOL(snd_wss_put_double);
 static const DECLARE_TLV_DB_SCALE(db_scale_6bit, -9450, 150, 0);
 static const DECLARE_TLV_DB_SCALE(db_scale_5bit_12db_max, -3450, 150, 0);
 static const DECLARE_TLV_DB_SCALE(db_scale_rec_gain, 0, 150, 0);
+static const DECLARE_TLV_DB_SCALE(db_scale_4bit, -4500, 300, 0);
 
-static struct snd_kcontrol_new snd_ad1848_controls[] = {
-WSS_DOUBLE("PCM Playback Switch", 0, CS4231_LEFT_OUTPUT, CS4231_RIGHT_OUTPUT,
-	   7, 7, 1, 1),
+static const struct snd_kcontrol_new snd_wss_controls[] = {
+WSS_DOUBLE("PCM Playback Switch", 0,
+		CS4231_LEFT_OUTPUT, CS4231_RIGHT_OUTPUT, 7, 7, 1, 1),
 WSS_DOUBLE_TLV("PCM Playback Volume", 0,
-	       CS4231_LEFT_OUTPUT, CS4231_RIGHT_OUTPUT, 0, 0, 63, 1,
-	       db_scale_6bit),
+		CS4231_LEFT_OUTPUT, CS4231_RIGHT_OUTPUT, 0, 0, 63, 1,
+		db_scale_6bit),
 WSS_DOUBLE("Aux Playback Switch", 0,
-	   CS4231_AUX1_LEFT_INPUT, CS4231_AUX1_RIGHT_INPUT, 7, 7, 1, 1),
+		CS4231_AUX1_LEFT_INPUT, CS4231_AUX1_RIGHT_INPUT, 7, 7, 1, 1),
 WSS_DOUBLE_TLV("Aux Playback Volume", 0,
-	       CS4231_AUX1_LEFT_INPUT, CS4231_AUX1_RIGHT_INPUT, 0, 0, 31, 1,
-	       db_scale_5bit_12db_max),
+		CS4231_AUX1_LEFT_INPUT, CS4231_AUX1_RIGHT_INPUT, 0, 0, 31, 1,
+		db_scale_5bit_12db_max),
 WSS_DOUBLE("Aux Playback Switch", 1,
-	   CS4231_AUX2_LEFT_INPUT, CS4231_AUX2_RIGHT_INPUT, 7, 7, 1, 1),
+		CS4231_AUX2_LEFT_INPUT, CS4231_AUX2_RIGHT_INPUT, 7, 7, 1, 1),
 WSS_DOUBLE_TLV("Aux Playback Volume", 1,
-	       CS4231_AUX2_LEFT_INPUT, CS4231_AUX2_RIGHT_INPUT, 0, 0, 31, 1,
-	       db_scale_5bit_12db_max),
+		CS4231_AUX2_LEFT_INPUT, CS4231_AUX2_RIGHT_INPUT, 0, 0, 31, 1,
+		db_scale_5bit_12db_max),
 WSS_DOUBLE_TLV("Capture Volume", 0, CS4231_LEFT_INPUT, CS4231_RIGHT_INPUT,
 		0, 0, 15, 0, db_scale_rec_gain),
 {
-	.name = "Capture Source",
-	.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
-	.info = snd_wss_info_mux,
-	.get = snd_wss_get_mux,
-	.put = snd_wss_put_mux,
-},
-WSS_SINGLE("Loopback Capture Switch", 0, CS4231_LOOPBACK, 0, 1, 0),
-WSS_SINGLE_TLV("Loopback Capture Volume", 0, CS4231_LOOPBACK, 1, 63, 0,
-	       db_scale_6bit),
-};
-
-static struct snd_kcontrol_new snd_wss_controls[] = {
-WSS_DOUBLE("PCM Playback Switch", 0,
-		CS4231_LEFT_OUTPUT, CS4231_RIGHT_OUTPUT, 7, 7, 1, 1),
-WSS_DOUBLE("PCM Playback Volume", 0,
-		CS4231_LEFT_OUTPUT, CS4231_RIGHT_OUTPUT, 0, 0, 63, 1),
-WSS_DOUBLE("Line Playback Switch", 0,
-		CS4231_LEFT_LINE_IN, CS4231_RIGHT_LINE_IN, 7, 7, 1, 1),
-WSS_DOUBLE("Line Playback Volume", 0,
-		CS4231_LEFT_LINE_IN, CS4231_RIGHT_LINE_IN, 0, 0, 31, 1),
-WSS_DOUBLE("Aux Playback Switch", 0,
-		CS4231_AUX1_LEFT_INPUT, CS4231_AUX1_RIGHT_INPUT, 7, 7, 1, 1),
-WSS_DOUBLE("Aux Playback Volume", 0,
-		CS4231_AUX1_LEFT_INPUT, CS4231_AUX1_RIGHT_INPUT, 0, 0, 31, 1),
-WSS_DOUBLE("Aux Playback Switch", 1,
-		CS4231_AUX2_LEFT_INPUT, CS4231_AUX2_RIGHT_INPUT, 7, 7, 1, 1),
-WSS_DOUBLE("Aux Playback Volume", 1,
-		CS4231_AUX2_LEFT_INPUT, CS4231_AUX2_RIGHT_INPUT, 0, 0, 31, 1),
-WSS_SINGLE("Mono Playback Switch", 0,
-		CS4231_MONO_CTRL, 7, 1, 1),
-WSS_SINGLE("Mono Playback Volume", 0,
-		CS4231_MONO_CTRL, 0, 15, 1),
-WSS_SINGLE("Mono Output Playback Switch", 0,
-		CS4231_MONO_CTRL, 6, 1, 1),
-WSS_SINGLE("Mono Output Playback Bypass", 0,
-		CS4231_MONO_CTRL, 5, 1, 0),
-WSS_DOUBLE("Capture Volume", 0,
-		CS4231_LEFT_INPUT, CS4231_RIGHT_INPUT, 0, 0, 15, 0),
-{
 	.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 	.name = "Capture Source",
 	.info = snd_wss_info_mux,
 	.get = snd_wss_get_mux,
 	.put = snd_wss_put_mux,
 },
-WSS_DOUBLE("Mic Boost", 0,
+WSS_DOUBLE("Mic Boost (+20dB)", 0,
 		CS4231_LEFT_INPUT, CS4231_RIGHT_INPUT, 5, 5, 1, 0),
 WSS_SINGLE("Loopback Capture Switch", 0,
 		CS4231_LOOPBACK, 0, 1, 0),
-WSS_SINGLE("Loopback Capture Volume", 0,
-		CS4231_LOOPBACK, 2, 63, 1)
-};
-
-static struct snd_kcontrol_new snd_opti93x_controls[] = {
-WSS_DOUBLE("Master Playback Switch", 0,
-		OPTi93X_OUT_LEFT, OPTi93X_OUT_RIGHT, 7, 7, 1, 1),
-WSS_DOUBLE("Master Playback Volume", 0,
-		OPTi93X_OUT_LEFT, OPTi93X_OUT_RIGHT, 1, 1, 31, 1),
-WSS_DOUBLE("PCM Playback Switch", 0,
-		CS4231_LEFT_OUTPUT, CS4231_RIGHT_OUTPUT, 7, 7, 1, 1),
-WSS_DOUBLE("PCM Playback Volume", 0,
-		CS4231_LEFT_OUTPUT, CS4231_RIGHT_OUTPUT, 0, 0, 31, 1),
-WSS_DOUBLE("FM Playback Switch", 0,
-		CS4231_AUX2_LEFT_INPUT, CS4231_AUX2_RIGHT_INPUT, 7, 7, 1, 1),
-WSS_DOUBLE("FM Playback Volume", 0,
-		CS4231_AUX2_LEFT_INPUT, CS4231_AUX2_RIGHT_INPUT, 1, 1, 15, 1),
+WSS_SINGLE_TLV("Loopback Capture Volume", 0, CS4231_LOOPBACK, 2, 63, 1,
+		db_scale_6bit),
 WSS_DOUBLE("Line Playback Switch", 0,
 		CS4231_LEFT_LINE_IN, CS4231_RIGHT_LINE_IN, 7, 7, 1, 1),
-WSS_DOUBLE("Line Playback Volume", 0,
-		CS4231_LEFT_LINE_IN, CS4231_RIGHT_LINE_IN, 0, 0, 15, 1),
-WSS_DOUBLE("Mic Playback Switch", 0,
-		OPTi93X_MIC_LEFT_INPUT, OPTi93X_MIC_RIGHT_INPUT, 7, 7, 1, 1),
-WSS_DOUBLE("Mic Playback Volume", 0,
-		OPTi93X_MIC_LEFT_INPUT, OPTi93X_MIC_RIGHT_INPUT, 1, 1, 15, 1),
-WSS_DOUBLE("Mic Boost", 0,
-		CS4231_LEFT_INPUT, CS4231_RIGHT_INPUT, 5, 5, 1, 0),
-WSS_DOUBLE("CD Playback Switch", 0,
-		CS4231_AUX1_LEFT_INPUT, CS4231_AUX1_RIGHT_INPUT, 7, 7, 1, 1),
-WSS_DOUBLE("CD Playback Volume", 0,
-		CS4231_AUX1_LEFT_INPUT, CS4231_AUX1_RIGHT_INPUT, 1, 1, 15, 1),
-WSS_DOUBLE("Aux Playback Switch", 0,
-		OPTi931_AUX_LEFT_INPUT, OPTi931_AUX_RIGHT_INPUT, 7, 7, 1, 1),
-WSS_DOUBLE("Aux Playback Volume", 0,
-		OPTi931_AUX_LEFT_INPUT, OPTi931_AUX_RIGHT_INPUT, 1, 1, 15, 1),
-WSS_DOUBLE("Capture Volume", 0,
-		CS4231_LEFT_INPUT, CS4231_RIGHT_INPUT, 0, 0, 15, 0),
-{
-	.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
-	.name = "Capture Source",
-	.info = snd_wss_info_mux,
-	.get = snd_wss_get_mux,
-	.put = snd_wss_put_mux,
-}
+WSS_DOUBLE_TLV("Line Playback Volume", 0,
+		CS4231_LEFT_LINE_IN, CS4231_RIGHT_LINE_IN, 0, 0, 31, 1,
+		db_scale_5bit_12db_max),
+WSS_SINGLE("Beep Playback Switch", 0,
+		CS4231_MONO_CTRL, 7, 1, 1),
+WSS_SINGLE_TLV("Beep Playback Volume", 0,
+		CS4231_MONO_CTRL, 0, 15, 1,
+		db_scale_4bit),
+WSS_SINGLE("Mono Output Playback Switch", 0,
+		CS4231_MONO_CTRL, 6, 1, 1),
+WSS_SINGLE("Beep Bypass Playback Switch", 0,
+		CS4231_MONO_CTRL, 5, 1, 0),
 };
 
 int snd_wss_mixer(struct snd_wss *chip)
@@ -2318,6 +2209,7 @@ int snd_wss_mixer(struct snd_wss *chip)
 	struct snd_card *card;
 	unsigned int idx;
 	int err;
+	int count = ARRAY_SIZE(snd_wss_controls);
 
 	if (snd_BUG_ON(!chip || !chip->pcm))
 		return -EINVAL;
@@ -2326,30 +2218,20 @@ int snd_wss_mixer(struct snd_wss *chip)
 
 	strcpy(card->mixername, chip->pcm->name);
 
-	if (chip->hardware == WSS_HW_OPTI93X)
-		for (idx = 0; idx < ARRAY_SIZE(snd_opti93x_controls); idx++) {
-			err = snd_ctl_add(card,
-					snd_ctl_new1(&snd_opti93x_controls[idx],
-						     chip));
-			if (err < 0)
-				return err;
-		}
-	else if (chip->hardware & WSS_HW_AD1848_MASK)
-		for (idx = 0; idx < ARRAY_SIZE(snd_ad1848_controls); idx++) {
-			err = snd_ctl_add(card,
-					snd_ctl_new1(&snd_ad1848_controls[idx],
-						     chip));
-			if (err < 0)
-				return err;
-		}
-	else
-		for (idx = 0; idx < ARRAY_SIZE(snd_wss_controls); idx++) {
-			err = snd_ctl_add(card,
-					snd_ctl_new1(&snd_wss_controls[idx],
-						     chip));
-			if (err < 0)
-				return err;
-		}
+	/* Use only the first 11 entries on AD1848 */
+	if (chip->hardware & WSS_HW_AD1848_MASK)
+		count = 11;
+	/* There is no loopback on OPTI93X */
+	else if (chip->hardware == WSS_HW_OPTI93X)
+		count = 9;
+
+	for (idx = 0; idx < count; idx++) {
+		err = snd_ctl_add(card,
+				snd_ctl_new1(&snd_wss_controls[idx],
+					     chip));
+		if (err < 0)
+			return err;
+	}
 	return 0;
 }
 EXPORT_SYMBOL(snd_wss_mixer);
@@ -2360,19 +2242,3 @@ const struct snd_pcm_ops *snd_wss_get_pcm_ops(int direction)
 		&snd_wss_playback_ops : &snd_wss_capture_ops;
 }
 EXPORT_SYMBOL(snd_wss_get_pcm_ops);
-
-/*
- *  INIT part
- */
-
-static int __init alsa_wss_init(void)
-{
-	return 0;
-}
-
-static void __exit alsa_wss_exit(void)
-{
-}
-
-module_init(alsa_wss_init);
-module_exit(alsa_wss_exit);

@@ -1,5 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #undef TRACE_SYSTEM
-#define TRACE_SYSTEM syscalls
+#define TRACE_SYSTEM raw_syscalls
+#undef TRACE_INCLUDE_FILE
+#define TRACE_INCLUDE_FILE syscalls
 
 #if !defined(_TRACE_EVENTS_SYSCALLS_H) || defined(TRACE_HEADER_MULTI_READ)
 #define _TRACE_EVENTS_SYSCALLS_H
@@ -11,9 +14,6 @@
 
 
 #ifdef CONFIG_HAVE_SYSCALL_TRACEPOINTS
-
-extern void syscall_regfunc(void);
-extern void syscall_unregfunc(void);
 
 TRACE_EVENT_FN(sys_enter,
 
@@ -28,7 +28,7 @@ TRACE_EVENT_FN(sys_enter,
 
 	TP_fast_assign(
 		__entry->id	= id;
-		syscall_get_arguments(current, regs, 0, 6, __entry->args);
+		syscall_get_arguments(current, regs, __entry->args);
 	),
 
 	TP_printk("NR %ld (%lx, %lx, %lx, %lx, %lx, %lx)",
@@ -38,6 +38,8 @@ TRACE_EVENT_FN(sys_enter,
 
 	syscall_regfunc, syscall_unregfunc
 );
+
+TRACE_EVENT_FLAGS(sys_enter, TRACE_EVENT_FL_CAP_ANY)
 
 TRACE_EVENT_FN(sys_exit,
 
@@ -60,6 +62,8 @@ TRACE_EVENT_FN(sys_exit,
 
 	syscall_regfunc, syscall_unregfunc
 );
+
+TRACE_EVENT_FLAGS(sys_exit, TRACE_EVENT_FL_CAP_ANY)
 
 #endif /* CONFIG_HAVE_SYSCALL_TRACEPOINTS */
 

@@ -1,11 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0
 /* hvapi.c: Hypervisor API management.
  *
  * Copyright (C) 2007 David S. Miller <davem@davemloft.net>
  */
 #include <linux/kernel.h>
-#include <linux/module.h>
+#include <linux/export.h>
 #include <linux/init.h>
-#include <linux/slab.h>
 
 #include <asm/hypervisor.h>
 #include <asm/oplib.h>
@@ -29,17 +29,29 @@ static struct api_info api_table[] = {
 	{ .group = HV_GRP_CORE,		.flags = FLAG_PRE_API	},
 	{ .group = HV_GRP_INTR,					},
 	{ .group = HV_GRP_SOFT_STATE,				},
+	{ .group = HV_GRP_TM,					},
 	{ .group = HV_GRP_PCI,		.flags = FLAG_PRE_API	},
 	{ .group = HV_GRP_LDOM,					},
 	{ .group = HV_GRP_SVC_CHAN,	.flags = FLAG_PRE_API	},
 	{ .group = HV_GRP_NCS,		.flags = FLAG_PRE_API	},
 	{ .group = HV_GRP_RNG,					},
+	{ .group = HV_GRP_PBOOT,				},
+	{ .group = HV_GRP_TPM,					},
+	{ .group = HV_GRP_SDIO,					},
+	{ .group = HV_GRP_SDIO_ERR,				},
+	{ .group = HV_GRP_REBOOT_DATA,				},
+	{ .group = HV_GRP_ATU,		.flags = FLAG_PRE_API	},
+	{ .group = HV_GRP_DAX,					},
 	{ .group = HV_GRP_NIAG_PERF,	.flags = FLAG_PRE_API	},
 	{ .group = HV_GRP_FIRE_PERF,				},
 	{ .group = HV_GRP_N2_CPU,				},
 	{ .group = HV_GRP_NIU,					},
 	{ .group = HV_GRP_VF_CPU,				},
+	{ .group = HV_GRP_KT_CPU,				},
+	{ .group = HV_GRP_VT_CPU,				},
+	{ .group = HV_GRP_T5_CPU,				},
 	{ .group = HV_GRP_DIAG,		.flags = FLAG_PRE_API	},
+	{ .group = HV_GRP_M7_PERF,				},
 };
 
 static DEFINE_SPINLOCK(hvapi_lock);
@@ -179,7 +191,7 @@ void __init sun4v_hvapi_init(void)
 
 	group = HV_GRP_CORE;
 	major = 1;
-	minor = 1;
+	minor = 6;
 	if (sun4v_hvapi_register(group, major, &minor))
 		goto bad;
 
@@ -187,7 +199,7 @@ void __init sun4v_hvapi_init(void)
 
 bad:
 	prom_printf("HVAPI: Cannot register API group "
-		    "%lx with major(%u) minor(%u)\n",
+		    "%lx with major(%lu) minor(%lu)\n",
 		    group, major, minor);
 	prom_halt();
 }

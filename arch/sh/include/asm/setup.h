@@ -1,9 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _SH_SETUP_H
 #define _SH_SETUP_H
 
-#include <asm-generic/setup.h>
+#include <uapi/asm/setup.h>
 
-#ifdef __KERNEL__
 /*
  * This is set up by the setup-routine at boot-time
  */
@@ -18,9 +18,8 @@
 /* ... */
 #define COMMAND_LINE ((char *) (PARAM+0x100))
 
-int setup_early_printk(char *);
 void sh_mv_setup(void);
-
-#endif /* __KERNEL__ */
+void check_for_initrd(void);
+void per_cpu_trap_init(void);
 
 #endif /* _SH_SETUP_H */

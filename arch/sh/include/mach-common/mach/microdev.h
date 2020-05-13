@@ -1,12 +1,10 @@
-/*
+/* SPDX-License-Identifier: GPL-2.0
+ *
  * linux/include/asm-sh/microdev.h
  *
  * Copyright (C) 2003 Sean McGoogan (Sean.McGoogan@superh.com)
  *
  * Definitions for the SuperH SH4-202 MicroDev board.
- *
- * May be copied or modified under the terms of the GNU General Public
- * License.  See linux/COPYING for more information.
  */
 #ifndef __ASM_SH_MICRODEV_H
 #define __ASM_SH_MICRODEV_H
@@ -67,14 +65,5 @@ extern void microdev_print_fpga_intc_status(void);
 
 #define __IO_PREFIX microdev
 #include <asm/io_generic.h>
-
-#if defined(CONFIG_PCI)
-unsigned char  microdev_pci_inb(unsigned long port);
-unsigned short microdev_pci_inw(unsigned long port);
-unsigned long  microdev_pci_inl(unsigned long port);
-void           microdev_pci_outb(unsigned char  data, unsigned long port);
-void           microdev_pci_outw(unsigned short data, unsigned long port);
-void           microdev_pci_outl(unsigned long  data, unsigned long port);
-#endif
 
 #endif /* __ASM_SH_MICRODEV_H */

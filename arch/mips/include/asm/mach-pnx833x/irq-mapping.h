@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 
 /*
  *  irq.h: IRQ mappings for PNX833X.
@@ -5,20 +6,6 @@
  *  Copyright 2008 NXP Semiconductors
  *	  Chris Steel <chris.steel@nxp.com>
  *    Daniel Laird <daniel.j.laird@nxp.com>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #ifndef __ASM_MIPS_MACH_PNX833X_IRQ_MAPPING_H
@@ -42,15 +29,15 @@
 #define PNX833X_TIMER_IRQ				(MIPS_CPU_IRQ_BASE + 7)
 
 /* Interrupts supported by PIC */
-#define PNX833X_PIC_I2C0_INT			(PNX833X_PIC_IRQ_BASE +  1)
-#define PNX833X_PIC_I2C1_INT			(PNX833X_PIC_IRQ_BASE +  2)
-#define PNX833X_PIC_UART0_INT			(PNX833X_PIC_IRQ_BASE +  3)
-#define PNX833X_PIC_UART1_INT			(PNX833X_PIC_IRQ_BASE +  4)
-#define PNX833X_PIC_TS_IN0_DV_INT		(PNX833X_PIC_IRQ_BASE +  5)
-#define PNX833X_PIC_TS_IN0_DMA_INT		(PNX833X_PIC_IRQ_BASE +  6)
-#define PNX833X_PIC_GPIO_INT			(PNX833X_PIC_IRQ_BASE +  7)
-#define PNX833X_PIC_AUDIO_DEC_INT		(PNX833X_PIC_IRQ_BASE +  8)
-#define PNX833X_PIC_VIDEO_DEC_INT		(PNX833X_PIC_IRQ_BASE +  9)
+#define PNX833X_PIC_I2C0_INT			(PNX833X_PIC_IRQ_BASE +	 1)
+#define PNX833X_PIC_I2C1_INT			(PNX833X_PIC_IRQ_BASE +	 2)
+#define PNX833X_PIC_UART0_INT			(PNX833X_PIC_IRQ_BASE +	 3)
+#define PNX833X_PIC_UART1_INT			(PNX833X_PIC_IRQ_BASE +	 4)
+#define PNX833X_PIC_TS_IN0_DV_INT		(PNX833X_PIC_IRQ_BASE +	 5)
+#define PNX833X_PIC_TS_IN0_DMA_INT		(PNX833X_PIC_IRQ_BASE +	 6)
+#define PNX833X_PIC_GPIO_INT			(PNX833X_PIC_IRQ_BASE +	 7)
+#define PNX833X_PIC_AUDIO_DEC_INT		(PNX833X_PIC_IRQ_BASE +	 8)
+#define PNX833X_PIC_VIDEO_DEC_INT		(PNX833X_PIC_IRQ_BASE +	 9)
 #define PNX833X_PIC_CONFIG_INT			(PNX833X_PIC_IRQ_BASE + 10)
 #define PNX833X_PIC_AOI_INT				(PNX833X_PIC_IRQ_BASE + 11)
 #define PNX833X_PIC_SYNC_INT			(PNX833X_PIC_IRQ_BASE + 12)
@@ -123,4 +110,3 @@
 #define PNX833X_GPIO_15_INT			(PNX833X_GPIO_IRQ_BASE + 15)
 
 #endif
-

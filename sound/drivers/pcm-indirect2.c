@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Helper functions for indirect PCM data transfer to a simple FIFO in
  * hardware (small, no possibility to read "hardware io position",
@@ -9,20 +10,6 @@
  *
  *  Copyright (c) by Takashi Iwai <tiwai@suse.de>
  *                   Jaroslav Kysela <perex@suse.cz>
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 /* snd_printk/d() */
@@ -47,7 +34,7 @@ void snd_pcm_indirect2_stat(struct snd_pcm_substream *substream,
 	int seconds = (rec->lastbytetime - rec->firstbytetime) / HZ;
 
 	snd_printk(KERN_DEBUG "STAT: mul_elapsed: %u, mul_elapsed_real: %d, "
-		   "irq_occured: %d\n",
+		   "irq_occurred: %d\n",
 		   rec->mul_elapsed, rec->mul_elapsed_real, rec->irq_occured);
 	snd_printk(KERN_DEBUG "STAT: min_multiple: %d (irqs/period)\n",
 		   rec->min_multiple);
@@ -264,7 +251,7 @@ snd_pcm_indirect2_playback_transfer(struct snd_pcm_substream *substream,
 		if (diff < -(snd_pcm_sframes_t) (runtime->boundary / 2))
 			diff += runtime->boundary;
 		/* number of bytes "added" by ALSA increases the number of
-		 * bytes which are ready to "be transfered to HW"/"played"
+		 * bytes which are ready to "be transferred to HW"/"played"
 		 * Then, set rec->appl_ptr to not count bytes twice next time.
 		 */
 		rec->sw_ready += (int)frames_to_bytes(runtime, diff);
@@ -330,7 +317,7 @@ snd_pcm_indirect2_playback_transfer(struct snd_pcm_substream *substream,
 		/* copy bytes from intermediate buffer position sw_data to the
 		 * HW and return number of bytes actually written
 		 * Furthermore, set hw_ready to 0, if the fifo isn't empty
-		 * now => more could be transfered to fifo
+		 * now => more could be transferred to fifo
 		 */
 		bytes = copy(substream, rec, bytes);
 		rec->bytes2hw += bytes;

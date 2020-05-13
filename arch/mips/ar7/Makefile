@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 
 obj-y := \
 	prom.o \
@@ -8,4 +9,3 @@ obj-y := \
 	platform.o \
 	gpio.o \
 	clock.o
-EXTRA_CFLAGS += -Werror

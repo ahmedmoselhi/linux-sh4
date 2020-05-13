@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __LINUX_PMIC_DA903X_H
 #define __LINUX_PMIC_DA903X_H
 
@@ -94,6 +95,10 @@ struct da9034_touch_pdata {
 	int	interval_ms;	/* sampling interval while pen down */
 	int	x_inverted;
 	int	y_inverted;
+};
+
+struct da9034_backlight_pdata {
+	int	output_current;	/* output current of WLED, from 0-31 (in mA) */
 };
 
 /* DA9030 battery charger data */

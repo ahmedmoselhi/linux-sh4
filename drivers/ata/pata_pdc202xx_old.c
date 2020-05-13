@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * pata_pdc202xx_old.c 	- Promise PDC202xx PATA for new ATA layer
  *			  (C) 2005 Red Hat Inc
@@ -15,7 +16,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
-#include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <scsi/scsi_host.h>
@@ -42,6 +42,27 @@ static void pdc202xx_exec_command(struct ata_port *ap,
 
 	iowrite8(tf->command, ap->ioaddr.command_addr);
 	ndelay(400);
+}
+
+static bool pdc202xx_irq_check(struct ata_port *ap)
+{
+	struct pci_dev *pdev	= to_pci_dev(ap->host->dev);
+	unsigned long master	= pci_resource_start(pdev, 4);
+	u8 sc1d			= inb(master + 0x1d);
+
+	if (ap->port_no) {
+		/*
+		 * bit 7: error, bit 6: interrupting,
+		 * bit 5: FIFO full, bit 4: FIFO empty
+		 */
+		return sc1d & 0x40;
+	} else	{
+		/*
+		 * bit 3: error, bit 2: interrupting,
+		 * bit 1: FIFO full, bit 0: FIFO empty
+		 */
+		return sc1d & 0x04;
+	}
 }
 
 /**
@@ -249,7 +270,7 @@ static int pdc2026x_port_start(struct ata_port *ap)
 		u8 burst = ioread8(bmdma + 0x1f);
 		iowrite8(burst | 0x01, bmdma + 0x1f);
 	}
-	return ata_sff_port_start(ap);
+	return ata_bmdma_port_start(ap);
 }
 
 /**
@@ -282,6 +303,7 @@ static struct ata_port_operations pdc2024x_port_ops = {
 	.set_dmamode		= pdc202xx_set_dmamode,
 
 	.sff_exec_command	= pdc202xx_exec_command,
+	.sff_irq_check		= pdc202xx_irq_check,
 };
 
 static struct ata_port_operations pdc2026x_port_ops = {
@@ -297,6 +319,7 @@ static struct ata_port_operations pdc2026x_port_ops = {
 	.port_start		= pdc2026x_port_start,
 
 	.sff_exec_command	= pdc202xx_exec_command,
+	.sff_irq_check		= pdc202xx_irq_check,
 };
 
 static int pdc202xx_init_one(struct pci_dev *dev, const struct pci_device_id *id)
@@ -337,7 +360,7 @@ static int pdc202xx_init_one(struct pci_dev *dev, const struct pci_device_id *id
 				return -ENODEV;
 		}
 	}
-	return ata_pci_sff_init_one(dev, ppi, &pdc202xx_sht, NULL);
+	return ata_pci_bmdma_init_one(dev, ppi, &pdc202xx_sht, NULL, 0);
 }
 
 static const struct pci_device_id pdc202xx[] = {
@@ -355,27 +378,16 @@ static struct pci_driver pdc202xx_pci_driver = {
 	.id_table	= pdc202xx,
 	.probe 		= pdc202xx_init_one,
 	.remove		= ata_pci_remove_one,
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend	= ata_pci_device_suspend,
 	.resume		= ata_pci_device_resume,
 #endif
 };
 
-static int __init pdc202xx_init(void)
-{
-	return pci_register_driver(&pdc202xx_pci_driver);
-}
-
-static void __exit pdc202xx_exit(void)
-{
-	pci_unregister_driver(&pdc202xx_pci_driver);
-}
+module_pci_driver(pdc202xx_pci_driver);
 
 MODULE_AUTHOR("Alan Cox");
 MODULE_DESCRIPTION("low-level driver for Promise 2024x and 20262-20267");
 MODULE_LICENSE("GPL");
 MODULE_DEVICE_TABLE(pci, pdc202xx);
 MODULE_VERSION(DRV_VERSION);
-
-module_init(pdc202xx_init);
-module_exit(pdc202xx_exit);

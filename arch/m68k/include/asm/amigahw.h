@@ -18,26 +18,7 @@
 
 #include <linux/ioport.h>
 
-    /*
-     *  Different Amiga models
-     */
-
-#define AMI_UNKNOWN	(0)
-#define AMI_500		(1)
-#define AMI_500PLUS	(2)
-#define AMI_600		(3)
-#define AMI_1000	(4)
-#define AMI_1200	(5)
-#define AMI_2000	(6)
-#define AMI_2500	(7)
-#define AMI_3000	(8)
-#define AMI_3000T	(9)
-#define AMI_3000PLUS	(10)
-#define AMI_4000	(11)
-#define AMI_4000T	(12)
-#define AMI_CDTV	(13)
-#define AMI_CD32	(14)
-#define AMI_DRACO	(15)
+#include <asm/bootinfo-amiga.h>
 
 
     /*
@@ -45,11 +26,6 @@
      */
 
 extern unsigned long amiga_chipset;
-
-#define CS_STONEAGE	(0)
-#define CS_OCS		(1)
-#define CS_ECS		(2)
-#define CS_AGA		(3)
 
 
     /*
@@ -102,7 +78,6 @@ struct amiga_hw_present {
     AMIGAHW_DECLARE(ALICE_NTSC);	/* NTSC Alice (8374) */
     AMIGAHW_DECLARE(MAGIC_REKICK);	/* A3000 Magic Hard Rekick */
     AMIGAHW_DECLARE(PCMCIA);		/* PCMCIA Slot */
-    AMIGAHW_DECLARE(GG2_ISA);		/* GG2 Zorro2ISA Bridge */
     AMIGAHW_DECLARE(ZORRO);		/* Zorro AutoConfig */
     AMIGAHW_DECLARE(ZORRO3);		/* Zorro III */
 };
@@ -267,7 +242,7 @@ struct CIA {
 
 #define zTwoBase (0x80000000)
 #define ZTWO_PADDR(x) (((unsigned long)(x))-zTwoBase)
-#define ZTWO_VADDR(x) (((unsigned long)(x))+zTwoBase)
+#define ZTWO_VADDR(x) ((void __iomem *)(((unsigned long)(x))+zTwoBase))
 
 #define CUSTOM_PHYSADDR     (0xdff000)
 #define amiga_custom ((*(volatile struct CUSTOM *)(zTwoBase+CUSTOM_PHYSADDR)))

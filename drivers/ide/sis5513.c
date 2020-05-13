@@ -53,8 +53,8 @@
 
 #define DRV_NAME "sis5513"
 
-/* registers layout and init values are chipset family dependant */
-
+/* registers layout and init values are chipset family dependent */
+#undef ATA_16
 #define ATA_16		0x01
 #define ATA_33		0x02
 #define ATA_66		0x03
@@ -290,10 +290,10 @@ static void config_drive_art_rwp(ide_drive_t *drive)
 		pci_write_config_byte(dev, 0x4b, rw_prefetch);
 }
 
-static void sis_set_pio_mode(ide_drive_t *drive, const u8 pio)
+static void sis_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
 	config_drive_art_rwp(drive);
-	sis_program_timings(drive, XFER_PIO_0 + pio);
+	sis_program_timings(drive, drive->pio_mode);
 }
 
 static void sis_ata133_program_udma_timings(ide_drive_t *drive, const u8 mode)
@@ -340,8 +340,10 @@ static void sis_program_udma_timings(ide_drive_t *drive, const u8 mode)
 		sis_ata33_program_udma_timings(drive, mode);
 }
 
-static void sis_set_dma_mode(ide_drive_t *drive, const u8 speed)
+static void sis_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
+	const u8 speed = drive->dma_mode;
+
 	if (speed >= XFER_UDMA_0)
 		sis_program_udma_timings(drive, speed);
 	else
@@ -360,7 +362,7 @@ static u8 sis_ata133_udma_filter(ide_drive_t *drive)
 	return (regdw & 0x08) ? ATA_UDMA6 : ATA_UDMA5;
 }
 
-static int __devinit sis_find_family(struct pci_dev *dev)
+static int sis_find_family(struct pci_dev *dev)
 {
 	struct pci_dev *host;
 	int i = 0;
@@ -404,7 +406,7 @@ static int __devinit sis_find_family(struct pci_dev *dev)
 					pci_name(dev));
 				chipset_family = ATA_133;
 
-				/* Check for 5513 compability mapping
+				/* Check for 5513 compatibility mapping
 				 * We must use this, else the port enabled code will fail,
 				 * as it expects the enablebits at 0x4a.
 				 */
@@ -492,6 +494,7 @@ static int init_chipset_sis5513(struct pci_dev *dev)
 		pci_read_config_byte(dev, 0x09, &reg);
 		if ((reg & 0x0f) != 0x00)
 			pci_write_config_byte(dev, 0x09, reg&0xf0);
+		/* fall through */
 	case ATA_16:
 		/* force per drive recovery and active timings
 		   needed on ATA_33 and below chips */
@@ -561,7 +564,7 @@ static const struct ide_port_ops sis_ata133_port_ops = {
 	.cable_detect		= sis_cable_detect,
 };
 
-static const struct ide_port_info sis5513_chipset __devinitdata = {
+static const struct ide_port_info sis5513_chipset = {
 	.name		= DRV_NAME,
 	.init_chipset	= init_chipset_sis5513,
 	.enablebits	= { {0x4a, 0x02, 0x02}, {0x4a, 0x04, 0x04} },
@@ -570,7 +573,7 @@ static const struct ide_port_info sis5513_chipset __devinitdata = {
 	.mwdma_mask	= ATA_MWDMA2,
 };
 
-static int __devinit sis5513_init_one(struct pci_dev *dev, const struct pci_device_id *id)
+static int sis5513_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 {
 	struct ide_port_info d = sis5513_chipset;
 	u8 udma_rates[] = { 0x00, 0x00, 0x07, 0x1f, 0x3f, 0x3f, 0x7f, 0x7f };
@@ -593,7 +596,7 @@ static int __devinit sis5513_init_one(struct pci_dev *dev, const struct pci_devi
 	return ide_pci_init_one(dev, &d, NULL);
 }
 
-static void __devexit sis5513_remove(struct pci_dev *dev)
+static void sis5513_remove(struct pci_dev *dev)
 {
 	ide_pci_remove(dev);
 	pci_disable_device(dev);
@@ -611,7 +614,7 @@ static struct pci_driver sis5513_pci_driver = {
 	.name		= "SIS_IDE",
 	.id_table	= sis5513_pci_tbl,
 	.probe		= sis5513_init_one,
-	.remove		= __devexit_p(sis5513_remove),
+	.remove		= sis5513_remove,
 	.suspend	= ide_pci_suspend,
 	.resume		= ide_pci_resume,
 };
@@ -632,12 +635,3 @@ module_exit(sis5513_ide_exit);
 MODULE_AUTHOR("Lionel Bouton, L C Chang, Andre Hedrick, Vojtech Pavlik");
 MODULE_DESCRIPTION("PCI driver module for SIS IDE");
 MODULE_LICENSE("GPL");
-
-/*
- * TODO:
- *	- CLEANUP
- *	- More checks in the config registers (force values instead of
- *	  relying on the BIOS setting them correctly).
- *	- Further optimisations ?
- *	  . for example ATA66+ regs 0x48 & 0x4A
- */

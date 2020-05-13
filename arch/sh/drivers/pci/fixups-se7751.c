@@ -1,16 +1,18 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/init.h>
 #include <linux/delay.h>
 #include <linux/pci.h>
 #include <linux/io.h>
+#include <linux/sh_intc.h>
 #include "pci-sh4.h"
 
-int __init pcibios_map_platform_irq(u8 slot, u8 pin)
+int pcibios_map_platform_irq(const struct pci_dev *, u8 slot, u8 pin)
 {
         switch (slot) {
-        case 0: return 13;
-        case 1: return 13;	/* AMD Ethernet controller */
+        case 0: return evt2irq(0x3a0);
+        case 1: return evt2irq(0x3a0);	/* AMD Ethernet controller */
         case 2: return -1;
         case 3: return -1;
         case 4: return -1;
@@ -97,12 +99,12 @@ int pci_fixup_pcic(struct pci_channel *chan)
 	* meaning all calls go straight through... use BUG_ON to
 	* catch erroneous assumption.
 	*/
-	BUG_ON(chan->mem_resource->start != SH7751_PCI_MEMORY_BASE);
+	BUG_ON(chan->resources[1].start != SH7751_PCI_MEMORY_BASE);
 
-	PCIC_WRITE(SH7751_PCIMBR, chan->mem_resource->start);
+	PCIC_WRITE(SH7751_PCIMBR, chan->resources[1].start);
 
 	/* Set IOBR for window containing area specified in pci.h */
-	PCIC_WRITE(SH7751_PCIIOBR, (chan->io_resource->start & SH7751_PCIIOBR_MASK));
+	PCIC_WRITE(SH7751_PCIIOBR, (chan->resources[0].start & SH7751_PCIIOBR_MASK));
 
 	/* All done, may as well say so... */
 	printk("SH7751 PCI: Finished initialization of the PCI controller\n");

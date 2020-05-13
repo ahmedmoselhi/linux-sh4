@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Definitions for the "Baboon" custom IC on the PowerBook 190.
  */
@@ -28,5 +29,11 @@ struct baboon {
 				 * bit 2: media bay status change interrupt
 				 */
 };
+
+extern int baboon_present;
+
+extern void baboon_register_interrupts(void);
+extern void baboon_irq_enable(int);
+extern void baboon_irq_disable(int);
 
 #endif /* __ASSEMBLY **/

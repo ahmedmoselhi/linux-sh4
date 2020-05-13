@@ -229,19 +229,18 @@ static u8 sil_sata_udma_filter(ide_drive_t *drive)
 
 /**
  *	sil_set_pio_mode	-	set host controller for PIO mode
+ *	@hwif: port
  *	@drive: drive
- *	@pio: PIO mode number
  *
  *	Load the timing settings for this device mode into the
  *	controller.
  */
 
-static void sil_set_pio_mode(ide_drive_t *drive, u8 pio)
+static void sil_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
 	static const u16 tf_speed[]   = { 0x328a, 0x2283, 0x1281, 0x10c3, 0x10c1 };
 	static const u16 data_speed[] = { 0x328a, 0x2283, 0x1104, 0x10c3, 0x10c1 };
 
-	ide_hwif_t *hwif	= drive->hwif;
 	struct pci_dev *dev	= to_pci_dev(hwif->dev);
 	ide_drive_t *pair	= ide_get_pair_dev(drive);
 	u32 speedt		= 0;
@@ -249,6 +248,7 @@ static void sil_set_pio_mode(ide_drive_t *drive, u8 pio)
 	unsigned long addr	= siimage_seldev(drive, 0x04);
 	unsigned long tfaddr	= siimage_selreg(hwif,	0x02);
 	unsigned long base	= (unsigned long)hwif->hwif_data;
+	const u8 pio		= drive->pio_mode - XFER_PIO_0;
 	u8 tf_pio		= pio;
 	u8 mmio			= (hwif->host_flags & IDE_HFLAG_MMIO) ? 1 : 0;
 	u8 addr_mask		= hwif->channel ? (mmio ? 0xF4 : 0x84)
@@ -258,7 +258,7 @@ static void sil_set_pio_mode(ide_drive_t *drive, u8 pio)
 
 	/* trim *taskfile* PIO to the slowest of the master/slave */
 	if (pair) {
-		u8 pair_pio = ide_get_best_pio_mode(pair, 255, 4);
+		u8 pair_pio = pair->pio_mode - XFER_PIO_0;
 
 		if (pair_pio < tf_pio)
 			tf_pio = pair_pio;
@@ -289,19 +289,18 @@ static void sil_set_pio_mode(ide_drive_t *drive, u8 pio)
 
 /**
  *	sil_set_dma_mode	-	set host controller for DMA mode
+ *	@hwif: port
  *	@drive: drive
- *	@speed: DMA mode
  *
  *	Tune the SiI chipset for the desired DMA mode.
  */
 
-static void sil_set_dma_mode(ide_drive_t *drive, const u8 speed)
+static void sil_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
 	static const u8 ultra6[] = { 0x0F, 0x0B, 0x07, 0x05, 0x03, 0x02, 0x01 };
 	static const u8 ultra5[] = { 0x0C, 0x07, 0x05, 0x04, 0x02, 0x01 };
 	static const u16 dma[]	 = { 0x2208, 0x10C2, 0x10C1 };
 
-	ide_hwif_t *hwif	= drive->hwif;
 	struct pci_dev *dev	= to_pci_dev(hwif->dev);
 	unsigned long base	= (unsigned long)hwif->hwif_data;
 	u16 ultra = 0, multi	= 0;
@@ -311,6 +310,7 @@ static void sil_set_dma_mode(ide_drive_t *drive, const u8 speed)
 						: (mmio ? 0xB4 : 0x80);
 	unsigned long ma	= siimage_seldev(drive, 0x08);
 	unsigned long ua	= siimage_seldev(drive, 0x0C);
+	const u8 speed		= drive->dma_mode;
 
 	scsc  = sil_ioread8 (dev, base + (mmio ? 0x4A : 0x8A));
 	mode  = sil_ioread8 (dev, base + addr_mask);
@@ -406,7 +406,7 @@ static int siimage_dma_test_irq(ide_drive_t *drive)
  *	yet.
  */
 
-static int sil_sata_reset_poll(ide_drive_t *drive)
+static blk_status_t sil_sata_reset_poll(ide_drive_t *drive)
 {
 	ide_hwif_t *hwif = drive->hwif;
 	void __iomem *sata_status_addr
@@ -419,11 +419,11 @@ static int sil_sata_reset_poll(ide_drive_t *drive)
 		if ((sata_stat & 0x03) != 0x03) {
 			printk(KERN_WARNING "%s: reset phy dead, status=0x%08x\n",
 					    hwif->name, sata_stat);
-			return -ENXIO;
+			return BLK_STS_IOERR;
 		}
 	}
 
-	return 0;
+	return BLK_STS_OK;
 }
 
 /**
@@ -546,7 +546,7 @@ static int init_chipset_siimage(struct pci_dev *dev)
  *	extended PRD tables. For better SI3112 support use the libata driver
  */
 
-static void __devinit init_mmio_iops_siimage(ide_hwif_t *hwif)
+static void init_mmio_iops_siimage(ide_hwif_t *hwif)
 {
 	struct pci_dev *dev	= to_pci_dev(hwif->dev);
 	struct ide_host *host	= pci_get_drvdata(dev);
@@ -646,10 +646,9 @@ static void sil_quirkproc(ide_drive_t *drive)
  *	can get the iops right before using them.
  */
 
-static void __devinit init_iops_siimage(ide_hwif_t *hwif)
+static void init_iops_siimage(ide_hwif_t *hwif)
 {
-	struct pci_dev *dev = to_pci_dev(hwif->dev);
-	struct ide_host *host = pci_get_drvdata(dev);
+	struct ide_host *host = dev_get_drvdata(hwif->dev);
 
 	hwif->hwif_data = NULL;
 
@@ -719,7 +718,7 @@ static const struct ide_dma_ops sil_dma_ops = {
 		.udma_mask	= ATA_UDMA6,		\
 	}
 
-static const struct ide_port_info siimage_chipsets[] __devinitdata = {
+static const struct ide_port_info siimage_chipsets[] = {
 	/* 0: SiI680 */  DECLARE_SII_DEV(&sil_pata_port_ops),
 	/* 1: SiI3112 */ DECLARE_SII_DEV(&sil_sata_port_ops)
 };
@@ -733,8 +732,7 @@ static const struct ide_port_info siimage_chipsets[] __devinitdata = {
  *	We then use the IDE PCI generic helper to do most of the work.
  */
 
-static int __devinit siimage_init_one(struct pci_dev *dev,
-				      const struct pci_device_id *id)
+static int siimage_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 {
 	void __iomem *ioaddr = NULL;
 	resource_size_t bar5 = pci_resource_start(dev, 5);
@@ -790,7 +788,7 @@ static int __devinit siimage_init_one(struct pci_dev *dev,
 	return rc;
 }
 
-static void __devexit siimage_remove(struct pci_dev *dev)
+static void siimage_remove(struct pci_dev *dev)
 {
 	struct ide_host *host = pci_get_drvdata(dev);
 	void __iomem *ioaddr = host->host_priv;
@@ -822,7 +820,7 @@ static struct pci_driver siimage_pci_driver = {
 	.name		= "SiI_IDE",
 	.id_table	= siimage_pci_tbl,
 	.probe		= siimage_init_one,
-	.remove		= __devexit_p(siimage_remove),
+	.remove		= siimage_remove,
 	.suspend	= ide_pci_suspend,
 	.resume		= ide_pci_resume,
 };

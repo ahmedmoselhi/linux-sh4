@@ -57,11 +57,11 @@ static struct pio_clocks cs5520_pio_clocks[]={
 	{1, 2, 1}
 };
 
-static void cs5520_set_pio_mode(ide_drive_t *drive, const u8 pio)
+static void cs5520_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
-	ide_hwif_t *hwif = drive->hwif;
 	struct pci_dev *pdev = to_pci_dev(hwif->dev);
 	int controller = drive->dn > 1 ? 1 : 0;
+	const u8 pio = drive->pio_mode - XFER_PIO_0;
 
 	/* 8bit CAT/CRT - 8bit command timing for channel */
 	pci_write_config_byte(pdev, 0x62 + controller, 
@@ -81,11 +81,12 @@ static void cs5520_set_pio_mode(ide_drive_t *drive, const u8 pio)
 		(cs5520_pio_clocks[pio].assert));
 }
 
-static void cs5520_set_dma_mode(ide_drive_t *drive, const u8 speed)
+static void cs5520_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
 	printk(KERN_ERR "cs55x0: bad ide timing.\n");
 
-	cs5520_set_pio_mode(drive, 0);
+	drive->pio_mode = XFER_PIO_0 + 0;
+	cs5520_set_pio_mode(hwif, drive);
 }
 
 static const struct ide_port_ops cs5520_port_ops = {
@@ -93,7 +94,7 @@ static const struct ide_port_ops cs5520_port_ops = {
 	.set_dma_mode		= cs5520_set_dma_mode,
 };
 
-static const struct ide_port_info cyrix_chipset __devinitdata = {
+static const struct ide_port_info cyrix_chipset = {
 	.name		= DRV_NAME,
 	.enablebits	= { { 0x60, 0x01, 0x01 }, { 0x60, 0x02, 0x02 } },
 	.port_ops	= &cs5520_port_ops,
@@ -107,7 +108,7 @@ static const struct ide_port_info cyrix_chipset __devinitdata = {
  *	work longhand.
  */
  
-static int __devinit cs5520_init_one(struct pci_dev *dev, const struct pci_device_id *id)
+static int cs5520_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 {
 	const struct ide_port_info *d = &cyrix_chipset;
 	struct ide_hw hw[2], *hws[] = { NULL, NULL };
@@ -122,7 +123,7 @@ static int __devinit cs5520_init_one(struct pci_dev *dev, const struct pci_devic
 		return -ENODEV;
 	}
 	pci_set_master(dev);
-	if (pci_set_dma_mask(dev, DMA_BIT_MASK(32))) {
+	if (dma_set_mask(&dev->dev, DMA_BIT_MASK(32))) {
 		printk(KERN_WARNING "%s: No suitable DMA available.\n",
 			d->name);
 		return -ENODEV;

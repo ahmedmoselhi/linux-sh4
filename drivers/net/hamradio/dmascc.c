@@ -1,22 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Driver for high-speed SCC boards (those with DMA support)
  * Copyright (C) 1997-2000 Klaus Kudielka
  *
  * S5SCC/DMA support by Janko Koleznik S52HI
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 
@@ -32,14 +19,15 @@
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/netdevice.h>
+#include <linux/slab.h>
 #include <linux/rtnetlink.h>
 #include <linux/sockios.h>
 #include <linux/workqueue.h>
-#include <asm/atomic.h>
+#include <linux/atomic.h>
 #include <asm/dma.h>
 #include <asm/io.h>
 #include <asm/irq.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <net/ax25.h>
 #include "z8530.h"
 
@@ -273,7 +261,7 @@ static unsigned long rand;
 
 MODULE_AUTHOR("Klaus Kudielka");
 MODULE_DESCRIPTION("Driver for high-speed SCC boards");
-module_param_array(io, int, NULL, 0);
+module_param_hw_array(io, int, ioport, NULL, 0);
 MODULE_LICENSE("GPL");
 
 static void __exit dmascc_exit(void)
@@ -331,8 +319,8 @@ static int __init dmascc_init(void)
 			for (i = 0; i < MAX_NUM_DEVS && io[i]; i++) {
 				j = (io[i] -
 				     hw[h].io_region) / hw[h].io_delta;
-				if (j >= 0 && j < hw[h].num_devs
-				    && hw[h].io_region +
+				if (j >= 0 && j < hw[h].num_devs &&
+				    hw[h].io_region +
 				    j * hw[h].io_delta == io[i]) {
 					base[j] = io[i];
 				}
@@ -396,8 +384,8 @@ static int __init dmascc_init(void)
 					t_val =
 					    inb(t1[i]) + (inb(t1[i]) << 8);
 					/* Also check whether counter did wrap */
-					if (t_val == 0
-					    || t_val > TMR_0_HZ / HZ * 10)
+					if (t_val == 0 ||
+					    t_val > TMR_0_HZ / HZ * 10)
 						counting[i] = 0;
 					delay[i] = jiffies - start[i];
 				}
@@ -450,7 +438,7 @@ static const struct net_device_ops scc_netdev_ops = {
 
 static int __init setup_adapter(int card_base, int type, int n)
 {
-	int i, irq, chip;
+	int i, irq, chip, err;
 	struct scc_info *info;
 	struct net_device *dev;
 	struct scc_priv *priv;
@@ -463,26 +451,25 @@ static int __init setup_adapter(int card_base, int type, int n)
 	/* Initialize what is necessary for write_scc and write_scc_data */
 	info = kzalloc(sizeof(struct scc_info), GFP_KERNEL | GFP_DMA);
 	if (!info) {
-		printk(KERN_ERR "dmascc: "
-		       "could not allocate memory for %s at %#3x\n",
-		       hw[type].name, card_base);
+		err = -ENOMEM;
 		goto out;
 	}
 
-
-	info->dev[0] = alloc_netdev(0, "", dev_setup);
+	info->dev[0] = alloc_netdev(0, "", NET_NAME_UNKNOWN, dev_setup);
 	if (!info->dev[0]) {
 		printk(KERN_ERR "dmascc: "
 		       "could not allocate memory for %s at %#3x\n",
 		       hw[type].name, card_base);
+		err = -ENOMEM;
 		goto out1;
 	}
 
-	info->dev[1] = alloc_netdev(0, "", dev_setup);
+	info->dev[1] = alloc_netdev(0, "", NET_NAME_UNKNOWN, dev_setup);
 	if (!info->dev[1]) {
 		printk(KERN_ERR "dmascc: "
 		       "could not allocate memory for %s at %#3x\n",
 		       hw[type].name, card_base);
+		err = -ENOMEM;
 		goto out2;
 	}
 	spin_lock_init(&info->register_lock);
@@ -553,6 +540,7 @@ static int __init setup_adapter(int card_base, int type, int n)
 		printk(KERN_ERR
 		       "dmascc: could not find irq of %s at %#3x (irq=%d)\n",
 		       hw[type].name, card_base, irq);
+		err = -ENODEV;
 		goto out3;
 	}
 
@@ -580,7 +568,7 @@ static int __init setup_adapter(int card_base, int type, int n)
 		priv->param.dma = -1;
 		INIT_WORK(&priv->rx_work, rx_bh);
 		dev->ml_priv = priv;
-		sprintf(dev->name, "dmascc%i", 2 * n + i);
+		snprintf(dev->name, sizeof(dev->name), "dmascc%i", 2 * n + i);
 		dev->base_addr = card_base;
 		dev->irq = irq;
 		dev->netdev_ops = &scc_netdev_ops;
@@ -589,11 +577,13 @@ static int __init setup_adapter(int card_base, int type, int n)
 	if (register_netdev(info->dev[0])) {
 		printk(KERN_ERR "dmascc: could not register %s\n",
 		       info->dev[0]->name);
+		err = -ENODEV;
 		goto out3;
 	}
 	if (register_netdev(info->dev[1])) {
 		printk(KERN_ERR "dmascc: could not register %s\n",
 		       info->dev[1]->name);
+		err = -ENODEV;
 		goto out4;
 	}
 
@@ -616,7 +606,7 @@ static int __init setup_adapter(int card_base, int type, int n)
       out1:
 	kfree(info);
       out:
-	return -1;
+	return err;
 }
 
 
@@ -923,6 +913,9 @@ static int scc_send_packet(struct sk_buff *skb, struct net_device *dev)
 	struct scc_priv *priv = dev->ml_priv;
 	unsigned long flags;
 	int i;
+
+	if (skb->protocol == htons(ETH_P_IP))
+		return ax25_ip_xmit(skb);
 
 	/* Temporarily stop the scheduler feeding us packets */
 	netif_stop_queue(dev);

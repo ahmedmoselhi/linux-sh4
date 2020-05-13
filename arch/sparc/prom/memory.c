@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /* memory.c: Prom routine for acquiring various bits of information
  *           about RAM on the machine, both virtual and physical.
  *
@@ -31,7 +32,8 @@ static int __init prom_meminit_v0(void)
 static int __init prom_meminit_v2(void)
 {
 	struct linux_prom_registers reg[64];
-	int node, size, num_ents, i;
+	phandle node;
+	int size, num_ents, i;
 
 	node = prom_searchsiblings(prom_getchild(prom_root_node), "memory");
 	size = prom_getproperty(node, "available", (char *) reg, sizeof(reg));

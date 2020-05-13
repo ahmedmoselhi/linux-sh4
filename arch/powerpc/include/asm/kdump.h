@@ -1,9 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _PPC64_KDUMP_H
 #define _PPC64_KDUMP_H
 
 #include <asm/page.h>
 
-/* Kdump kernel runs at 32 MB, change at your peril. */
 #define KDUMP_KERNELBASE	0x2000000
 
 /* How many bytes to reserve at zero for kdump. The reserve limit should
@@ -33,11 +33,11 @@
 
 #ifndef __ASSEMBLY__
 
-#if defined(CONFIG_CRASH_DUMP) && !defined(CONFIG_RELOCATABLE)
+#if defined(CONFIG_CRASH_DUMP) && !defined(CONFIG_NONSTATIC_KERNEL)
 extern void reserve_kdump_trampoline(void);
 extern void setup_kdump_trampoline(void);
 #else
-/* !CRASH_DUMP || RELOCATABLE */
+/* !CRASH_DUMP || !NONSTATIC_KERNEL */
 static inline void reserve_kdump_trampoline(void) { ; }
 static inline void setup_kdump_trampoline(void) { ; }
 #endif

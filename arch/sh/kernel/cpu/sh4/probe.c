@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * arch/sh/kernel/cpu/sh4/probe.c
  *
@@ -5,19 +6,15 @@
  *
  * Copyright (C) 2001 - 2007  Paul Mundt
  * Copyright (C) 2003  Richard Curnow
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 #include <linux/init.h>
 #include <linux/io.h>
 #include <asm/processor.h>
 #include <asm/cache.h>
 
-int __init detect_cpu_and_cache_system(void)
+void cpu_probe(void)
 {
-	unsigned long pvr, prr_all, prr, cvr, ramcr;
+	unsigned long pvr, prr, cvr;
 	unsigned long size;
 
 	static unsigned long sizes[16] = {
@@ -28,10 +25,9 @@ int __init detect_cpu_and_cache_system(void)
 		[9] = (1 << 16)
 	};
 
-	pvr = (ctrl_inl(CCN_PVR) >> 8) & 0xffffff;
-	prr_all = ctrl_inl(CCN_PRR);
-	prr = (prr_all >> 4) & 0xff;
-	cvr = (ctrl_inl(CCN_CVR));
+	pvr = (__raw_readl(CCN_PVR) >> 8) & 0xffffff;
+	prr = (__raw_readl(CCN_PRR) >> 4) & 0xff;
+	cvr = (__raw_readl(CCN_CVR));
 
 	/*
 	 * Setup some sane SH-4 defaults for the icache
@@ -72,16 +68,13 @@ int __init detect_cpu_and_cache_system(void)
 		boot_cpu_data.dcache.ways = 4;
 	} else {
 		/* And some SH-4 defaults.. */
-		boot_cpu_data.flags |= CPU_HAS_PTEA;
+		boot_cpu_data.flags |= CPU_HAS_PTEA | CPU_HAS_FPU;
 		boot_cpu_data.family = CPU_FAMILY_SH4;
 	}
 
-	/* FPU detection works for everyone */
+	/* FPU detection works for almost everyone */
 	if ((cvr & 0x20000000))
 		boot_cpu_data.flags |= CPU_HAS_FPU;
-
-	/* We don't know the chip cut */
-	boot_cpu_data.cut_major = boot_cpu_data.cut_minor = -1;
 
 	/* Mask off the upper chip ID */
 	pvr &= 0xffff;
@@ -128,6 +121,7 @@ int __init detect_cpu_and_cache_system(void)
 		boot_cpu_data.type = CPU_SH7785;
 		break;
 	case 0x4004:
+	case 0x4005:
 		boot_cpu_data.type = CPU_SH7786;
 		boot_cpu_data.flags |= CPU_HAS_PTEAEX | CPU_HAS_L2_CACHE;
 		break;
@@ -153,97 +147,27 @@ int __init detect_cpu_and_cache_system(void)
 			boot_cpu_data.type = CPU_SH7724;
 			boot_cpu_data.flags |= CPU_HAS_L2_CACHE;
 			break;
-		case 0x50:
+		case 0x10:
+		case 0x11:
 			boot_cpu_data.type = CPU_SH7757;
 			break;
+		case 0xd0:
+		case 0x40: /* yon-ten-go */
+			boot_cpu_data.type = CPU_SH7372;
+			break;
+		case 0xE0: /* 0x4E0 */
+			boot_cpu_data.type = CPU_SH7734; /* SH7733/SH7734 */
+			break;
+
 		}
 		break;
 	case 0x4000:	/* 1st cut */
 	case 0x4001:	/* 2nd cut */
 		boot_cpu_data.type = CPU_SHX3;
 		break;
-	case 0x8000:
-		boot_cpu_data.type = CPU_ST40RA;
-		boot_cpu_data.variant = CPU_VARIANT_SH4_102;
-		boot_cpu_data.flags |= CPU_HAS_FPU;
-		boot_cpu_data.flags &= ~CPU_HAS_PTEA;
-		break;
-	case 0x8002:
-		boot_cpu_data.type = CPU_STM8000;
-		boot_cpu_data.variant = CPU_VARIANT_SH4_103;
-		boot_cpu_data.flags |= CPU_HAS_FPU;
-		break;
-	case 0x8100:
-		/* Some bright spark used this same ID for the STi5528 */
-		boot_cpu_data.type = CPU_ST40GX1;
-		boot_cpu_data.variant = CPU_VARIANT_SH4_102;
-		boot_cpu_data.flags |= CPU_HAS_FPU;
-		boot_cpu_data.flags &= ~CPU_HAS_PTEA;
-		break;
-	case 0x9090 ... 0x9094:
-		/* ST40-300 core */
-		switch (prr_all) {
-		case 0x0010:
-			/* 7105 cut 1.0 */
-			boot_cpu_data.type = CPU_STX7105;
-			break;
-		case 0x9f:
-			/* 5197 cut 1.x */
-			boot_cpu_data.type = CPU_STX5197;
-			break;
-		case 0x9092:
-			/* CPU_STX7200 cut 3.0 */
-			/* no break */
-		case 0x9500 ... 0x95ff:
-			/* CPU_STX7200 cut 2.0 */
-			boot_cpu_data.type = CPU_STX7200;
-			break;
-		case 0x9a10:
-			boot_cpu_data.type = CPU_STX7111;
-			break;
-		case 0x9b00:
-			boot_cpu_data.type = CPU_STX7141;
-			break;
-		case 0x9e00 ... 0x9eff:
-			/* 7105 (cut 2.0 = 0x9e20) */
-			boot_cpu_data.type = CPU_STX7105;
-			break;
-		case 0x9f00 ... 0x9fff:
-			/* 5197 (cut 2.0 = 0x9f02) */
-			boot_cpu_data.type = CPU_STX5197;
-			break;
-		case 0xa000 ... 0xa0ff:
-			boot_cpu_data.type = CPU_FLI7510;
-			break;
-		case 0xa100 ... 0xa1ff:
-			boot_cpu_data.type = CPU_STX7106;
-			break;
-		case 0xa200 ... 0xa2ff:
-			boot_cpu_data.type = CPU_STX5206;
-			break;
-		case 0xa300 ... 0xa3ff:
-			boot_cpu_data.type = CPU_STX7108;
-			break;
-		case 0xa500 ... 0xa5ff:
-			boot_cpu_data.type = CPU_FLI7520;
-			break;
-		case 0xaa00 ... 0xaaff:
-			boot_cpu_data.type = CPU_STXH205;
-			break;
-		default:
-			boot_cpu_data.type = CPU_SH_NONE;
-			break;
-		}
-		boot_cpu_data.variant = CPU_VARIANT_ST40_300;
-		boot_cpu_data.flags |= CPU_HAS_FPU;
-		boot_cpu_data.flags |= CPU_HAS_ICBI | CPU_HAS_SYNCO | CPU_HAS_FPCHG;
-		boot_cpu_data.flags &= ~CPU_HAS_PTEA;
-		ramcr = ctrl_inl(CCN_RAMCR);
-		boot_cpu_data.icache.ways = (ramcr & (1<<7)) ? 2 : 4;
-		boot_cpu_data.dcache.ways = (ramcr & (1<<6)) ? 2 : 4;
-		break;
 	case 0x700:
 		boot_cpu_data.type = CPU_SH4_501;
+		boot_cpu_data.flags &= ~CPU_HAS_FPU;
 		boot_cpu_data.icache.ways = 2;
 		boot_cpu_data.dcache.ways = 2;
 		break;
@@ -251,25 +175,6 @@ int __init detect_cpu_and_cache_system(void)
 		boot_cpu_data.type = CPU_SH4_202;
 		boot_cpu_data.icache.ways = 2;
 		boot_cpu_data.dcache.ways = 2;
-		break;
-	case 0x610 ... 0x611:
-		/* 0x0610 cut 1.x */
-		/* 0x0611 cut 2.x */
-		boot_cpu_data.type = CPU_STX7100;
-		boot_cpu_data.variant = CPU_VARIANT_SH4_202;
-		boot_cpu_data.icache.ways = 2;
-		boot_cpu_data.dcache.ways = 2;
-		boot_cpu_data.flags |= CPU_HAS_FPU;
-		boot_cpu_data.flags &= ~CPU_HAS_PTEA;
-		break;
-	case 0x690:
-		/* CPU_STx7200 cut 1.0 */
-		boot_cpu_data.type = CPU_STX7200;
-		boot_cpu_data.variant = CPU_VARIANT_SH4_202;
-		boot_cpu_data.icache.ways = 2;
-		boot_cpu_data.dcache.ways = 2;
-		boot_cpu_data.flags |= CPU_HAS_FPU;
-		boot_cpu_data.flags &= ~CPU_HAS_PTEA;
 		break;
 	case 0x500 ... 0x501:
 		switch (prr) {
@@ -330,7 +235,7 @@ int __init detect_cpu_and_cache_system(void)
 			 * Size calculation is much more sensible
 			 * than it is for the L1.
 			 *
-			 * Sizes are 128KB, 258KB, 512KB, and 1MB.
+			 * Sizes are 128KB, 256KB, 512KB, and 1MB.
 			 */
 			size = (cvr & 0xf) << 17;
 
@@ -352,6 +257,4 @@ int __init detect_cpu_and_cache_system(void)
 				 boot_cpu_data.scache.linesz);
 		}
 	}
-
-	return 0;
 }

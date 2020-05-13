@@ -1,12 +1,9 @@
-/*
+/* SPDX-License-Identifier: GPL-2.0
+ *
  *	Low-Level PCI Support for SH7751 targets
  *
  *  Dustin McIntire (dustin@sensoria.com) (c) 2001
  *  Paul Mundt (lethal@linux-sh.org) (c) 2003
- *
- *  May be copied or modified under the terms of the GNU General Public
- *  License.  See linux/COPYING for more information.
- *
  */
 
 #ifndef _PCI_SH7751_H_
@@ -61,7 +58,7 @@
   #define SH7751_PCICONF3_BIST7      0x80000000  /* Bist Supported */
   #define SH7751_PCICONF3_BIST6      0x40000000  /* Bist Executing */
   #define SH7751_PCICONF3_BIST3_0    0x0F000000  /* Bist Passed */
-  #define SH7751_PCICONF3_HD7        0x00800000  /* Single Funtion device */
+  #define SH7751_PCICONF3_HD7        0x00800000  /* Single Function device */
   #define SH7751_PCICONF3_HD6_0      0x007F0000  /* Configuration Layout */
   #define SH7751_PCICONF3_LAT        0x0000FF00  /* Latency Timer */
   #define SH7751_PCICONF3_CLS        0x000000FF  /* Cache Line Size */

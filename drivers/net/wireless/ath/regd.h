@@ -28,7 +28,6 @@ enum ctl_group {
 	CTL_ETSI = 0x30,
 };
 
-#define NO_CTL 0xff
 #define SD_NO_CTL               0xE0
 #define NO_CTL                  0xff
 #define CTL_11A                 0
@@ -64,18 +63,24 @@ enum CountryCode {
 	CTRY_ALGERIA = 12,
 	CTRY_ARGENTINA = 32,
 	CTRY_ARMENIA = 51,
+	CTRY_ARUBA = 533,
 	CTRY_AUSTRALIA = 36,
 	CTRY_AUSTRIA = 40,
 	CTRY_AZERBAIJAN = 31,
+	CTRY_BAHAMAS = 44,
 	CTRY_BAHRAIN = 48,
+	CTRY_BANGLADESH = 50,
+	CTRY_BARBADOS = 52,
 	CTRY_BELARUS = 112,
 	CTRY_BELGIUM = 56,
 	CTRY_BELIZE = 84,
+	CTRY_BERMUDA = 60,
 	CTRY_BOLIVIA = 68,
 	CTRY_BOSNIA_HERZ = 70,
 	CTRY_BRAZIL = 76,
 	CTRY_BRUNEI_DARUSSALAM = 96,
 	CTRY_BULGARIA = 100,
+	CTRY_CAMBODIA = 116,
 	CTRY_CANADA = 124,
 	CTRY_CHILE = 152,
 	CTRY_CHINA = 156,
@@ -96,7 +101,11 @@ enum CountryCode {
 	CTRY_GEORGIA = 268,
 	CTRY_GERMANY = 276,
 	CTRY_GREECE = 300,
+	CTRY_GREENLAND = 304,
+	CTRY_GRENADA = 308,
+	CTRY_GUAM = 316,
 	CTRY_GUATEMALA = 320,
+	CTRY_HAITI = 332,
 	CTRY_HONDURAS = 340,
 	CTRY_HONG_KONG = 344,
 	CTRY_HUNGARY = 348,
@@ -128,8 +137,10 @@ enum CountryCode {
 	CTRY_MACEDONIA = 807,
 	CTRY_MALAYSIA = 458,
 	CTRY_MALTA = 470,
+	CTRY_MAURITIUS = 480,
 	CTRY_MEXICO = 484,
 	CTRY_MONACO = 492,
+	CTRY_MONTENEGRO = 499,
 	CTRY_MOROCCO = 504,
 	CTRY_NEPAL = 524,
 	CTRY_NETHERLANDS = 528,
@@ -151,6 +162,7 @@ enum CountryCode {
 	CTRY_ROMANIA = 642,
 	CTRY_RUSSIA = 643,
 	CTRY_SAUDI_ARABIA = 682,
+	CTRY_SERBIA = 688,
 	CTRY_SERBIA_MONTENEGRO = 891,
 	CTRY_SINGAPORE = 702,
 	CTRY_SLOVAKIA = 703,
@@ -162,15 +174,19 @@ enum CountryCode {
 	CTRY_SWITZERLAND = 756,
 	CTRY_SYRIA = 760,
 	CTRY_TAIWAN = 158,
+	CTRY_TANZANIA = 834,
 	CTRY_THAILAND = 764,
 	CTRY_TRINIDAD_Y_TOBAGO = 780,
 	CTRY_TUNISIA = 788,
 	CTRY_TURKEY = 792,
 	CTRY_UAE = 784,
+	CTRY_UGANDA = 800,
 	CTRY_UKRAINE = 804,
 	CTRY_UNITED_KINGDOM = 826,
 	CTRY_UNITED_STATES = 840,
+	CTRY_UNITED_STATES2 = 841,
 	CTRY_UNITED_STATES_FCC49 = 842,
+	CTRY_UNITED_STATES3 = 843,
 	CTRY_URUGUAY = 858,
 	CTRY_UZBEKISTAN = 860,
 	CTRY_VENEZUELA = 862,
@@ -242,13 +258,15 @@ enum CountryCode {
 };
 
 bool ath_is_world_regd(struct ath_regulatory *reg);
+bool ath_is_49ghz_allowed(u16 redomain);
+u16 ath_regd_find_country_by_name(char *alpha2);
 int ath_regd_init(struct ath_regulatory *reg, struct wiphy *wiphy,
-		  int (*reg_notifier)(struct wiphy *wiphy,
-		  struct regulatory_request *request));
+		  void (*reg_notifier)(struct wiphy *wiphy,
+				       struct regulatory_request *request));
 u32 ath_regd_get_band_ctl(struct ath_regulatory *reg,
-			  enum ieee80211_band band);
-int ath_reg_notifier_apply(struct wiphy *wiphy,
-			   struct regulatory_request *request,
-			   struct ath_regulatory *reg);
+			  enum nl80211_band band);
+void ath_reg_notifier_apply(struct wiphy *wiphy,
+			    struct regulatory_request *request,
+			    struct ath_regulatory *reg);
 
 #endif

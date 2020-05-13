@@ -1,25 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Marvell 88SE64xx/88SE94xx register IO interface
  *
  * Copyright 2007 Red Hat, Inc.
  * Copyright 2008 Marvell. <kewei@marvell.com>
- *
- * This file is licensed under GPLv2.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation; version 2 of the
- * License.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
- * USA
+ * Copyright 2009-2011 Marvell. <yuxiangl@marvell.com>
 */
 
 
@@ -159,11 +144,10 @@ static inline void mvs_write_port_irq_mask(struct mvs_info *mvi,
 			MVS_P4_INT_MASK, port, val);
 }
 
-static inline void __devinit mvs_phy_hacks(struct mvs_info *mvi)
+static inline void mvs_phy_hacks(struct mvs_info *mvi)
 {
 	u32 tmp;
 
-	/* workaround for SATA R-ERR, to ignore phy glitch */
 	tmp = mvs_cr32(mvi, CMD_PHY_TIMER);
 	tmp &= ~(1 << 9);
 	tmp |= (1 << 10);
@@ -178,23 +162,10 @@ static inline void __devinit mvs_phy_hacks(struct mvs_info *mvi)
 	tmp |= 0x3fff;
 	mvs_cw32(mvi, CMD_SAS_CTL0, tmp);
 
-	/* workaround for WDTIMEOUT , set to 550 ms */
 	mvs_cw32(mvi, CMD_WD_TIMER, 0x7a0000);
 
 	/* not to halt for different port op during wideport link change */
 	mvs_cw32(mvi, CMD_APP_ERR_CONFIG, 0xffefbf7d);
-
-	/* workaround for Seagate disk not-found OOB sequence, recv
-	 * COMINIT before sending out COMWAKE */
-	tmp = mvs_cr32(mvi, CMD_PHY_MODE_21);
-	tmp &= 0x0000ffff;
-	tmp |= 0x00fa0000;
-	mvs_cw32(mvi, CMD_PHY_MODE_21, tmp);
-
-	tmp = mvs_cr32(mvi, CMD_PHY_TIMER);
-	tmp &= 0x1fffffff;
-	tmp |= (2U << 29);	/* 8 ms retry */
-	mvs_cw32(mvi, CMD_PHY_TIMER, tmp);
 }
 
 static inline void mvs_int_sata(struct mvs_info *mvi)
@@ -221,6 +192,9 @@ static inline void mvs_int_full(struct mvs_info *mvi)
 		if (tmp)
 			mvs_int_port(mvi, i, tmp);
 	}
+
+	if (stat & CINT_NON_SPEC_NCQ_ERROR)
+		MVS_CHIP_DISP->non_spec_ncq_error(mvi);
 
 	if (stat & CINT_SRS)
 		mvs_int_sata(mvi);

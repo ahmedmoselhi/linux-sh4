@@ -1,11 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * drivers/pci/slot.c
  * Copyright (C) 2006 Matthew Wilcox <matthew@wil.cx>
  * Copyright (C) 2006-2009 Hewlett-Packard Development Company, L.P.
  *	Alex Chiang <achiang@hp.com>
  */
 
 #include <linux/kobject.h>
+#include <linux/slab.h>
+#include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/err.h>
 #include "pci.h"
@@ -29,7 +31,7 @@ static ssize_t pci_slot_attr_store(struct kobject *kobj,
 	return attribute->store ? attribute->store(slot, buf, len) : -EIO;
 }
 
-static struct sysfs_ops pci_slot_sysfs_ops = {
+static const struct sysfs_ops pci_slot_sysfs_ops = {
 	.show = pci_slot_attr_show,
 	.store = pci_slot_attr_store,
 };
@@ -47,6 +49,21 @@ static ssize_t address_read_file(struct pci_slot *slot, char *buf)
 				slot->number);
 }
 
+static ssize_t bus_speed_read(enum pci_bus_speed speed, char *buf)
+{
+	return sprintf(buf, "%s\n", pci_speed_string(speed));
+}
+
+static ssize_t max_speed_read_file(struct pci_slot *slot, char *buf)
+{
+	return bus_speed_read(slot->bus->max_bus_speed, buf);
+}
+
+static ssize_t cur_speed_read_file(struct pci_slot *slot, char *buf)
+{
+	return bus_speed_read(slot->bus->cur_bus_speed, buf);
+}
+
 static void pci_slot_release(struct kobject *kobj)
 {
 	struct pci_dev *dev;
@@ -55,9 +72,11 @@ static void pci_slot_release(struct kobject *kobj)
 	dev_dbg(&slot->bus->dev, "dev %02x, released physical slot %s\n",
 		slot->number, pci_slot_name(slot));
 
+	down_read(&pci_bus_sem);
 	list_for_each_entry(dev, &slot->bus->devices, bus_list)
 		if (PCI_SLOT(dev->devfn) == slot->number)
 			dev->slot = NULL;
+	up_read(&pci_bus_sem);
 
 	list_del(&slot->list);
 
@@ -65,10 +84,16 @@ static void pci_slot_release(struct kobject *kobj)
 }
 
 static struct pci_slot_attribute pci_slot_attr_address =
-	__ATTR(address, (S_IFREG | S_IRUGO), address_read_file, NULL);
+	__ATTR(address, S_IRUGO, address_read_file, NULL);
+static struct pci_slot_attribute pci_slot_attr_max_speed =
+	__ATTR(max_bus_speed, S_IRUGO, max_speed_read_file, NULL);
+static struct pci_slot_attribute pci_slot_attr_cur_speed =
+	__ATTR(cur_bus_speed, S_IRUGO, cur_speed_read_file, NULL);
 
 static struct attribute *pci_slot_default_attrs[] = {
 	&pci_slot_attr_address.attr,
+	&pci_slot_attr_max_speed.attr,
+	&pci_slot_attr_cur_speed.attr,
 	NULL,
 };
 
@@ -134,12 +159,22 @@ static int rename_slot(struct pci_slot *slot, const char *name)
 	return result;
 }
 
+void pci_dev_assign_slot(struct pci_dev *dev)
+{
+	struct pci_slot *slot;
+
+	mutex_lock(&pci_slot_mutex);
+	list_for_each_entry(slot, &dev->bus->slots, list)
+		if (PCI_SLOT(dev->devfn) == slot->number)
+			dev->slot = slot;
+	mutex_unlock(&pci_slot_mutex);
+}
+
 static struct pci_slot *get_slot(struct pci_bus *parent, int slot_nr)
 {
 	struct pci_slot *slot;
-	/*
-	 * We already hold pci_bus_sem so don't worry
-	 */
+
+	/* We already hold pci_slot_mutex */
 	list_for_each_entry(slot, &parent->slots, list)
 		if (slot->number == slot_nr) {
 			kobject_get(&slot->kobj);
@@ -196,7 +231,7 @@ struct pci_slot *pci_create_slot(struct pci_bus *parent, int slot_nr,
 	int err = 0;
 	char *slot_name = NULL;
 
-	down_write(&pci_bus_sem);
+	mutex_lock(&pci_slot_mutex);
 
 	if (slot_nr == -1)
 		goto placeholder;
@@ -244,16 +279,18 @@ placeholder:
 	INIT_LIST_HEAD(&slot->list);
 	list_add(&slot->list, &parent->slots);
 
+	down_read(&pci_bus_sem);
 	list_for_each_entry(dev, &parent->devices, bus_list)
 		if (PCI_SLOT(dev->devfn) == slot_nr)
 			dev->slot = slot;
+	up_read(&pci_bus_sem);
 
 	dev_dbg(&parent->dev, "dev %02x, created physical slot %s\n",
 		slot_nr, pci_slot_name(slot));
 
 out:
 	kfree(slot_name);
-	up_write(&pci_bus_sem);
+	mutex_unlock(&pci_slot_mutex);
 	return slot;
 err:
 	kfree(slot);
@@ -261,32 +298,6 @@ err:
 	goto out;
 }
 EXPORT_SYMBOL_GPL(pci_create_slot);
-
-/**
- * pci_renumber_slot - update %struct pci_slot -> number
- * @slot: &struct pci_slot to update
- * @slot_nr: new number for slot
- *
- * The primary purpose of this interface is to allow callers who earlier
- * created a placeholder slot in pci_create_slot() by passing a -1 as
- * slot_nr, to update their %struct pci_slot with the correct @slot_nr.
- */
-void pci_renumber_slot(struct pci_slot *slot, int slot_nr)
-{
-	struct pci_slot *tmp;
-
-	down_write(&pci_bus_sem);
-
-	list_for_each_entry(tmp, &slot->bus->slots, list) {
-		WARN_ON(tmp->number == slot_nr);
-		goto out;
-	}
-
-	slot->number = slot_nr;
-out:
-	up_write(&pci_bus_sem);
-}
-EXPORT_SYMBOL_GPL(pci_renumber_slot);
 
 /**
  * pci_destroy_slot - decrement refcount for physical PCI slot
@@ -299,11 +310,11 @@ EXPORT_SYMBOL_GPL(pci_renumber_slot);
 void pci_destroy_slot(struct pci_slot *slot)
 {
 	dev_dbg(&slot->bus->dev, "dev %02x, dec refcount to %d\n",
-		slot->number, atomic_read(&slot->kobj.kref.refcount) - 1);
+		slot->number, kref_read(&slot->kobj.kref) - 1);
 
-	down_write(&pci_bus_sem);
+	mutex_lock(&pci_slot_mutex);
 	kobject_put(&slot->kobj);
-	up_write(&pci_bus_sem);
+	mutex_unlock(&pci_slot_mutex);
 }
 EXPORT_SYMBOL_GPL(pci_destroy_slot);
 
@@ -320,14 +331,17 @@ void pci_hp_create_module_link(struct pci_slot *pci_slot)
 {
 	struct hotplug_slot *slot = pci_slot->hotplug;
 	struct kobject *kobj = NULL;
-	int no_warn;
+	int ret;
 
 	if (!slot || !slot->ops)
 		return;
-	kobj = kset_find_obj(module_kset, slot->ops->mod_name);
+	kobj = kset_find_obj(module_kset, slot->mod_name);
 	if (!kobj)
 		return;
-	no_warn = sysfs_create_link(&pci_slot->kobj, kobj, "module");
+	ret = sysfs_create_link(&pci_slot->kobj, kobj, "module");
+	if (ret)
+		dev_err(&pci_slot->bus->dev, "Error creating sysfs link (%d)\n",
+			ret);
 	kobject_put(kobj);
 }
 EXPORT_SYMBOL_GPL(pci_hp_create_module_link);
@@ -354,7 +368,7 @@ static int pci_slot_init(void)
 	pci_slots_kset = kset_create_and_add("slots", NULL,
 						&pci_bus_kset->kobj);
 	if (!pci_slots_kset) {
-		printk(KERN_ERR "PCI: Slot initialization failure\n");
+		pr_err("PCI: Slot initialization failure\n");
 		return -ENOMEM;
 	}
 	return 0;

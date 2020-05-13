@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Driver for loading USB isight firmware
  *
  * Copyright (C) 2008 Matthew Garrett <mjg@redhat.com>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation, version 2.
  *
  * The USB isight cameras in recent Apples are roughly compatible with the USB
  * video class specification, and can be driven by uvcvideo. However, they
@@ -25,8 +22,9 @@
 #include <linux/firmware.h>
 #include <linux/errno.h>
 #include <linux/module.h>
+#include <linux/slab.h>
 
-static struct usb_device_id id_table[] = {
+static const struct usb_device_id id_table[] = {
 	{USB_DEVICE(0x05ac, 0x8300)},
 	{},
 };
@@ -114,6 +112,8 @@ out:
 	return ret;
 }
 
+MODULE_FIRMWARE("isight.fw");
+
 static void isight_firmware_disconnect(struct usb_interface *intf)
 {
 }
@@ -125,18 +125,7 @@ static struct usb_driver isight_firmware_driver = {
 	.id_table = id_table,
 };
 
-static int __init isight_firmware_init(void)
-{
-	return usb_register(&isight_firmware_driver);
-}
-
-static void __exit isight_firmware_exit(void)
-{
-	usb_deregister(&isight_firmware_driver);
-}
-
-module_init(isight_firmware_init);
-module_exit(isight_firmware_exit);
+module_usb_driver(isight_firmware_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Matthew Garrett <mjg@redhat.com>");

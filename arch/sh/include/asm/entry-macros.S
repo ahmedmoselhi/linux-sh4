@@ -1,3 +1,4 @@
+! SPDX-License-Identifier: GPL-2.0
 ! entry.S macro define
 	
 	.macro	cli
@@ -55,6 +56,7 @@
 	mov.l	@r15+, r2
 	mov.l	@r15+, r1
 	mov.l	@r15+, r0
+	mov.l	7834f, r0
 
 	bra	7835f
 	 nop
@@ -85,6 +87,7 @@
 	mov.l	@r15+, r2
 	mov.l	@r15+, r1
 	mov.l	@r15+, r0
+	mov.l	7834f, r0
 
 	bra	7835f
 	 nop

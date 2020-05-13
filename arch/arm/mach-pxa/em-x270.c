@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Support for CompuLab EM-X270 platform
  *
  * Copyright (C) 2007, 2008 CompuLab, Ltd.
  * Author: Mike Rapoport <mike@compulab.co.il>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/irq.h>
@@ -14,39 +11,38 @@
 #include <linux/delay.h>
 
 #include <linux/dm9000.h>
-#include <linux/rtc-v3020.h>
-#include <linux/mtd/nand.h>
-#include <linux/mtd/partitions.h>
+#include <linux/platform_data/rtc-v3020.h>
+#include <linux/mtd/platnand.h>
 #include <linux/mtd/physmap.h>
 #include <linux/input.h>
 #include <linux/gpio_keys.h>
 #include <linux/gpio.h>
+#include <linux/gpio/machine.h>
 #include <linux/mfd/da903x.h>
 #include <linux/regulator/machine.h>
+#include <linux/regulator/fixed.h>
 #include <linux/spi/spi.h>
 #include <linux/spi/tdo24m.h>
 #include <linux/spi/libertas_spi.h>
+#include <linux/spi/pxa2xx_spi.h>
 #include <linux/power_supply.h>
 #include <linux/apm-emulation.h>
 #include <linux/i2c.h>
-#include <linux/i2c/pca953x.h>
+#include <linux/platform_data/pca953x.h>
+#include <linux/platform_data/i2c-pxa.h>
 #include <linux/regulator/userspace-consumer.h>
-
-#include <media/soc_camera.h>
 
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 
-#include <mach/pxa27x.h>
-#include <mach/pxa27x-udc.h>
+#include "pxa27x.h"
+#include "pxa27x-udc.h"
 #include <mach/audio.h>
-#include <mach/pxafb.h>
-#include <mach/ohci.h>
-#include <mach/mmc.h>
-#include <mach/pxa27x_keypad.h>
-#include <plat/i2c.h>
-#include <mach/camera.h>
-#include <mach/pxa2xx_spi.h>
+#include <linux/platform_data/video-pxafb.h>
+#include <linux/platform_data/usb-ohci-pxa27x.h>
+#include <linux/platform_data/mmc-pxamci.h>
+#include <linux/platform_data/keypad-pxa27x.h>
+#include <linux/platform_data/media/camera-pxa.h>
 
 #include "generic.h"
 #include "devices.h"
@@ -70,7 +66,7 @@
 /* common  GPIOs */
 #define GPIO11_NAND_CS		(11)
 #define GPIO41_ETHIRQ		(41)
-#define EM_X270_ETHIRQ		IRQ_GPIO(GPIO41_ETHIRQ)
+#define EM_X270_ETHIRQ		PXA_GPIO_TO_IRQ(GPIO41_ETHIRQ)
 #define GPIO115_WLAN_PWEN	(115)
 #define GPIO19_WLAN_STRAP	(19)
 #define GPIO9_USB_VBUS_EN	(9)
@@ -109,26 +105,7 @@ static unsigned long common_pin_config[] = {
 	GPIO111_MMC_DAT_3,
 
 	/* LCD */
-	GPIO58_LCD_LDD_0,
-	GPIO59_LCD_LDD_1,
-	GPIO60_LCD_LDD_2,
-	GPIO61_LCD_LDD_3,
-	GPIO62_LCD_LDD_4,
-	GPIO63_LCD_LDD_5,
-	GPIO64_LCD_LDD_6,
-	GPIO65_LCD_LDD_7,
-	GPIO66_LCD_LDD_8,
-	GPIO67_LCD_LDD_9,
-	GPIO68_LCD_LDD_10,
-	GPIO69_LCD_LDD_11,
-	GPIO70_LCD_LDD_12,
-	GPIO71_LCD_LDD_13,
-	GPIO72_LCD_LDD_14,
-	GPIO73_LCD_LDD_15,
-	GPIO74_LCD_FCLK,
-	GPIO75_LCD_LCLK,
-	GPIO76_LCD_PCLK,
-	GPIO77_LCD_BIAS,
+	GPIOxx_LCD_TFT_16BPP,
 
 	/* QCI */
 	GPIO84_CIF_FV,
@@ -305,11 +282,10 @@ static void nand_cs_off(void)
 }
 
 /* hardware specific access to control-lines */
-static void em_x270_nand_cmd_ctl(struct mtd_info *mtd, int dat,
+static void em_x270_nand_cmd_ctl(struct nand_chip *this, int dat,
 				 unsigned int ctrl)
 {
-	struct nand_chip *this = mtd->priv;
-	unsigned long nandaddr = (unsigned long)this->IO_ADDR_W;
+	unsigned long nandaddr = (unsigned long)this->legacy.IO_ADDR_W;
 
 	dsb();
 
@@ -329,15 +305,15 @@ static void em_x270_nand_cmd_ctl(struct mtd_info *mtd, int dat,
 	}
 
 	dsb();
-	this->IO_ADDR_W = (void __iomem *)nandaddr;
+	this->legacy.IO_ADDR_W = (void __iomem *)nandaddr;
 	if (dat != NAND_CMD_NONE)
-		writel(dat, this->IO_ADDR_W);
+		writel(dat, this->legacy.IO_ADDR_W);
 
 	dsb();
 }
 
 /* read device ready pin */
-static int em_x270_nand_device_ready(struct mtd_info *mtd)
+static int em_x270_nand_device_ready(struct nand_chip *this)
 {
 	dsb();
 
@@ -357,8 +333,6 @@ static struct mtd_partition em_x270_partition_info[] = {
 	},
 };
 
-static const char *em_x270_part_probes[] = { "cmdlinepart", NULL };
-
 struct platform_nand_data em_x270_nand_platdata = {
 	.chip = {
 		.nr_chips = 1,
@@ -366,10 +340,8 @@ struct platform_nand_data em_x270_nand_platdata = {
 		.nr_partitions = ARRAY_SIZE(em_x270_partition_info),
 		.partitions = em_x270_partition_info,
 		.chip_delay = 20,
-		.part_probe_types = em_x270_part_probes,
 	},
 	.ctrl = {
-		.hwcontrol = 0,
 		.dev_ready = em_x270_nand_device_ready,
 		.select_chip = 0,
 		.cmd_ctrl = em_x270_nand_cmd_ctl,
@@ -400,7 +372,7 @@ static void __init em_x270_init_nand(void)
 
 	err = gpio_request(GPIO11_NAND_CS, "NAND CS");
 	if (err) {
-		pr_warning("EM-X270: failed to request NAND CS gpio\n");
+		pr_warn("EM-X270: failed to request NAND CS gpio\n");
 		return;
 	}
 
@@ -408,7 +380,7 @@ static void __init em_x270_init_nand(void)
 
 	err = gpio_request(nand_rb, "NAND R/B");
 	if (err) {
-		pr_warning("EM-X270: failed to request NAND R/B gpio\n");
+		pr_warn("EM-X270: failed to request NAND R/B gpio\n");
 		gpio_free(GPIO11_NAND_CS);
 		return;
 	}
@@ -499,16 +471,24 @@ static int em_x270_usb_hub_init(void)
 	/* USB Hub power-on and reset */
 	gpio_direction_output(usb_hub_reset, 1);
 	gpio_direction_output(GPIO9_USB_VBUS_EN, 0);
-	regulator_enable(em_x270_usb_ldo);
+	err = regulator_enable(em_x270_usb_ldo);
+	if (err)
+		goto err_free_rst_gpio;
+
 	gpio_set_value(usb_hub_reset, 0);
 	gpio_set_value(usb_hub_reset, 1);
 	regulator_disable(em_x270_usb_ldo);
-	regulator_enable(em_x270_usb_ldo);
+	err = regulator_enable(em_x270_usb_ldo);
+	if (err)
+		goto err_free_rst_gpio;
+
 	gpio_set_value(usb_hub_reset, 0);
 	gpio_set_value(GPIO9_USB_VBUS_EN, 1);
 
 	return 0;
 
+err_free_rst_gpio:
+	gpio_free(usb_hub_reset);
 err_free_vbus_gpio:
 	gpio_free(GPIO9_USB_VBUS_EN);
 err_free_usb_ldo:
@@ -564,6 +544,15 @@ static inline void em_x270_init_ohci(void) {}
 #if defined(CONFIG_MMC) || defined(CONFIG_MMC_MODULE)
 static struct regulator *em_x270_sdio_ldo;
 
+static struct gpiod_lookup_table em_x270_mci_wp_gpio_table = {
+	.dev_id = "pxa2xx-mci.0",
+	.table = {
+		/* Write protect on GPIO 95 */
+		GPIO_LOOKUP("gpio-pxa", GPIO95_MMC_WP, "wp", GPIO_ACTIVE_LOW),
+		{ },
+	},
+};
+
 static int em_x270_mci_init(struct device *dev,
 			    irq_handler_t em_x270_detect_int,
 			    void *data)
@@ -578,23 +567,14 @@ static int em_x270_mci_init(struct device *dev,
 	}
 
 	err = request_irq(gpio_to_irq(mmc_cd), em_x270_detect_int,
-			      IRQF_DISABLED | IRQF_TRIGGER_RISING |
-			      IRQF_TRIGGER_FALLING,
+			      IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING,
 			      "MMC card detect", data);
 	if (err) {
 		dev_err(dev, "can't request MMC card detect IRQ: %d\n", err);
 		goto err_irq;
 	}
 
-	if (machine_is_em_x270()) {
-		err = gpio_request(GPIO95_MMC_WP, "MMC WP");
-		if (err) {
-			dev_err(dev, "can't request MMC write protect: %d\n",
-				err);
-			goto err_gpio_wp;
-		}
-		gpio_direction_input(GPIO95_MMC_WP);
-	} else {
+	if (!machine_is_em_x270()) {
 		err = gpio_request(GPIO38_SD_PWEN, "sdio power");
 		if (err) {
 			dev_err(dev, "can't request MMC power control : %d\n",
@@ -614,7 +594,7 @@ err_irq:
 	return err;
 }
 
-static void em_x270_mci_setpower(struct device *dev, unsigned int vdd)
+static int em_x270_mci_setpower(struct device *dev, unsigned int vdd)
 {
 	struct pxamci_platform_data* p_d = dev->platform_data;
 
@@ -622,10 +602,11 @@ static void em_x270_mci_setpower(struct device *dev, unsigned int vdd)
 		int vdd_uV = (2000 + (vdd - __ffs(MMC_VDD_20_21)) * 100) * 1000;
 
 		regulator_set_voltage(em_x270_sdio_ldo, vdd_uV, vdd_uV);
-		regulator_enable(em_x270_sdio_ldo);
+		return regulator_enable(em_x270_sdio_ldo);
 	} else {
 		regulator_disable(em_x270_sdio_ldo);
 	}
+	return 0;
 }
 
 static void em_x270_mci_exit(struct device *dev, void *data)
@@ -633,18 +614,12 @@ static void em_x270_mci_exit(struct device *dev, void *data)
 	free_irq(gpio_to_irq(mmc_cd), data);
 	regulator_put(em_x270_sdio_ldo);
 
-	if (machine_is_em_x270())
-		gpio_free(GPIO95_MMC_WP);
-	else
+	if (!machine_is_em_x270())
 		gpio_free(GPIO38_SD_PWEN);
 }
 
-static int em_x270_mci_get_ro(struct device *dev)
-{
-	return gpio_get_value(GPIO95_MMC_WP);
-}
-
 static struct pxamci_platform_data em_x270_mci_platform_data = {
+	.detect_delay_ms	= 250,
 	.ocr_mask		= MMC_VDD_20_21|MMC_VDD_21_22|MMC_VDD_22_23|
 				  MMC_VDD_24_25|MMC_VDD_25_26|MMC_VDD_26_27|
 				  MMC_VDD_27_28|MMC_VDD_28_29|MMC_VDD_29_30|
@@ -652,17 +627,13 @@ static struct pxamci_platform_data em_x270_mci_platform_data = {
 	.init 			= em_x270_mci_init,
 	.setpower 		= em_x270_mci_setpower,
 	.exit			= em_x270_mci_exit,
-	.gpio_card_detect	= -1,
-	.gpio_card_ro		= -1,
-	.gpio_power		= -1,
 };
 
 static void __init em_x270_init_mmc(void)
 {
 	if (machine_is_em_x270())
-		em_x270_mci_platform_data.get_ro = em_x270_mci_get_ro;
+		gpiod_add_lookup_table(&em_x270_mci_wp_gpio_table);
 
-	em_x270_mci_platform_data.detect_delay	= msecs_to_jiffies(250);
 	pxa_set_mci_info(&em_x270_mci_platform_data);
 }
 #else
@@ -708,14 +679,14 @@ static struct pxafb_mach_info em_x270_lcd = {
 
 static void __init em_x270_init_lcd(void)
 {
-	set_pxa_fb_info(&em_x270_lcd);
+	pxa_set_fb_info(NULL, &em_x270_lcd);
 }
 #else
 static inline void em_x270_init_lcd(void) {}
 #endif
 
 #if defined(CONFIG_SPI_PXA2XX) || defined(CONFIG_SPI_PXA2XX_MODULE)
-static struct pxa2xx_spi_master em_x270_spi_info = {
+static struct pxa2xx_spi_controller em_x270_spi_info = {
 	.num_chipselect	= 1,
 };
 
@@ -729,7 +700,7 @@ static struct tdo24m_platform_data em_x270_tdo24m_pdata = {
 	.model = TDO35S,
 };
 
-static struct pxa2xx_spi_master em_x270_spi_2_info = {
+static struct pxa2xx_spi_controller em_x270_spi_2_info = {
 	.num_chipselect	= 1,
 	.enable_dma	= 1,
 };
@@ -824,7 +795,7 @@ static struct spi_board_info em_x270_spi_devices[] __initdata = {
 		.modalias		= "libertas_spi",
 		.max_speed_hz		= 13000000,
 		.bus_num		= 2,
-		.irq			= IRQ_GPIO(116),
+		.irq			= PXA_GPIO_TO_IRQ(116),
 		.chip_select		= 0,
 		.controller_data	= &em_x270_libertas_chip,
 		.platform_data		= &em_x270_libertas_pdata,
@@ -855,21 +826,25 @@ static inline void em_x270_init_ac97(void) {}
 #endif
 
 #if defined(CONFIG_KEYBOARD_PXA27x) || defined(CONFIG_KEYBOARD_PXA27x_MODULE)
-static unsigned int em_x270_module_matrix_keys[] = {
+static const unsigned int em_x270_module_matrix_keys[] = {
 	KEY(0, 0, KEY_A), KEY(1, 0, KEY_UP), KEY(2, 1, KEY_B),
 	KEY(0, 2, KEY_LEFT), KEY(1, 1, KEY_ENTER), KEY(2, 0, KEY_RIGHT),
 	KEY(0, 1, KEY_C), KEY(1, 2, KEY_DOWN), KEY(2, 2, KEY_D),
+};
+
+static struct matrix_keymap_data em_x270_matrix_keymap_data = {
+	.keymap			= em_x270_module_matrix_keys,
+	.keymap_size		= ARRAY_SIZE(em_x270_module_matrix_keys),
 };
 
 struct pxa27x_keypad_platform_data em_x270_module_keypad_info = {
 	/* code map for the matrix keys */
 	.matrix_key_rows	= 3,
 	.matrix_key_cols	= 3,
-	.matrix_key_map		= em_x270_module_matrix_keys,
-	.matrix_key_map_size	= ARRAY_SIZE(em_x270_module_matrix_keys),
+	.matrix_keymap_data	= &em_x270_matrix_keymap_data,
 };
 
-static unsigned int em_x270_exeda_matrix_keys[] = {
+static const unsigned int em_x270_exeda_matrix_keys[] = {
 	KEY(0, 0, KEY_RIGHTSHIFT), KEY(0, 1, KEY_RIGHTCTRL),
 	KEY(0, 2, KEY_RIGHTALT), KEY(0, 3, KEY_SPACE),
 	KEY(0, 4, KEY_LEFTALT), KEY(0, 5, KEY_LEFTCTRL),
@@ -911,12 +886,16 @@ static unsigned int em_x270_exeda_matrix_keys[] = {
 	KEY(7, 6, 0), KEY(7, 7, 0),
 };
 
+static struct matrix_keymap_data em_x270_exeda_matrix_keymap_data = {
+	.keymap			= em_x270_exeda_matrix_keys,
+	.keymap_size		= ARRAY_SIZE(em_x270_exeda_matrix_keys),
+};
+
 struct pxa27x_keypad_platform_data em_x270_exeda_keypad_info = {
 	/* code map for the matrix keys */
 	.matrix_key_rows	= 8,
 	.matrix_key_cols	= 8,
-	.matrix_key_map		= em_x270_exeda_matrix_keys,
-	.matrix_key_map_size	= ARRAY_SIZE(em_x270_exeda_matrix_keys),
+	.matrix_keymap_data	= &em_x270_exeda_matrix_keymap_data,
 };
 
 static void __init em_x270_init_keypad(void)
@@ -964,9 +943,7 @@ static inline void em_x270_init_gpio_keys(void) {}
 
 /* Quick Capture Interface and sensor setup */
 #if defined(CONFIG_VIDEO_PXA27x) || defined(CONFIG_VIDEO_PXA27x_MODULE)
-static struct regulator *em_x270_camera_ldo;
-
-static int em_x270_sensor_init(struct device *dev)
+static int em_x270_sensor_init(void)
 {
 	int ret;
 
@@ -975,81 +952,51 @@ static int em_x270_sensor_init(struct device *dev)
 		return ret;
 
 	gpio_direction_output(cam_reset, 0);
-
-	em_x270_camera_ldo = regulator_get(NULL, "vcc cam");
-	if (em_x270_camera_ldo == NULL) {
-		gpio_free(cam_reset);
-		return -ENODEV;
-	}
-
-	ret = regulator_enable(em_x270_camera_ldo);
-	if (ret) {
-		regulator_put(em_x270_camera_ldo);
-		gpio_free(cam_reset);
-		return ret;
-	}
-
 	gpio_set_value(cam_reset, 1);
 
 	return 0;
 }
 
+static struct regulator_consumer_supply camera_dummy_supplies[] = {
+	REGULATOR_SUPPLY("vdd", "0-005d"),
+};
+
+static struct regulator_init_data camera_dummy_initdata = {
+	.consumer_supplies = camera_dummy_supplies,
+	.num_consumer_supplies = ARRAY_SIZE(camera_dummy_supplies),
+	.constraints = {
+		.valid_ops_mask = REGULATOR_CHANGE_STATUS,
+	},
+};
+
+static struct fixed_voltage_config camera_dummy_config = {
+	.supply_name		= "camera_vdd",
+	.input_supply		= "vcc cam",
+	.microvolts		= 2800000,
+	.init_data		= &camera_dummy_initdata,
+};
+
+static struct platform_device camera_supply_dummy_device = {
+	.name	= "reg-fixed-voltage",
+	.id	= 1,
+	.dev	= {
+		.platform_data = &camera_dummy_config,
+	},
+};
+
 struct pxacamera_platform_data em_x270_camera_platform_data = {
-	.init	= em_x270_sensor_init,
 	.flags  = PXA_CAMERA_MASTER | PXA_CAMERA_DATAWIDTH_8 |
 		PXA_CAMERA_PCLK_EN | PXA_CAMERA_MCLK_EN,
 	.mclk_10khz = 2600,
-};
-
-static int em_x270_sensor_power(struct device *dev, int on)
-{
-	int ret;
-	int is_on = regulator_is_enabled(em_x270_camera_ldo);
-
-	if (on == is_on)
-		return 0;
-
-	gpio_set_value(cam_reset, !on);
-
-	if (on)
-		ret = regulator_enable(em_x270_camera_ldo);
-	else
-		ret = regulator_disable(em_x270_camera_ldo);
-
-	if (ret)
-		return ret;
-
-	gpio_set_value(cam_reset, on);
-
-	return 0;
-}
-
-static struct i2c_board_info em_x270_i2c_cam_info[] = {
-	{
-		I2C_BOARD_INFO("mt9m111", 0x48),
-	},
-};
-
-static struct soc_camera_link iclink = {
-	.bus_id		= 0,
-	.power		= em_x270_sensor_power,
-	.board_info	= &em_x270_i2c_cam_info[0],
-	.i2c_adapter_id	= 0,
-	.module_name	= "mt9m111",
-};
-
-static struct platform_device em_x270_camera = {
-	.name	= "soc-camera-pdrv",
-	.id	= -1,
-	.dev	= {
-		.platform_data = &iclink,
-	},
+	.sensor_i2c_adapter_id = 0,
+	.sensor_i2c_address = 0x5d,
 };
 
 static void  __init em_x270_init_camera(void)
 {
-	pxa_set_camera_info(&em_x270_camera_platform_data);
-	platform_device_register(&em_x270_camera);
+	if (em_x270_sensor_init() == 0)
+		pxa_set_camera_info(&em_x270_camera_platform_data);
+	platform_device_register(&camera_supply_dummy_device);
 }
 #else
 static inline void em_x270_init_camera(void) {}
@@ -1102,19 +1049,16 @@ static void __init em_x270_userspace_consumers_init(void)
 }
 
 /* DA9030 related initializations */
-#define REGULATOR_CONSUMER(_name, _dev, _supply)			       \
+#define REGULATOR_CONSUMER(_name, _dev_name, _supply)		        \
 	static struct regulator_consumer_supply _name##_consumers[] = {	\
-		{							\
-			.dev = _dev,					\
-			.supply = _supply,				\
-		},							\
+		REGULATOR_SUPPLY(_supply, _dev_name),			\
 	}
 
-REGULATOR_CONSUMER(ldo3, &em_x270_gps_userspace_consumer.dev, "vcc gps");
+REGULATOR_CONSUMER(ldo3, "reg-userspace-consumer.0", "vcc gps");
 REGULATOR_CONSUMER(ldo5, NULL, "vcc cam");
-REGULATOR_CONSUMER(ldo10, &pxa_device_mci.dev, "vcc sdio");
+REGULATOR_CONSUMER(ldo10, "pxa2xx-mci", "vcc sdio");
 REGULATOR_CONSUMER(ldo12, NULL, "vcc usb");
-REGULATOR_CONSUMER(ldo19, &em_x270_gprs_userspace_consumer.dev, "vcc gprs");
+REGULATOR_CONSUMER(ldo19, "reg-userspace-consumer.1", "vcc gprs");
 REGULATOR_CONSUMER(buck2, NULL, "vcc_core");
 
 #define REGULATOR_INIT(_ldo, _min_uV, _max_uV, _ops_mask)		\
@@ -1222,7 +1166,7 @@ static struct da903x_platform_data em_x270_da9030_info = {
 
 static struct i2c_board_info em_x270_i2c_pmic_info = {
 	I2C_BOARD_INFO("da9030", 0x49),
-	.irq = IRQ_GPIO(0),
+	.irq = PXA_GPIO_TO_IRQ(0),
 	.platform_data = &em_x270_da9030_info,
 };
 
@@ -1285,6 +1229,10 @@ static void __init em_x270_init(void)
 {
 	pxa2xx_mfp_config(ARRAY_AND_SIZE(common_pin_config));
 
+	pxa_set_ffuart_info(NULL);
+	pxa_set_btuart_info(NULL);
+	pxa_set_stuart_info(NULL);
+
 #ifdef CONFIG_PM
 	pxa27x_set_pwrmode(PWRMODE_DEEPSLEEP);
 #endif
@@ -1311,24 +1259,28 @@ static void __init em_x270_init(void)
 	em_x270_init_i2c();
 	em_x270_init_camera();
 	em_x270_userspace_consumers_init();
+
+	regulator_has_full_constraints();
 }
 
 MACHINE_START(EM_X270, "Compulab EM-X270")
-	.boot_params	= 0xa0000100,
-	.phys_io	= 0x40000000,
-	.io_pg_offst	= (io_p2v(0x40000000) >> 18) & 0xfffc,
-	.map_io		= pxa_map_io,
+	.atag_offset	= 0x100,
+	.map_io		= pxa27x_map_io,
+	.nr_irqs	= PXA_NR_IRQS,
 	.init_irq	= pxa27x_init_irq,
-	.timer		= &pxa_timer,
+	.handle_irq	= pxa27x_handle_irq,
+	.init_time	= pxa_timer_init,
 	.init_machine	= em_x270_init,
+	.restart	= pxa_restart,
 MACHINE_END
 
 MACHINE_START(EXEDA, "Compulab eXeda")
-	.boot_params	= 0xa0000100,
-	.phys_io	= 0x40000000,
-	.io_pg_offst	= (io_p2v(0x40000000) >> 18) & 0xfffc,
-	.map_io		= pxa_map_io,
+	.atag_offset	= 0x100,
+	.map_io		= pxa27x_map_io,
+	.nr_irqs	= PXA_NR_IRQS,
 	.init_irq	= pxa27x_init_irq,
-	.timer		= &pxa_timer,
+	.handle_irq	= pxa27x_handle_irq,
+	.init_time	= pxa_timer_init,
 	.init_machine	= em_x270_init,
+	.restart	= pxa_restart,
 MACHINE_END

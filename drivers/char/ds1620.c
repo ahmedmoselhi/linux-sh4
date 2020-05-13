@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * linux/drivers/char/ds1620.c: Dallas Semiconductors DS1620
  *   thermometer driver (as used in the Rebel.com NetWinder)
@@ -6,13 +7,14 @@
 #include <linux/miscdevice.h>
 #include <linux/delay.h>
 #include <linux/proc_fs.h>
+#include <linux/seq_file.h>
 #include <linux/capability.h>
 #include <linux/init.h>
-#include <linux/smp_lock.h>
+#include <linux/mutex.h>
 
 #include <mach/hardware.h>
 #include <asm/mach-types.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/therm.h>
 
 #ifdef CONFIG_PROC_FS
@@ -34,6 +36,7 @@
 #define CFG_CPU			2
 #define CFG_1SHOT		1
 
+static DEFINE_MUTEX(ds1620_mutex);
 static const char *fan_state[] = { "off", "on", "on (hardwired)" };
 
 /*
@@ -73,21 +76,21 @@ static inline void netwinder_ds1620_reset(void)
 
 static inline void netwinder_lock(unsigned long *flags)
 {
-	spin_lock_irqsave(&nw_gpio_lock, *flags);
+	raw_spin_lock_irqsave(&nw_gpio_lock, *flags);
 }
 
 static inline void netwinder_unlock(unsigned long *flags)
 {
-	spin_unlock_irqrestore(&nw_gpio_lock, *flags);
+	raw_spin_unlock_irqrestore(&nw_gpio_lock, *flags);
 }
 
 static inline void netwinder_set_fan(int i)
 {
 	unsigned long flags;
 
-	spin_lock_irqsave(&nw_gpio_lock, flags);
+	raw_spin_lock_irqsave(&nw_gpio_lock, flags);
 	nw_gpio_modify_op(GPIO_FAN, i ? GPIO_FAN : 0);
-	spin_unlock_irqrestore(&nw_gpio_lock, flags);
+	raw_spin_unlock_irqrestore(&nw_gpio_lock, flags);
 }
 
 static inline int netwinder_get_fan(void)
@@ -210,8 +213,7 @@ static void ds1620_read_state(struct therm *therm)
 
 static int ds1620_open(struct inode *inode, struct file *file)
 {
-	cycle_kernel_lock();
-	return nonseekable_open(inode, file);
+	return stream_open(inode, file);
 }
 
 static ssize_t
@@ -232,7 +234,7 @@ ds1620_read(struct file *file, char __user *buf, size_t count, loff_t *ptr)
 }
 
 static int
-ds1620_ioctl(struct inode *inode, struct file *file, unsigned int cmd, unsigned long arg)
+ds1620_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	struct therm therm;
 	union {
@@ -316,10 +318,20 @@ ds1620_ioctl(struct inode *inode, struct file *file, unsigned int cmd, unsigned 
 	return 0;
 }
 
+static long
+ds1620_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
+	int ret;
+
+	mutex_lock(&ds1620_mutex);
+	ret = ds1620_ioctl(file, cmd, arg);
+	mutex_unlock(&ds1620_mutex);
+
+	return ret;
+}
+
 #ifdef THERM_USE_PROC
-static int
-proc_therm_ds1620_read(char *buf, char **start, off_t offset,
-		       int len, int *eof, void *unused)
+static int ds1620_proc_therm_show(struct seq_file *m, void *v)
 {
 	struct therm th;
 	int temp;
@@ -327,24 +339,21 @@ proc_therm_ds1620_read(char *buf, char **start, off_t offset,
 	ds1620_read_state(&th);
 	temp =  cvt_9_to_int(ds1620_in(THERM_READ_TEMP, 9));
 
-	len = sprintf(buf, "Thermostat: HI %i.%i, LOW %i.%i; "
-		      "temperature: %i.%i C, fan %s\n",
-		      th.hi >> 1, th.hi & 1 ? 5 : 0,
-		      th.lo >> 1, th.lo & 1 ? 5 : 0,
-		      temp  >> 1, temp  & 1 ? 5 : 0,
-		      fan_state[netwinder_get_fan()]);
-
-	return len;
+	seq_printf(m, "Thermostat: HI %i.%i, LOW %i.%i; temperature: %i.%i C, fan %s\n",
+		   th.hi >> 1, th.hi & 1 ? 5 : 0,
+		   th.lo >> 1, th.lo & 1 ? 5 : 0,
+		   temp  >> 1, temp  & 1 ? 5 : 0,
+		   fan_state[netwinder_get_fan()]);
+	return 0;
 }
-
-static struct proc_dir_entry *proc_therm_ds1620;
 #endif
 
 static const struct file_operations ds1620_fops = {
 	.owner		= THIS_MODULE,
 	.open		= ds1620_open,
 	.read		= ds1620_read,
-	.ioctl		= ds1620_ioctl,
+	.unlocked_ioctl	= ds1620_unlocked_ioctl,
+	.llseek		= no_llseek,
 };
 
 static struct miscdevice ds1620_miscdev = {
@@ -384,10 +393,7 @@ static int __init ds1620_init(void)
 		return ret;
 
 #ifdef THERM_USE_PROC
-	proc_therm_ds1620 = create_proc_entry("therm", 0, NULL);
-	if (proc_therm_ds1620)
-		proc_therm_ds1620->read_proc = proc_therm_ds1620_read;
-	else
+	if (!proc_create_single("therm", 0, NULL, ds1620_proc_therm_show))
 		printk(KERN_ERR "therm: unable to register /proc/therm\n");
 #endif
 

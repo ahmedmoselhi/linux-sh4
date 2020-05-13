@@ -1,70 +1,32 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_X86_KVM_PARA_H
 #define _ASM_X86_KVM_PARA_H
 
-#include <linux/types.h>
-
-/* This CPUID returns the signature 'KVMKVMKVM' in ebx, ecx, and edx.  It
- * should be used to determine that a VM is running under KVM.
- */
-#define KVM_CPUID_SIGNATURE	0x40000000
-
-/* This CPUID returns a feature bitmap in eax.  Before enabling a particular
- * paravirtualization, the appropriate feature bit should be checked.
- */
-#define KVM_CPUID_FEATURES	0x40000001
-#define KVM_FEATURE_CLOCKSOURCE		0
-#define KVM_FEATURE_NOP_IO_DELAY	1
-#define KVM_FEATURE_MMU_OP		2
-
-#define MSR_KVM_WALL_CLOCK  0x11
-#define MSR_KVM_SYSTEM_TIME 0x12
-
-#define KVM_MAX_MMU_OP_BATCH           32
-
-/* Operations for KVM_HC_MMU_OP */
-#define KVM_MMU_OP_WRITE_PTE            1
-#define KVM_MMU_OP_FLUSH_TLB	        2
-#define KVM_MMU_OP_RELEASE_PT	        3
-
-/* Payload for KVM_HC_MMU_OP */
-struct kvm_mmu_op_header {
-	__u32 op;
-	__u32 pad;
-};
-
-struct kvm_mmu_op_write_pte {
-	struct kvm_mmu_op_header header;
-	__u64 pte_phys;
-	__u64 pte_val;
-};
-
-struct kvm_mmu_op_flush_tlb {
-	struct kvm_mmu_op_header header;
-};
-
-struct kvm_mmu_op_release_pt {
-	struct kvm_mmu_op_header header;
-	__u64 pt_phys;
-};
-
-#ifdef __KERNEL__
 #include <asm/processor.h>
+#include <asm/alternative.h>
+#include <uapi/asm/kvm_para.h>
 
 extern void kvmclock_init(void);
 
+#ifdef CONFIG_KVM_GUEST
+bool kvm_check_and_clear_guest_paused(void);
+#else
+static inline bool kvm_check_and_clear_guest_paused(void)
+{
+	return false;
+}
+#endif /* CONFIG_KVM_GUEST */
 
-/* This instruction is vmcall.  On non-VT architectures, it will generate a
- * trap that we will then rewrite to the appropriate instruction.
- */
-#define KVM_HYPERCALL ".byte 0x0f,0x01,0xc1"
+#define KVM_HYPERCALL \
+        ALTERNATIVE(".byte 0x0f,0x01,0xc1", ".byte 0x0f,0x01,0xd9", X86_FEATURE_VMMCALL)
 
-/* For KVM hypercalls, a three-byte sequence of either the vmrun or the vmmrun
+/* For KVM hypercalls, a three-byte sequence of either the vmcall or the vmmcall
  * instruction.  The hypervisor may replace it with something else but only the
  * instructions are guaranteed to be supported.
  *
  * Up to four arguments may be passed in rbx, rcx, rdx, and rsi respectively.
  * The hypercall number should be placed in rax and the return value will be
- * placed in rax.  No other registers will be clobbered unless explicited
+ * placed in rax.  No other registers will be clobbered unless explicitly
  * noted by the particular hypercall.
  */
 
@@ -122,28 +84,52 @@ static inline long kvm_hypercall4(unsigned int nr, unsigned long p1,
 	return ret;
 }
 
-static inline int kvm_para_available(void)
+#ifdef CONFIG_KVM_GUEST
+bool kvm_para_available(void);
+unsigned int kvm_arch_para_features(void);
+unsigned int kvm_arch_para_hints(void);
+void kvm_async_pf_task_wait(u32 token, int interrupt_kernel);
+void kvm_async_pf_task_wake(u32 token);
+u32 kvm_read_and_reset_pf_reason(void);
+extern void kvm_disable_steal_time(void);
+void do_async_page_fault(struct pt_regs *regs, unsigned long error_code, unsigned long address);
+
+#ifdef CONFIG_PARAVIRT_SPINLOCKS
+void __init kvm_spinlock_init(void);
+#else /* !CONFIG_PARAVIRT_SPINLOCKS */
+static inline void kvm_spinlock_init(void)
 {
-	unsigned int eax, ebx, ecx, edx;
-	char signature[13];
+}
+#endif /* CONFIG_PARAVIRT_SPINLOCKS */
 
-	cpuid(KVM_CPUID_SIGNATURE, &eax, &ebx, &ecx, &edx);
-	memcpy(signature + 0, &ebx, 4);
-	memcpy(signature + 4, &ecx, 4);
-	memcpy(signature + 8, &edx, 4);
-	signature[12] = 0;
+#else /* CONFIG_KVM_GUEST */
+#define kvm_async_pf_task_wait(T, I) do {} while(0)
+#define kvm_async_pf_task_wake(T) do {} while(0)
 
-	if (strcmp(signature, "KVMKVMKVM") == 0)
-		return 1;
-
-	return 0;
+static inline bool kvm_para_available(void)
+{
+	return false;
 }
 
 static inline unsigned int kvm_arch_para_features(void)
 {
-	return cpuid_eax(KVM_CPUID_FEATURES);
+	return 0;
 }
 
+static inline unsigned int kvm_arch_para_hints(void)
+{
+	return 0;
+}
+
+static inline u32 kvm_read_and_reset_pf_reason(void)
+{
+	return 0;
+}
+
+static inline void kvm_disable_steal_time(void)
+{
+	return;
+}
 #endif
 
 #endif /* _ASM_X86_KVM_PARA_H */

@@ -1,5 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_SH_KPROBES_H
 #define __ASM_SH_KPROBES_H
+
+#include <asm-generic/kprobes.h>
+
+#define BREAKPOINT_INSTRUCTION	0xc33a
 
 #ifdef CONFIG_KPROBES
 
@@ -7,8 +12,6 @@
 #include <linux/ptrace.h>
 
 typedef insn_size_t kprobe_opcode_t;
-#define BREAKPOINT_INSTRUCTION	0xc3c3
-#define BREAKPOINT_INSTRUCTION_REMOTE 0xc320
 
 #define MAX_INSN_SIZE 16
 #define MAX_STACK_SIZE 64
@@ -17,7 +20,6 @@ typedef insn_size_t kprobe_opcode_t;
 	? (MAX_STACK_SIZE) \
 	: (((unsigned long)current_thread_info()) + THREAD_SIZE - (ADDR)))
 
-#define regs_return_value(_regs)		((_regs)->regs[0])
 #define flush_insn_slot(p)		do { } while (0)
 #define kretprobe_blacklist_size	0
 
@@ -25,7 +27,6 @@ struct kprobe;
 
 void arch_remove_kprobe(struct kprobe *);
 void kretprobe_trampoline(void);
-void jprobe_return_end(void);
 
 /* Architecture specific copy of original instruction*/
 struct arch_specific_insn {
@@ -41,9 +42,6 @@ struct prev_kprobe {
 /* per-cpu kprobe control block */
 struct kprobe_ctlblk {
 	unsigned long kprobe_status;
-	unsigned long jprobe_saved_r15;
-	struct pt_regs jprobe_saved_regs;
-	kprobe_opcode_t jprobes_stack[MAX_STACK_SIZE];
 	struct prev_kprobe prev_kprobe;
 };
 

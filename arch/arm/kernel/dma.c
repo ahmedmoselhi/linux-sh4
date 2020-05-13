@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/arch/arm/kernel/dma.c
  *
  *  Copyright (C) 1995-2000 Russell King
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  *  Front-end to the DMA handling.  This handles the allocation/freeing
  *  of DMA channels, and provides a unified interface to the machines
@@ -16,12 +13,14 @@
 #include <linux/spinlock.h>
 #include <linux/errno.h>
 #include <linux/scatterlist.h>
+#include <linux/seq_file.h>
+#include <linux/proc_fs.h>
 
 #include <asm/dma.h>
 
 #include <asm/mach/dma.h>
 
-DEFINE_SPINLOCK(dma_spin_lock);
+DEFINE_RAW_SPINLOCK(dma_spin_lock);
 EXPORT_SYMBOL(dma_spin_lock);
 
 static dma_t *dma_chan[MAX_DMA_CHANNELS];
@@ -77,7 +76,7 @@ int request_dma(unsigned int chan, const char *device_id)
 	return ret;
 
 bad_dma:
-	printk(KERN_ERR "dma: trying to allocate DMA%d\n", chan);
+	pr_err("dma: trying to allocate DMA%d\n", chan);
 	return -EINVAL;
 
 busy:
@@ -98,7 +97,7 @@ void free_dma(unsigned int chan)
 		goto bad_dma;
 
 	if (dma->active) {
-		printk(KERN_ERR "dma%d: freeing active DMA\n", chan);
+		pr_err("dma%d: freeing active DMA\n", chan);
 		dma->d_ops->disable(chan, dma);
 		dma->active = 0;
 	}
@@ -109,11 +108,11 @@ void free_dma(unsigned int chan)
 		return;
 	}
 
-	printk(KERN_ERR "dma%d: trying to free free DMA\n", chan);
+	pr_err("dma%d: trying to free free DMA\n", chan);
 	return;
 
 bad_dma:
-	printk(KERN_ERR "dma: trying to free DMA%d\n", chan);
+	pr_err("dma: trying to free DMA%d\n", chan);
 }
 EXPORT_SYMBOL(free_dma);
 
@@ -124,8 +123,7 @@ void set_dma_sg (unsigned int chan, struct scatterlist *sg, int nr_sg)
 	dma_t *dma = dma_channel(chan);
 
 	if (dma->active)
-		printk(KERN_ERR "dma%d: altering DMA SG while "
-		       "DMA active\n", chan);
+		pr_err("dma%d: altering DMA SG while DMA active\n", chan);
 
 	dma->sg = sg;
 	dma->sgcount = nr_sg;
@@ -142,8 +140,7 @@ void __set_dma_addr (unsigned int chan, void *addr)
 	dma_t *dma = dma_channel(chan);
 
 	if (dma->active)
-		printk(KERN_ERR "dma%d: altering DMA address while "
-		       "DMA active\n", chan);
+		pr_err("dma%d: altering DMA address while DMA active\n", chan);
 
 	dma->sg = NULL;
 	dma->addr = addr;
@@ -160,8 +157,7 @@ void set_dma_count (unsigned int chan, unsigned long count)
 	dma_t *dma = dma_channel(chan);
 
 	if (dma->active)
-		printk(KERN_ERR "dma%d: altering DMA count while "
-		       "DMA active\n", chan);
+		pr_err("dma%d: altering DMA count while DMA active\n", chan);
 
 	dma->sg = NULL;
 	dma->count = count;
@@ -176,8 +172,7 @@ void set_dma_mode (unsigned int chan, unsigned int mode)
 	dma_t *dma = dma_channel(chan);
 
 	if (dma->active)
-		printk(KERN_ERR "dma%d: altering DMA mode while "
-		       "DMA active\n", chan);
+		pr_err("dma%d: altering DMA mode while DMA active\n", chan);
 
 	dma->dma_mode = mode;
 	dma->invalid = 1;
@@ -200,7 +195,7 @@ void enable_dma (unsigned int chan)
 	return;
 
 free_dma:
-	printk(KERN_ERR "dma%d: trying to enable free DMA\n", chan);
+	pr_err("dma%d: trying to enable free DMA\n", chan);
 	BUG();
 }
 EXPORT_SYMBOL(enable_dma);
@@ -221,7 +216,7 @@ void disable_dma (unsigned int chan)
 	return;
 
 free_dma:
-	printk(KERN_ERR "dma%d: trying to disable free DMA\n", chan);
+	pr_err("dma%d: trying to disable free DMA\n", chan);
 	BUG();
 }
 EXPORT_SYMBOL(disable_dma);
@@ -238,7 +233,7 @@ EXPORT_SYMBOL(dma_channel_active);
 
 void set_dma_page(unsigned int chan, char pagenr)
 {
-	printk(KERN_ERR "dma%d: trying to set_dma_page\n", chan);
+	pr_err("dma%d: trying to set_dma_page\n", chan);
 }
 EXPORT_SYMBOL(set_dma_page);
 
@@ -264,3 +259,25 @@ int get_dma_residue(unsigned int chan)
 	return ret;
 }
 EXPORT_SYMBOL(get_dma_residue);
+
+#ifdef CONFIG_PROC_FS
+static int proc_dma_show(struct seq_file *m, void *v)
+{
+	int i;
+
+	for (i = 0 ; i < MAX_DMA_CHANNELS ; i++) {
+		dma_t *dma = dma_channel(i);
+		if (dma && dma->lock)
+			seq_printf(m, "%2d: %s\n", i, dma->device_id);
+	}
+	return 0;
+}
+
+static int __init proc_dma_init(void)
+{
+	proc_create_single("dma", 0, NULL, proc_dma_show);
+	return 0;
+}
+
+__initcall(proc_dma_init);
+#endif

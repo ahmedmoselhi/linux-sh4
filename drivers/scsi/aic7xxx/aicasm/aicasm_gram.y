@@ -52,11 +52,7 @@
 #include <string.h>
 #include <sysexits.h>
 
-#ifdef __linux__
 #include "../queue.h"
-#else
-#include <sys/queue.h>
-#endif
 
 #include "aicasm.h"
 #include "aicasm_symbol.h"
@@ -803,7 +799,7 @@ macro_arglist:
 |	macro_arglist ',' T_ARG
 	{
 		if ($1 == 0) {
-			stop("Comma without preceeding argument in arg list",
+			stop("Comma without preceding argument in arg list",
 			     EX_DATAERR);
 			/* NOTREACHED */
 		}
@@ -1319,8 +1315,8 @@ code:
 ;
 
 	/*
-	 * This grammer differs from the one in the aic7xxx
-	 * reference manual since the grammer listed there is
+	 * This grammar differs from the one in the aic7xxx
+	 * reference manual since the grammar listed there is
 	 * ambiguous and causes a shift/reduce conflict.
 	 * It also seems more logical as the "immediate"
 	 * argument is listed as the second arg like the
@@ -1799,7 +1795,7 @@ format_3_instr(int opcode, symbol_ref_t *src,
 	instr = seq_alloc();
 	f3_instr = &instr->format.format3;
 	if (address->symbol == NULL) {
-		/* 'dot' referrence.  Use the current instruction pointer */
+		/* 'dot' reference.  Use the current instruction pointer */
 		addr = instruction_ptr + address->offset;
 	} else if (address->symbol->type == UNINITIALIZED) {
 		/* forward reference */

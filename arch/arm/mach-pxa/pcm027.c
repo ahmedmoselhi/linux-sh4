@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/arch/arm/mach-pxa/pcm027.c
  *  Support for the Phytec phyCORE-PXA270 CPU card (aka PCM-027).
@@ -14,10 +15,6 @@
  *  based on Intel Mainstone Board
  *
  *  Copyright 2007 Juergen Beisert @ Pengutronix (j.beisert@pengutronix.de)
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2 as
- *  published by the Free Software Foundation.
  */
 
 #include <linux/irq.h>
@@ -25,13 +22,13 @@
 #include <linux/mtd/physmap.h>
 #include <linux/spi/spi.h>
 #include <linux/spi/max7301.h>
+#include <linux/spi/pxa2xx_spi.h>
 #include <linux/leds.h>
 
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
-#include <mach/pxa27x.h>
-#include <mach/pxa2xx_spi.h>
-#include <mach/pcm027.h>
+#include "pxa27x.h"
+#include "pcm027.h"
 #include "generic.h"
 
 /*
@@ -132,7 +129,7 @@ static struct platform_device smc91x_device = {
 /*
  * SPI host and devices
  */
-static struct pxa2xx_spi_master pxa_ssp_master_info = {
+static struct pxa2xx_spi_controller pxa_ssp_master_info = {
 	.num_chipselect	= 1,
 };
 
@@ -227,6 +224,10 @@ static void __init pcm027_init(void)
 
 	pxa2xx_mfp_config(pcm027_pin_config, ARRAY_SIZE(pcm027_pin_config));
 
+	pxa_set_ffuart_info(NULL);
+	pxa_set_btuart_info(NULL);
+	pxa_set_stuart_info(NULL);
+
 	platform_add_devices(devices, ARRAY_SIZE(devices));
 
 	/* at last call the baseboard to initialize itself */
@@ -240,7 +241,7 @@ static void __init pcm027_init(void)
 
 static void __init pcm027_map_io(void)
 {
-	pxa_map_io();
+	pxa27x_map_io();
 
 	/* initialize sleep mode regs (wake-up sources, etc) */
 	PGSR0 = 0x01308000;
@@ -254,11 +255,12 @@ static void __init pcm027_map_io(void)
 
 MACHINE_START(PCM027, "Phytec Messtechnik GmbH phyCORE-PXA270")
 	/* Maintainer: Pengutronix */
-	.boot_params	= 0xa0000100,
-	.phys_io	= 0x40000000,
-	.io_pg_offst	= (io_p2v(0x40000000) >> 18) & 0xfffc,
+	.atag_offset	= 0x100,
 	.map_io		= pcm027_map_io,
+	.nr_irqs	= PCM027_NR_IRQS,
 	.init_irq	= pxa27x_init_irq,
-	.timer		= &pxa_timer,
+	.handle_irq	= pxa27x_handle_irq,
+	.init_time	= pxa_timer_init,
 	.init_machine	= pcm027_init,
+	.restart	= pxa_restart,
 MACHINE_END

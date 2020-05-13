@@ -47,51 +47,71 @@
 /* Max retry number of CMD53 write */
 #define MAX_WRITE_IOMEM_RETRY		2
 
-/* Host Control Registers */
-#define IO_PORT_0_REG			0x00
-#define IO_PORT_1_REG			0x01
-#define IO_PORT_2_REG			0x02
+/* register bitmasks */
+#define HOST_POWER_UP				BIT(1)
+#define HOST_CMD53_FIN				BIT(2)
 
-#define CONFIG_REG			0x03
-#define HOST_POWER_UP			BIT(1)
-#define HOST_CMD53_FIN			BIT(2)
+#define HIM_DISABLE				0xff
+#define HIM_ENABLE				(BIT(0) | BIT(1))
 
-#define HOST_INT_MASK_REG		0x04
-#define HIM_DISABLE			0xff
-#define HIM_ENABLE			(BIT(0) | BIT(1))
+#define UP_LD_HOST_INT_STATUS			BIT(0)
+#define DN_LD_HOST_INT_STATUS			BIT(1)
 
-#define HOST_INTSTATUS_REG		0x05
-#define UP_LD_HOST_INT_STATUS		BIT(0)
-#define DN_LD_HOST_INT_STATUS		BIT(1)
+#define DN_LD_CARD_RDY				BIT(0)
+#define CARD_IO_READY				BIT(3)
 
-/* Card Control Registers */
-#define SQ_READ_BASE_ADDRESS_A0_REG  	0x10
-#define SQ_READ_BASE_ADDRESS_A1_REG  	0x11
+#define FIRMWARE_READY				0xfedc
 
-#define CARD_STATUS_REG              	0x20
-#define DN_LD_CARD_RDY               	BIT(0)
-#define CARD_IO_READY              	BIT(3)
+struct btmrvl_plt_wake_cfg {
+	int irq_bt;
+	bool wake_by_bt;
+};
 
-#define CARD_FW_STATUS0_REG		0x40
-#define CARD_FW_STATUS1_REG		0x41
-#define FIRMWARE_READY			0xfedc
-
-#define CARD_RX_LEN_REG			0x42
-#define CARD_RX_UNIT_REG		0x43
-
+struct btmrvl_sdio_card_reg {
+	u8 cfg;
+	u8 host_int_mask;
+	u8 host_intstatus;
+	u8 card_status;
+	u8 sq_read_base_addr_a0;
+	u8 sq_read_base_addr_a1;
+	u8 card_revision;
+	u8 card_fw_status0;
+	u8 card_fw_status1;
+	u8 card_rx_len;
+	u8 card_rx_unit;
+	u8 io_port_0;
+	u8 io_port_1;
+	u8 io_port_2;
+	bool int_read_to_clear;
+	u8 host_int_rsr;
+	u8 card_misc_cfg;
+	u8 fw_dump_ctrl;
+	u8 fw_dump_start;
+	u8 fw_dump_end;
+};
 
 struct btmrvl_sdio_card {
 	struct sdio_func *func;
 	u32 ioport;
 	const char *helper;
 	const char *firmware;
+	const struct btmrvl_sdio_card_reg *reg;
+	bool support_pscan_win_report;
+	bool supports_fw_dump;
+	u16 sd_blksz_fw_dl;
 	u8 rx_unit;
 	struct btmrvl_private *priv;
+	struct device_node *plt_of_node;
+	struct btmrvl_plt_wake_cfg *plt_wake_cfg;
 };
 
 struct btmrvl_sdio_device {
 	const char *helper;
 	const char *firmware;
+	const struct btmrvl_sdio_card_reg *reg;
+	const bool support_pscan_win_report;
+	u16 sd_blksz_fw_dl;
+	bool supports_fw_dump;
 };
 
 

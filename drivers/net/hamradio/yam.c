@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*****************************************************************************/
 
 /*
@@ -6,38 +7,22 @@
  *      Copyright (C) 1998 Frederic Rible F1OAT (frible@teaser.fr)
  *      Adapted from baycom.c driver written by Thomas Sailer (sailer@ife.ee.ethz.ch)
  *
- *      This program is free software; you can redistribute it and/or modify
- *      it under the terms of the GNU General Public License as published by
- *      the Free Software Foundation; either version 2 of the License, or
- *      (at your option) any later version.
- *
- *      This program is distributed in the hope that it will be useful,
- *      but WITHOUT ANY WARRANTY; without even the implied warranty of
- *      MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *      GNU General Public License for more details.
- *
- *      You should have received a copy of the GNU General Public License
- *      along with this program; if not, write to the Free Software
- *      Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
- *
  *  Please note that the GPL allows you to use the driver, NOT the radio.
  *  In order to use the radio, you need a license from the communications
  *  authority of your country.
- *
  *
  *  History:
  *   0.0 F1OAT 06.06.98  Begin of work with baycom.c source code V 0.3
  *   0.1 F1OAT 07.06.98  Add timer polling routine for channel arbitration
  *   0.2 F6FBB 08.06.98  Added delay after FPGA programming
  *   0.3 F6FBB 29.07.98  Delayed PTT implementation for dupmode=2
- *   0.4 F6FBB 30.07.98  Added TxTail, Slottime and Persistance
+ *   0.4 F6FBB 30.07.98  Added TxTail, Slottime and Persistence
  *   0.5 F6FBB 01.08.98  Shared IRQs, /proc/net and network statistics
  *   0.6 F6FBB 25.08.98  Added 1200Bds format
  *   0.7 F6FBB 12.09.98  Added to the kernel configuration
  *   0.8 F6FBB 14.10.98  Fixed slottime/persistence timing bug
  *       OK1ZIA 2.09.01  Fixed "kfree_skb on hard IRQ" 
  *                       using dev_kfree_skb_any(). (important in 2.4 kernel)
- *   
  */
 
 /*****************************************************************************/
@@ -52,7 +37,6 @@
 #include <linux/bitops.h>
 #include <linux/random.h>
 #include <asm/io.h>
-#include <asm/system.h>
 #include <linux/interrupt.h>
 #include <linux/ioport.h>
 #include <linux/firmware.h>
@@ -69,7 +53,7 @@
 #include <linux/seq_file.h>
 #include <net/net_namespace.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/init.h>
 
 #include <linux/yam.h>
@@ -77,7 +61,7 @@
 /* --------------------------------------------------------------------- */
 
 static const char yam_drvname[] = "yam";
-static const char yam_drvinfo[] __initdata = KERN_INFO \
+static const char yam_drvinfo[] __initconst = KERN_INFO \
 	"YAM driver version 0.8 by F1OAT/F6FBB\n";
 
 /* --------------------------------------------------------------------- */
@@ -158,7 +142,7 @@ static struct net_device *yam_devs[NR_PORTS];
 
 static struct yam_mcs *yam_data;
 
-static DEFINE_TIMER(yam_timer, NULL, 0, 0);
+static DEFINE_TIMER(yam_timer, NULL);
 
 /* --------------------------------------------------------------------- */
 
@@ -396,14 +380,13 @@ static unsigned char *add_mcs(unsigned char *bits, int bitrate,
 	while (p) {
 		if (p->bitrate == bitrate) {
 			memcpy(p->bits, bits, YAM_FPGA_SIZE);
-			return p->bits;
+			goto out;
 		}
 		p = p->next;
 	}
 
 	/* Allocate a new mcs */
 	if ((p = kmalloc(sizeof(struct yam_mcs), GFP_KERNEL)) == NULL) {
-		printk(KERN_WARNING "YAM: no memory to allocate mcs\n");
 		release_firmware(fw);
 		return NULL;
 	}
@@ -411,7 +394,7 @@ static unsigned char *add_mcs(unsigned char *bits, int bitrate,
 	p->bitrate = bitrate;
 	p->next = yam_data;
 	yam_data = p;
-
+ out:
 	release_firmware(fw);
 	return p->bits;
 }
@@ -599,8 +582,11 @@ static netdev_tx_t yam_send_packet(struct sk_buff *skb,
 {
 	struct yam_port *yp = netdev_priv(dev);
 
+	if (skb->protocol == htons(ETH_P_IP))
+		return ax25_ip_xmit(skb);
+
 	skb_queue_tail(&yp->send_queue, skb);
-	dev->trans_start = jiffies;
+	netif_trans_update(dev);
 	return NETDEV_TX_OK;
 }
 
@@ -640,13 +626,13 @@ static void yam_arbitrate(struct net_device *dev)
 	yp->slotcnt = yp->slot / 10;
 
 	/* is random > persist ? */
-	if ((random32() % 256) > yp->pers)
+	if ((prandom_u32() % 256) > yp->pers)
 		return;
 
 	yam_start_tx(dev, yp);
 }
 
-static void yam_dotimer(unsigned long dummy)
+static void yam_dotimer(struct timer_list *unused)
 {
 	int i;
 
@@ -840,20 +826,6 @@ static const struct seq_operations yam_seqops = {
 	.stop = yam_seq_stop,
 	.show = yam_seq_show,
 };
-
-static int yam_info_open(struct inode *inode, struct file *file)
-{
-	return seq_open(file, &yam_seqops);
-}
-
-static const struct file_operations yam_info_fops = {
-	.owner = THIS_MODULE,
-	.open = yam_info_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = seq_release,
-};
-
 #endif
 
 
@@ -868,7 +840,7 @@ static int yam_open(struct net_device *dev)
 
 	printk(KERN_INFO "Trying %s at iobase 0x%lx irq %u\n", dev->name, dev->base_addr, dev->irq);
 
-	if (!dev || !yp->bitrate)
+	if (!yp->bitrate)
 		return -ENXIO;
 	if (!dev->base_addr || dev->base_addr > 0x1000 - YAM_EXTENT ||
 		dev->irq < 2 || dev->irq > 15) {
@@ -890,7 +862,7 @@ static int yam_open(struct net_device *dev)
 		goto out_release_base;
 	}
 	outb(0, IER(dev->base_addr));
-	if (request_irq(dev->irq, yam_interrupt, IRQF_DISABLED | IRQF_SHARED, dev->name, dev)) {
+	if (request_irq(dev->irq, yam_interrupt, IRQF_SHARED, dev->name, dev)) {
 		printk(KERN_ERR "%s: irq %d busy\n", dev->name, dev->irq);
 		ret = -EBUSY;
 		goto out_release_base;
@@ -975,13 +947,12 @@ static int yam_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 	case SIOCYAMSMCS:
 		if (netif_running(dev))
 			return -EINVAL;		/* Cannot change this parameter when up */
-		if ((ym = kmalloc(sizeof(struct yamdrv_ioctl_mcs), GFP_KERNEL)) == NULL)
-			return -ENOBUFS;
-		ym->bitrate = 9600;
-		if (copy_from_user(ym, ifr->ifr_data, sizeof(struct yamdrv_ioctl_mcs))) {
-			kfree(ym);
-			return -EFAULT;
-		}
+		ym = memdup_user(ifr->ifr_data,
+				 sizeof(struct yamdrv_ioctl_mcs));
+		if (IS_ERR(ym))
+			return PTR_ERR(ym);
+		if (ym->cmd != SIOCYAMSMCS)
+			return -EINVAL;
 		if (ym->bitrate > YAM_MAXBITRATE) {
 			kfree(ym);
 			return -EINVAL;
@@ -997,6 +968,8 @@ static int yam_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 		if (copy_from_user(&yi, ifr->ifr_data, sizeof(struct yamdrv_ioctl_cfg)))
 			 return -EFAULT;
 
+		if (yi.cmd != SIOCYAMSCFG)
+			return -EINVAL;
 		if ((yi.cfg.mask & YAM_IOBASE) && netif_running(dev))
 			return -EINVAL;		/* Cannot change this parameter when up */
 		if ((yi.cfg.mask & YAM_IRQ) && netif_running(dev))
@@ -1150,10 +1123,9 @@ static int __init yam_init_driver(void)
 		sprintf(name, "yam%d", i);
 		
 		dev = alloc_netdev(sizeof(struct yam_port), name,
-				   yam_setup);
+				   NET_NAME_UNKNOWN, yam_setup);
 		if (!dev) {
-			printk(KERN_ERR "yam: cannot allocate net device %s\n",
-			       dev->name);
+			pr_err("yam: cannot allocate net device\n");
 			err = -ENOMEM;
 			goto error;
 		}
@@ -1167,11 +1139,11 @@ static int __init yam_init_driver(void)
 
 	}
 
-	yam_timer.function = yam_dotimer;
+	timer_setup(&yam_timer, yam_dotimer, 0);
 	yam_timer.expires = jiffies + HZ / 100;
 	add_timer(&yam_timer);
 
-	proc_net_fops_create(&init_net, "yam", S_IRUGO, &yam_info_fops);
+	proc_create_seq("yam", 0444, init_net.proc_net, &yam_seqops);
 	return 0;
  error:
 	while (--i >= 0) {
@@ -1188,7 +1160,7 @@ static void __exit yam_cleanup_driver(void)
 	struct yam_mcs *p;
 	int i;
 
-	del_timer(&yam_timer);
+	del_timer_sync(&yam_timer);
 	for (i = 0; i < NR_PORTS; i++) {
 		struct net_device *dev = yam_devs[i];
 		if (dev) {
@@ -1203,7 +1175,7 @@ static void __exit yam_cleanup_driver(void)
 		kfree(p);
 	}
 
-	proc_net_remove(&init_net, "yam");
+	remove_proc_entry("yam", init_net.proc_net);
 }
 
 /* --------------------------------------------------------------------- */

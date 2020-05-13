@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Directory notifications for Linux.
  *
@@ -5,22 +6,14 @@
  *
  * Copyright (C) 2009 Eric Paris <Red Hat Inc>
  * dnotify was largly rewritten to use the new fsnotify infrastructure
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2, or (at your option) any
- * later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
  */
 #include <linux/fs.h>
 #include <linux/module.h>
 #include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/dnotify.h>
 #include <linux/init.h>
+#include <linux/security.h>
 #include <linux/spinlock.h>
 #include <linux/slab.h>
 #include <linux/fdtable.h>
@@ -29,17 +22,16 @@
 int dir_notify_enable __read_mostly = 1;
 
 static struct kmem_cache *dnotify_struct_cache __read_mostly;
-static struct kmem_cache *dnotify_mark_entry_cache __read_mostly;
+static struct kmem_cache *dnotify_mark_cache __read_mostly;
 static struct fsnotify_group *dnotify_group __read_mostly;
-static DEFINE_MUTEX(dnotify_mark_mutex);
 
 /*
- * dnotify will attach one of these to each inode (i_fsnotify_mark_entries) which
+ * dnotify will attach one of these to each inode (i_fsnotify_marks) which
  * is being watched by dnotify.  If multiple userspace applications are watching
  * the same directory with dnotify their information is chained in dn
  */
-struct dnotify_mark_entry {
-	struct fsnotify_mark_entry fsn_entry;
+struct dnotify_mark {
+	struct fsnotify_mark fsn_mark;
 	struct dnotify_struct *dn;
 };
 
@@ -51,27 +43,23 @@ struct dnotify_mark_entry {
  * it calls the fsnotify function so it can update the set of all events relevant
  * to this inode.
  */
-static void dnotify_recalc_inode_mask(struct fsnotify_mark_entry *entry)
+static void dnotify_recalc_inode_mask(struct fsnotify_mark *fsn_mark)
 {
-	__u32 new_mask, old_mask;
+	__u32 new_mask = 0;
 	struct dnotify_struct *dn;
-	struct dnotify_mark_entry *dnentry  = container_of(entry,
-							   struct dnotify_mark_entry,
-							   fsn_entry);
+	struct dnotify_mark *dn_mark  = container_of(fsn_mark,
+						     struct dnotify_mark,
+						     fsn_mark);
 
-	assert_spin_locked(&entry->lock);
+	assert_spin_locked(&fsn_mark->lock);
 
-	old_mask = entry->mask;
-	new_mask = 0;
-	for (dn = dnentry->dn; dn != NULL; dn = dn->dn_next)
+	for (dn = dn_mark->dn; dn != NULL; dn = dn->dn_next)
 		new_mask |= (dn->dn_mask & ~FS_DN_MULTISHOT);
-	entry->mask = new_mask;
-
-	if (old_mask == new_mask)
+	if (fsn_mark->mask == new_mask)
 		return;
+	fsn_mark->mask = new_mask;
 
-	if (entry->inode)
-		fsnotify_recalc_inode_mask(entry->inode);
+	fsnotify_recalc_mask(fsn_mark->connector);
 }
 
 /*
@@ -83,29 +71,29 @@ static void dnotify_recalc_inode_mask(struct fsnotify_mark_entry *entry)
  * events.
  */
 static int dnotify_handle_event(struct fsnotify_group *group,
-				struct fsnotify_event *event)
+				struct inode *inode,
+				u32 mask, const void *data, int data_type,
+				const struct qstr *file_name, u32 cookie,
+				struct fsnotify_iter_info *iter_info)
 {
-	struct fsnotify_mark_entry *entry = NULL;
-	struct dnotify_mark_entry *dnentry;
-	struct inode *to_tell;
+	struct fsnotify_mark *inode_mark = fsnotify_iter_inode_mark(iter_info);
+	struct dnotify_mark *dn_mark;
 	struct dnotify_struct *dn;
 	struct dnotify_struct **prev;
 	struct fown_struct *fown;
-	__u32 test_mask = event->mask & ~FS_EVENT_ON_CHILD;
+	__u32 test_mask = mask & ~FS_EVENT_ON_CHILD;
 
-	to_tell = event->to_tell;
-
-	spin_lock(&to_tell->i_lock);
-	entry = fsnotify_find_mark_entry(group, to_tell);
-	spin_unlock(&to_tell->i_lock);
-
-	/* unlikely since we alreay passed dnotify_should_send_event() */
-	if (unlikely(!entry))
+	/* not a dir, dnotify doesn't care */
+	if (!S_ISDIR(inode->i_mode))
 		return 0;
-	dnentry = container_of(entry, struct dnotify_mark_entry, fsn_entry);
 
-	spin_lock(&entry->lock);
-	prev = &dnentry->dn;
+	if (WARN_ON(fsnotify_iter_vfsmount_mark(iter_info)))
+		return 0;
+
+	dn_mark = container_of(inode_mark, struct dnotify_mark, fsn_mark);
+
+	spin_lock(&inode_mark->lock);
+	prev = &dn_mark->dn;
 	while ((dn = *prev) != NULL) {
 		if ((dn->dn_mask & test_mask) == 0) {
 			prev = &dn->dn_next;
@@ -118,120 +106,84 @@ static int dnotify_handle_event(struct fsnotify_group *group,
 		else {
 			*prev = dn->dn_next;
 			kmem_cache_free(dnotify_struct_cache, dn);
-			dnotify_recalc_inode_mask(entry);
+			dnotify_recalc_inode_mask(inode_mark);
 		}
 	}
 
-	spin_unlock(&entry->lock);
-	fsnotify_put_mark(entry);
+	spin_unlock(&inode_mark->lock);
 
 	return 0;
 }
 
-/*
- * Given an inode and mask determine if dnotify would be interested in sending
- * userspace notification for that pair.
- */
-static bool dnotify_should_send_event(struct fsnotify_group *group,
-				      struct inode *inode, __u32 mask)
+static void dnotify_free_mark(struct fsnotify_mark *fsn_mark)
 {
-	struct fsnotify_mark_entry *entry;
-	bool send;
+	struct dnotify_mark *dn_mark = container_of(fsn_mark,
+						    struct dnotify_mark,
+						    fsn_mark);
 
-	/* !dir_notify_enable should never get here, don't waste time checking
-	if (!dir_notify_enable)
-		return 0; */
+	BUG_ON(dn_mark->dn);
 
-	/* not a dir, dnotify doesn't care */
-	if (!S_ISDIR(inode->i_mode))
-		return false;
-
-	spin_lock(&inode->i_lock);
-	entry = fsnotify_find_mark_entry(group, inode);
-	spin_unlock(&inode->i_lock);
-
-	/* no mark means no dnotify watch */
-	if (!entry)
-		return false;
-
-	mask = (mask & ~FS_EVENT_ON_CHILD);
-	send = (mask & entry->mask);
-
-	fsnotify_put_mark(entry); /* matches fsnotify_find_mark_entry */
-
-	return send;
+	kmem_cache_free(dnotify_mark_cache, dn_mark);
 }
 
-static void dnotify_free_mark(struct fsnotify_mark_entry *entry)
-{
-	struct dnotify_mark_entry *dnentry = container_of(entry,
-							  struct dnotify_mark_entry,
-							  fsn_entry);
-
-	BUG_ON(dnentry->dn);
-
-	kmem_cache_free(dnotify_mark_entry_cache, dnentry);
-}
-
-static struct fsnotify_ops dnotify_fsnotify_ops = {
+static const struct fsnotify_ops dnotify_fsnotify_ops = {
 	.handle_event = dnotify_handle_event,
-	.should_send_event = dnotify_should_send_event,
-	.free_group_priv = NULL,
-	.freeing_mark = NULL,
-	.free_event_priv = NULL,
+	.free_mark = dnotify_free_mark,
 };
 
 /*
  * Called every time a file is closed.  Looks first for a dnotify mark on the
- * inode.  If one is found run all of the ->dn entries attached to that
+ * inode.  If one is found run all of the ->dn structures attached to that
  * mark for one relevant to this process closing the file and remove that
  * dnotify_struct.  If that was the last dnotify_struct also remove the
- * fsnotify_mark_entry.
+ * fsnotify_mark.
  */
 void dnotify_flush(struct file *filp, fl_owner_t id)
 {
-	struct fsnotify_mark_entry *entry;
-	struct dnotify_mark_entry *dnentry;
+	struct fsnotify_mark *fsn_mark;
+	struct dnotify_mark *dn_mark;
 	struct dnotify_struct *dn;
 	struct dnotify_struct **prev;
 	struct inode *inode;
+	bool free = false;
 
-	inode = filp->f_path.dentry->d_inode;
+	inode = file_inode(filp);
 	if (!S_ISDIR(inode->i_mode))
 		return;
 
-	spin_lock(&inode->i_lock);
-	entry = fsnotify_find_mark_entry(dnotify_group, inode);
-	spin_unlock(&inode->i_lock);
-	if (!entry)
+	fsn_mark = fsnotify_find_mark(&inode->i_fsnotify_marks, dnotify_group);
+	if (!fsn_mark)
 		return;
-	dnentry = container_of(entry, struct dnotify_mark_entry, fsn_entry);
+	dn_mark = container_of(fsn_mark, struct dnotify_mark, fsn_mark);
 
-	mutex_lock(&dnotify_mark_mutex);
+	mutex_lock(&dnotify_group->mark_mutex);
 
-	spin_lock(&entry->lock);
-	prev = &dnentry->dn;
+	spin_lock(&fsn_mark->lock);
+	prev = &dn_mark->dn;
 	while ((dn = *prev) != NULL) {
 		if ((dn->dn_owner == id) && (dn->dn_filp == filp)) {
 			*prev = dn->dn_next;
 			kmem_cache_free(dnotify_struct_cache, dn);
-			dnotify_recalc_inode_mask(entry);
+			dnotify_recalc_inode_mask(fsn_mark);
 			break;
 		}
 		prev = &dn->dn_next;
 	}
 
-	spin_unlock(&entry->lock);
+	spin_unlock(&fsn_mark->lock);
 
-	/* nothing else could have found us thanks to the dnotify_mark_mutex */
-	if (dnentry->dn == NULL)
-		fsnotify_destroy_mark_by_entry(entry);
+	/* nothing else could have found us thanks to the dnotify_groups
+	   mark_mutex */
+	if (dn_mark->dn == NULL) {
+		fsnotify_detach_mark(fsn_mark);
+		free = true;
+	}
 
-	fsnotify_recalc_group_mask(dnotify_group);
+	mutex_unlock(&dnotify_group->mark_mutex);
 
-	mutex_unlock(&dnotify_mark_mutex);
-
-	fsnotify_put_mark(entry);
+	if (free)
+		fsnotify_free_mark(fsn_mark);
+	fsnotify_put_mark(fsn_mark);
 }
 
 /* this conversion is done only at watch creation */
@@ -259,16 +211,16 @@ static __u32 convert_arg(unsigned long arg)
 
 /*
  * If multiple processes watch the same inode with dnotify there is only one
- * dnotify mark in inode->i_fsnotify_mark_entries but we chain a dnotify_struct
+ * dnotify mark in inode->i_fsnotify_marks but we chain a dnotify_struct
  * onto that mark.  This function either attaches the new dnotify_struct onto
  * that list, or it |= the mask onto an existing dnofiy_struct.
  */
-static int attach_dn(struct dnotify_struct *dn, struct dnotify_mark_entry *dnentry,
+static int attach_dn(struct dnotify_struct *dn, struct dnotify_mark *dn_mark,
 		     fl_owner_t id, int fd, struct file *filp, __u32 mask)
 {
 	struct dnotify_struct *odn;
 
-	odn = dnentry->dn;
+	odn = dn_mark->dn;
 	while (odn != NULL) {
 		/* adding more events to existing dnofiy_struct? */
 		if ((odn->dn_owner == id) && (odn->dn_filp == filp)) {
@@ -283,8 +235,8 @@ static int attach_dn(struct dnotify_struct *dn, struct dnotify_mark_entry *dnent
 	dn->dn_fd = fd;
 	dn->dn_filp = filp;
 	dn->dn_owner = id;
-	dn->dn_next = dnentry->dn;
-	dnentry->dn = dn;
+	dn->dn_next = dn_mark->dn;
+	dn_mark->dn = dn;
 
 	return 0;
 }
@@ -296,8 +248,8 @@ static int attach_dn(struct dnotify_struct *dn, struct dnotify_mark_entry *dnent
  */
 int fcntl_dirnotify(int fd, struct file *filp, unsigned long arg)
 {
-	struct dnotify_mark_entry *new_dnentry, *dnentry;
-	struct fsnotify_mark_entry *new_entry, *entry;
+	struct dnotify_mark *new_dn_mark, *dn_mark;
+	struct fsnotify_mark *new_fsn_mark, *fsn_mark;
 	struct dnotify_struct *dn;
 	struct inode *inode;
 	fl_owner_t id = current->files;
@@ -306,7 +258,7 @@ int fcntl_dirnotify(int fd, struct file *filp, unsigned long arg)
 	__u32 mask;
 
 	/* we use these to tell if we need to kfree */
-	new_entry = NULL;
+	new_fsn_mark = NULL;
 	dn = NULL;
 
 	if (!dir_notify_enable) {
@@ -322,11 +274,22 @@ int fcntl_dirnotify(int fd, struct file *filp, unsigned long arg)
 	}
 
 	/* dnotify only works on directories */
-	inode = filp->f_path.dentry->d_inode;
+	inode = file_inode(filp);
 	if (!S_ISDIR(inode->i_mode)) {
 		error = -ENOTDIR;
 		goto out_err;
 	}
+
+	/*
+	 * convert the userspace DN_* "arg" to the internal FS_*
+	 * defined in fsnotify
+	 */
+	mask = convert_arg(arg);
+
+	error = security_path_notify(&filp->f_path, mask,
+			FSNOTIFY_OBJ_TYPE_INODE);
+	if (error)
+		goto out_err;
 
 	/* expect most fcntl to add new rather than augment old */
 	dn = kmem_cache_alloc(dnotify_struct_cache, GFP_KERNEL);
@@ -336,38 +299,37 @@ int fcntl_dirnotify(int fd, struct file *filp, unsigned long arg)
 	}
 
 	/* new fsnotify mark, we expect most fcntl calls to add a new mark */
-	new_dnentry = kmem_cache_alloc(dnotify_mark_entry_cache, GFP_KERNEL);
-	if (!new_dnentry) {
+	new_dn_mark = kmem_cache_alloc(dnotify_mark_cache, GFP_KERNEL);
+	if (!new_dn_mark) {
 		error = -ENOMEM;
 		goto out_err;
 	}
 
-	/* convert the userspace DN_* "arg" to the internal FS_* defines in fsnotify */
-	mask = convert_arg(arg);
-
-	/* set up the new_entry and new_dnentry */
-	new_entry = &new_dnentry->fsn_entry;
-	fsnotify_init_mark(new_entry, dnotify_free_mark);
-	new_entry->mask = mask;
-	new_dnentry->dn = NULL;
+	/* set up the new_fsn_mark and new_dn_mark */
+	new_fsn_mark = &new_dn_mark->fsn_mark;
+	fsnotify_init_mark(new_fsn_mark, dnotify_group);
+	new_fsn_mark->mask = mask;
+	new_dn_mark->dn = NULL;
 
 	/* this is needed to prevent the fcntl/close race described below */
-	mutex_lock(&dnotify_mark_mutex);
+	mutex_lock(&dnotify_group->mark_mutex);
 
-	/* add the new_entry or find an old one. */
-	spin_lock(&inode->i_lock);
-	entry = fsnotify_find_mark_entry(dnotify_group, inode);
-	spin_unlock(&inode->i_lock);
-	if (entry) {
-		dnentry = container_of(entry, struct dnotify_mark_entry, fsn_entry);
-		spin_lock(&entry->lock);
+	/* add the new_fsn_mark or find an old one. */
+	fsn_mark = fsnotify_find_mark(&inode->i_fsnotify_marks, dnotify_group);
+	if (fsn_mark) {
+		dn_mark = container_of(fsn_mark, struct dnotify_mark, fsn_mark);
+		spin_lock(&fsn_mark->lock);
 	} else {
-		fsnotify_add_mark(new_entry, dnotify_group, inode);
-		spin_lock(&new_entry->lock);
-		entry = new_entry;
-		dnentry = new_dnentry;
-		/* we used new_entry, so don't free it */
-		new_entry = NULL;
+		error = fsnotify_add_inode_mark_locked(new_fsn_mark, inode, 0);
+		if (error) {
+			mutex_unlock(&dnotify_group->mark_mutex);
+			goto out_err;
+		}
+		spin_lock(&new_fsn_mark->lock);
+		fsn_mark = new_fsn_mark;
+		dn_mark = new_dn_mark;
+		/* we used new_fsn_mark, so don't free it */
+		new_fsn_mark = NULL;
 	}
 
 	rcu_read_lock();
@@ -376,31 +338,26 @@ int fcntl_dirnotify(int fd, struct file *filp, unsigned long arg)
 
 	/* if (f != filp) means that we lost a race and another task/thread
 	 * actually closed the fd we are still playing with before we grabbed
-	 * the dnotify_mark_mutex and entry->lock.  Since closing the fd is the
-	 * only time we clean up the mark entries we need to get our mark off
-	 * the list. */
+	 * the dnotify_groups mark_mutex and fsn_mark->lock.  Since closing the
+	 * fd is the only time we clean up the marks we need to get our mark
+	 * off the list. */
 	if (f != filp) {
 		/* if we added ourselves, shoot ourselves, it's possible that
-		 * the flush actually did shoot this entry.  That's fine too
+		 * the flush actually did shoot this fsn_mark.  That's fine too
 		 * since multiple calls to destroy_mark is perfectly safe, if
-		 * we found a dnentry already attached to the inode, just sod
+		 * we found a dn_mark already attached to the inode, just sod
 		 * off silently as the flush at close time dealt with it.
 		 */
-		if (dnentry == new_dnentry)
+		if (dn_mark == new_dn_mark)
 			destroy = 1;
+		error = 0;
 		goto out;
 	}
 
-	error = __f_setown(filp, task_pid(current), PIDTYPE_PID, 0);
-	if (error) {
-		/* if we added, we must shoot */
-		if (dnentry == new_dnentry)
-			destroy = 1;
-		goto out;
-	}
+	__f_setown(filp, task_pid(current), PIDTYPE_TGID, 0);
 
-	error = attach_dn(dn, dnentry, id, fd, filp, mask);
-	/* !error means that we attached the dn to the dnentry, so don't free it */
+	error = attach_dn(dn, dn_mark, id, fd, filp, mask);
+	/* !error means that we attached the dn to the dn_mark, so don't free it */
 	if (!error)
 		dn = NULL;
 	/* -EEXIST means that we didn't add this new dn and used an old one.
@@ -408,20 +365,19 @@ int fcntl_dirnotify(int fd, struct file *filp, unsigned long arg)
 	else if (error == -EEXIST)
 		error = 0;
 
-	dnotify_recalc_inode_mask(entry);
+	dnotify_recalc_inode_mask(fsn_mark);
 out:
-	spin_unlock(&entry->lock);
+	spin_unlock(&fsn_mark->lock);
 
 	if (destroy)
-		fsnotify_destroy_mark_by_entry(entry);
-
-	fsnotify_recalc_group_mask(dnotify_group);
-
-	mutex_unlock(&dnotify_mark_mutex);
-	fsnotify_put_mark(entry);
+		fsnotify_detach_mark(fsn_mark);
+	mutex_unlock(&dnotify_group->mark_mutex);
+	if (destroy)
+		fsnotify_free_mark(fsn_mark);
+	fsnotify_put_mark(fsn_mark);
 out_err:
-	if (new_entry)
-		fsnotify_put_mark(new_entry);
+	if (new_fsn_mark)
+		fsnotify_put_mark(new_fsn_mark);
 	if (dn)
 		kmem_cache_free(dnotify_struct_cache, dn);
 	return error;
@@ -429,11 +385,11 @@ out_err:
 
 static int __init dnotify_init(void)
 {
-	dnotify_struct_cache = KMEM_CACHE(dnotify_struct, SLAB_PANIC);
-	dnotify_mark_entry_cache = KMEM_CACHE(dnotify_mark_entry, SLAB_PANIC);
+	dnotify_struct_cache = KMEM_CACHE(dnotify_struct,
+					  SLAB_PANIC|SLAB_ACCOUNT);
+	dnotify_mark_cache = KMEM_CACHE(dnotify_mark, SLAB_PANIC|SLAB_ACCOUNT);
 
-	dnotify_group = fsnotify_obtain_group(DNOTIFY_GROUP_NUM,
-					      0, &dnotify_fsnotify_ops);
+	dnotify_group = fsnotify_alloc_group(&dnotify_fsnotify_ops);
 	if (IS_ERR(dnotify_group))
 		panic("unable to allocate fsnotify group for dnotify\n");
 	return 0;

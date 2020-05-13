@@ -1,26 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * PMac AWACS lowlevel functions
  *
  * Copyright (c) by Takashi Iwai <tiwai@suse.de>
  * code based on dmasound.c.
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
 
-#include <asm/io.h>
+#include <linux/io.h>
 #include <asm/nvram.h>
 #include <linux/init.h>
 #include <linux/delay.h>
@@ -477,9 +464,9 @@ static int snd_pmac_awacs_put_master_amp(struct snd_kcontrol *kcontrol,
 #define AMP_CH_SPK	0
 #define AMP_CH_HD	1
 
-static struct snd_kcontrol_new snd_pmac_awacs_amp_vol[] __devinitdata = {
+static const struct snd_kcontrol_new snd_pmac_awacs_amp_vol[] = {
 	{ .iface = SNDRV_CTL_ELEM_IFACE_MIXER,
-	  .name = "PC Speaker Playback Volume",
+	  .name = "Speaker Playback Volume",
 	  .info = snd_pmac_awacs_info_volume_amp,
 	  .get = snd_pmac_awacs_get_volume_amp,
 	  .put = snd_pmac_awacs_put_volume_amp,
@@ -514,7 +501,7 @@ static struct snd_kcontrol_new snd_pmac_awacs_amp_vol[] __devinitdata = {
 	},
 };
 
-static struct snd_kcontrol_new snd_pmac_awacs_amp_hp_sw __devinitdata = {
+static const struct snd_kcontrol_new snd_pmac_awacs_amp_hp_sw = {
 	.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 	.name = "Headphone Playback Switch",
 	.info = snd_pmac_boolean_stereo_info,
@@ -523,9 +510,9 @@ static struct snd_kcontrol_new snd_pmac_awacs_amp_hp_sw __devinitdata = {
 	.private_value = AMP_CH_HD,
 };
 
-static struct snd_kcontrol_new snd_pmac_awacs_amp_spk_sw __devinitdata = {
+static const struct snd_kcontrol_new snd_pmac_awacs_amp_spk_sw = {
 	.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
-	.name = "PC Speaker Playback Switch",
+	.name = "Speaker Playback Switch",
 	.info = snd_pmac_boolean_stereo_info,
 	.get = snd_pmac_awacs_get_switch_amp,
 	.put = snd_pmac_awacs_put_switch_amp,
@@ -595,46 +582,46 @@ static int snd_pmac_screamer_mic_boost_put(struct snd_kcontrol *kcontrol,
 /*
  * lists of mixer elements
  */
-static struct snd_kcontrol_new snd_pmac_awacs_mixers[] __devinitdata = {
+static const struct snd_kcontrol_new snd_pmac_awacs_mixers[] = {
 	AWACS_SWITCH("Master Capture Switch", 1, SHIFT_LOOPTHRU, 0),
 	AWACS_VOLUME("Master Capture Volume", 0, 4, 0),
 /*	AWACS_SWITCH("Unknown Playback Switch", 6, SHIFT_PAROUT0, 0), */
 };
 
-static struct snd_kcontrol_new snd_pmac_screamer_mixers_beige[] __devinitdata = {
+static const struct snd_kcontrol_new snd_pmac_screamer_mixers_beige[] = {
 	AWACS_VOLUME("Master Playback Volume", 2, 6, 1),
 	AWACS_VOLUME("Play-through Playback Volume", 5, 6, 1),
 	AWACS_SWITCH("Line Capture Switch", 0, SHIFT_MUX_MIC, 0),
 	AWACS_SWITCH("CD Capture Switch", 0, SHIFT_MUX_LINE, 0),
 };
 
-static struct snd_kcontrol_new snd_pmac_screamer_mixers_lo[] __devinitdata = {
+static const struct snd_kcontrol_new snd_pmac_screamer_mixers_lo[] = {
 	AWACS_VOLUME("Line out Playback Volume", 2, 6, 1),
 };
 
-static struct snd_kcontrol_new snd_pmac_screamer_mixers_imac[] __devinitdata = {
+static const struct snd_kcontrol_new snd_pmac_screamer_mixers_imac[] = {
 	AWACS_VOLUME("Play-through Playback Volume", 5, 6, 1),
 	AWACS_SWITCH("CD Capture Switch", 0, SHIFT_MUX_CD, 0),
 };
 
-static struct snd_kcontrol_new snd_pmac_screamer_mixers_g4agp[] __devinitdata = {
+static const struct snd_kcontrol_new snd_pmac_screamer_mixers_g4agp[] = {
 	AWACS_VOLUME("Line out Playback Volume", 2, 6, 1),
 	AWACS_VOLUME("Master Playback Volume", 5, 6, 1),
 	AWACS_SWITCH("CD Capture Switch", 0, SHIFT_MUX_CD, 0),
 	AWACS_SWITCH("Line Capture Switch", 0, SHIFT_MUX_MIC, 0),
 };
 
-static struct snd_kcontrol_new snd_pmac_awacs_mixers_pmac7500[] __devinitdata = {
+static const struct snd_kcontrol_new snd_pmac_awacs_mixers_pmac7500[] = {
 	AWACS_VOLUME("Line out Playback Volume", 2, 6, 1),
 	AWACS_SWITCH("CD Capture Switch", 0, SHIFT_MUX_CD, 0),
 	AWACS_SWITCH("Line Capture Switch", 0, SHIFT_MUX_MIC, 0),
 };
 
-static struct snd_kcontrol_new snd_pmac_awacs_mixers_pmac5500[] __devinitdata = {
+static const struct snd_kcontrol_new snd_pmac_awacs_mixers_pmac5500[] = {
 	AWACS_VOLUME("Headphone Playback Volume", 2, 6, 1),
 };
 
-static struct snd_kcontrol_new snd_pmac_awacs_mixers_pmac[] __devinitdata = {
+static const struct snd_kcontrol_new snd_pmac_awacs_mixers_pmac[] = {
 	AWACS_VOLUME("Master Playback Volume", 2, 6, 1),
 	AWACS_SWITCH("CD Capture Switch", 0, SHIFT_MUX_CD, 0),
 };
@@ -642,34 +629,34 @@ static struct snd_kcontrol_new snd_pmac_awacs_mixers_pmac[] __devinitdata = {
 /* FIXME: is this correct order?
  * screamer (powerbook G3 pismo) seems to have different bits...
  */
-static struct snd_kcontrol_new snd_pmac_awacs_mixers2[] __devinitdata = {
+static const struct snd_kcontrol_new snd_pmac_awacs_mixers2[] = {
 	AWACS_SWITCH("Line Capture Switch", 0, SHIFT_MUX_LINE, 0),
 	AWACS_SWITCH("Mic Capture Switch", 0, SHIFT_MUX_MIC, 0),
 };
 
-static struct snd_kcontrol_new snd_pmac_screamer_mixers2[] __devinitdata = {
+static const struct snd_kcontrol_new snd_pmac_screamer_mixers2[] = {
 	AWACS_SWITCH("Line Capture Switch", 0, SHIFT_MUX_MIC, 0),
 	AWACS_SWITCH("Mic Capture Switch", 0, SHIFT_MUX_LINE, 0),
 };
 
-static struct snd_kcontrol_new snd_pmac_awacs_mixers2_pmac5500[] __devinitdata = {
+static const struct snd_kcontrol_new snd_pmac_awacs_mixers2_pmac5500[] = {
 	AWACS_SWITCH("CD Capture Switch", 0, SHIFT_MUX_CD, 0),
 };
 
-static struct snd_kcontrol_new snd_pmac_awacs_master_sw __devinitdata =
+static const struct snd_kcontrol_new snd_pmac_awacs_master_sw =
 AWACS_SWITCH("Master Playback Switch", 1, SHIFT_HDMUTE, 1);
 
-static struct snd_kcontrol_new snd_pmac_awacs_master_sw_imac __devinitdata =
+static const struct snd_kcontrol_new snd_pmac_awacs_master_sw_imac =
 AWACS_SWITCH("Line out Playback Switch", 1, SHIFT_HDMUTE, 1);
 
-static struct snd_kcontrol_new snd_pmac_awacs_master_sw_pmac5500 __devinitdata =
+static const struct snd_kcontrol_new snd_pmac_awacs_master_sw_pmac5500 =
 AWACS_SWITCH("Headphone Playback Switch", 1, SHIFT_HDMUTE, 1);
 
-static struct snd_kcontrol_new snd_pmac_awacs_mic_boost[] __devinitdata = {
+static const struct snd_kcontrol_new snd_pmac_awacs_mic_boost[] = {
 	AWACS_SWITCH("Mic Boost Capture Switch", 0, SHIFT_GAINLINE, 0),
 };
 
-static struct snd_kcontrol_new snd_pmac_screamer_mic_boost[] __devinitdata = {
+static const struct snd_kcontrol_new snd_pmac_screamer_mic_boost[] = {
 	{ .iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 	  .name = "Mic Boost Capture Volume",
 	  .info = snd_pmac_screamer_mic_boost_info,
@@ -678,42 +665,42 @@ static struct snd_kcontrol_new snd_pmac_screamer_mic_boost[] __devinitdata = {
 	},
 };
 
-static struct snd_kcontrol_new snd_pmac_awacs_mic_boost_pmac7500[] __devinitdata =
+static const struct snd_kcontrol_new snd_pmac_awacs_mic_boost_pmac7500[] =
 {
 	AWACS_SWITCH("Line Boost Capture Switch", 0, SHIFT_GAINLINE, 0),
 };
 
-static struct snd_kcontrol_new snd_pmac_screamer_mic_boost_beige[] __devinitdata =
+static const struct snd_kcontrol_new snd_pmac_screamer_mic_boost_beige[] =
 {
 	AWACS_SWITCH("Line Boost Capture Switch", 0, SHIFT_GAINLINE, 0),
 	AWACS_SWITCH("CD Boost Capture Switch", 6, SHIFT_MIC_BOOST, 0),
 };
 
-static struct snd_kcontrol_new snd_pmac_screamer_mic_boost_imac[] __devinitdata =
+static const struct snd_kcontrol_new snd_pmac_screamer_mic_boost_imac[] =
 {
 	AWACS_SWITCH("Line Boost Capture Switch", 0, SHIFT_GAINLINE, 0),
 	AWACS_SWITCH("Mic Boost Capture Switch", 6, SHIFT_MIC_BOOST, 0),
 };
 
-static struct snd_kcontrol_new snd_pmac_awacs_speaker_vol[] __devinitdata = {
-	AWACS_VOLUME("PC Speaker Playback Volume", 4, 6, 1),
+static const struct snd_kcontrol_new snd_pmac_awacs_speaker_vol[] = {
+	AWACS_VOLUME("Speaker Playback Volume", 4, 6, 1),
 };
 
-static struct snd_kcontrol_new snd_pmac_awacs_speaker_sw __devinitdata =
-AWACS_SWITCH("PC Speaker Playback Switch", 1, SHIFT_SPKMUTE, 1);
+static const struct snd_kcontrol_new snd_pmac_awacs_speaker_sw =
+AWACS_SWITCH("Speaker Playback Switch", 1, SHIFT_SPKMUTE, 1);
 
-static struct snd_kcontrol_new snd_pmac_awacs_speaker_sw_imac1 __devinitdata =
-AWACS_SWITCH("PC Speaker Playback Switch", 1, SHIFT_PAROUT1, 1);
+static const struct snd_kcontrol_new snd_pmac_awacs_speaker_sw_imac1 =
+AWACS_SWITCH("Speaker Playback Switch", 1, SHIFT_PAROUT1, 1);
 
-static struct snd_kcontrol_new snd_pmac_awacs_speaker_sw_imac2 __devinitdata =
-AWACS_SWITCH("PC Speaker Playback Switch", 1, SHIFT_PAROUT1, 0);
+static const struct snd_kcontrol_new snd_pmac_awacs_speaker_sw_imac2 =
+AWACS_SWITCH("Speaker Playback Switch", 1, SHIFT_PAROUT1, 0);
 
 
 /*
  * add new mixer elements to the card
  */
 static int build_mixers(struct snd_pmac *chip, int nums,
-			struct snd_kcontrol_new *mixers)
+			const struct snd_kcontrol_new *mixers)
 {
 	int i, err;
 
@@ -751,8 +738,8 @@ static void snd_pmac_awacs_suspend(struct snd_pmac *chip)
 
 static void snd_pmac_awacs_resume(struct snd_pmac *chip)
 {
-	if (machine_is_compatible("PowerBook3,1")
-	    || machine_is_compatible("PowerBook3,2")) {
+	if (of_machine_is_compatible("PowerBook3,1")
+	    || of_machine_is_compatible("PowerBook3,2")) {
 		msleep(100);
 		snd_pmac_awacs_write_reg(chip, 1,
 			chip->awacs_reg[1] & ~MASK_PAROUT);
@@ -780,16 +767,16 @@ static void snd_pmac_awacs_resume(struct snd_pmac *chip)
 }
 #endif /* CONFIG_PM */
 
-#define IS_PM7500 (machine_is_compatible("AAPL,7500") \
-		|| machine_is_compatible("AAPL,8500") \
-		|| machine_is_compatible("AAPL,9500"))
-#define IS_PM5500 (machine_is_compatible("AAPL,e411"))
-#define IS_BEIGE (machine_is_compatible("AAPL,Gossamer"))
-#define IS_IMAC1 (machine_is_compatible("PowerMac2,1"))
-#define IS_IMAC2 (machine_is_compatible("PowerMac2,2") \
-		|| machine_is_compatible("PowerMac4,1"))
-#define IS_G4AGP (machine_is_compatible("PowerMac3,1"))
-#define IS_LOMBARD (machine_is_compatible("PowerBook1,1"))
+#define IS_PM7500 (of_machine_is_compatible("AAPL,7500") \
+		|| of_machine_is_compatible("AAPL,8500") \
+		|| of_machine_is_compatible("AAPL,9500"))
+#define IS_PM5500 (of_machine_is_compatible("AAPL,e411"))
+#define IS_BEIGE (of_machine_is_compatible("AAPL,Gossamer"))
+#define IS_IMAC1 (of_machine_is_compatible("PowerMac2,1"))
+#define IS_IMAC2 (of_machine_is_compatible("PowerMac2,2") \
+		|| of_machine_is_compatible("PowerMac4,1"))
+#define IS_G4AGP (of_machine_is_compatible("PowerMac3,1"))
+#define IS_LOMBARD (of_machine_is_compatible("PowerBook1,1"))
 
 static int imac1, imac2;
 
@@ -872,7 +859,7 @@ static void snd_pmac_awacs_update_automute(struct snd_pmac *chip, int do_notify)
 /*
  * initialize chip
  */
-int __devinit
+int
 snd_pmac_awacs_init(struct snd_pmac *chip)
 {
 	int pm7500 = IS_PM7500;
@@ -991,6 +978,7 @@ snd_pmac_awacs_init(struct snd_pmac *chip)
 		if (err < 0)
 			return err;
 	}
+	master_vol = NULL;
 	if (pm7500)
 		err = build_mixers(chip,
 				   ARRAY_SIZE(snd_pmac_awacs_mixers_pmac7500),

@@ -8,7 +8,8 @@
 
 #include <linux/kernel.h>
 #include <linux/err.h>
-#include <linux/module.h>
+#include <linux/init.h>
+#include <linux/export.h>
 #include <linux/spinlock.h>
 #include <linux/interrupt.h>
 #include <linux/clk.h>
@@ -17,8 +18,8 @@
 #include <bcm63xx_timer.h>
 #include <bcm63xx_regs.h>
 
-static DEFINE_SPINLOCK(timer_reg_lock);
-static DEFINE_SPINLOCK(timer_data_lock);
+static DEFINE_RAW_SPINLOCK(timer_reg_lock);
+static DEFINE_RAW_SPINLOCK(timer_data_lock);
 static struct clk *periph_clk;
 
 static struct timer_data {
@@ -31,23 +32,23 @@ static irqreturn_t timer_interrupt(int irq, void *dev_id)
 	u32 stat;
 	int i;
 
-	spin_lock(&timer_reg_lock);
+	raw_spin_lock(&timer_reg_lock);
 	stat = bcm_timer_readl(TIMER_IRQSTAT_REG);
 	bcm_timer_writel(stat, TIMER_IRQSTAT_REG);
-	spin_unlock(&timer_reg_lock);
+	raw_spin_unlock(&timer_reg_lock);
 
 	for (i = 0; i < BCM63XX_TIMER_COUNT; i++) {
 		if (!(stat & TIMER_IRQSTAT_TIMER_CAUSE(i)))
 			continue;
 
-		spin_lock(&timer_data_lock);
+		raw_spin_lock(&timer_data_lock);
 		if (!timer_data[i].cb) {
-			spin_unlock(&timer_data_lock);
+			raw_spin_unlock(&timer_data_lock);
 			continue;
 		}
 
 		timer_data[i].cb(timer_data[i].data);
-		spin_unlock(&timer_data_lock);
+		raw_spin_unlock(&timer_data_lock);
 	}
 
 	return IRQ_HANDLED;
@@ -61,7 +62,7 @@ int bcm63xx_timer_enable(int id)
 	if (id >= BCM63XX_TIMER_COUNT)
 		return -EINVAL;
 
-	spin_lock_irqsave(&timer_reg_lock, flags);
+	raw_spin_lock_irqsave(&timer_reg_lock, flags);
 
 	reg = bcm_timer_readl(TIMER_CTLx_REG(id));
 	reg |= TIMER_CTL_ENABLE_MASK;
@@ -71,7 +72,7 @@ int bcm63xx_timer_enable(int id)
 	reg |= TIMER_IRQSTAT_TIMER_IR_EN(id);
 	bcm_timer_writel(reg, TIMER_IRQSTAT_REG);
 
-	spin_unlock_irqrestore(&timer_reg_lock, flags);
+	raw_spin_unlock_irqrestore(&timer_reg_lock, flags);
 	return 0;
 }
 
@@ -85,7 +86,7 @@ int bcm63xx_timer_disable(int id)
 	if (id >= BCM63XX_TIMER_COUNT)
 		return -EINVAL;
 
-	spin_lock_irqsave(&timer_reg_lock, flags);
+	raw_spin_lock_irqsave(&timer_reg_lock, flags);
 
 	reg = bcm_timer_readl(TIMER_CTLx_REG(id));
 	reg &= ~TIMER_CTL_ENABLE_MASK;
@@ -95,7 +96,7 @@ int bcm63xx_timer_disable(int id)
 	reg &= ~TIMER_IRQSTAT_TIMER_IR_EN(id);
 	bcm_timer_writel(reg, TIMER_IRQSTAT_REG);
 
-	spin_unlock_irqrestore(&timer_reg_lock, flags);
+	raw_spin_unlock_irqrestore(&timer_reg_lock, flags);
 	return 0;
 }
 
@@ -110,7 +111,7 @@ int bcm63xx_timer_register(int id, void (*callback)(void *data), void *data)
 		return -EINVAL;
 
 	ret = 0;
-	spin_lock_irqsave(&timer_data_lock, flags);
+	raw_spin_lock_irqsave(&timer_data_lock, flags);
 	if (timer_data[id].cb) {
 		ret = -EBUSY;
 		goto out;
@@ -120,7 +121,7 @@ int bcm63xx_timer_register(int id, void (*callback)(void *data), void *data)
 	timer_data[id].data = data;
 
 out:
-	spin_unlock_irqrestore(&timer_data_lock, flags);
+	raw_spin_unlock_irqrestore(&timer_data_lock, flags);
 	return ret;
 }
 
@@ -133,9 +134,9 @@ void bcm63xx_timer_unregister(int id)
 	if (id >= BCM63XX_TIMER_COUNT)
 		return;
 
-	spin_lock_irqsave(&timer_data_lock, flags);
+	raw_spin_lock_irqsave(&timer_data_lock, flags);
 	timer_data[id].cb = NULL;
-	spin_unlock_irqrestore(&timer_data_lock, flags);
+	raw_spin_unlock_irqrestore(&timer_data_lock, flags);
 }
 
 EXPORT_SYMBOL(bcm63xx_timer_unregister);
@@ -159,7 +160,7 @@ int bcm63xx_timer_set(int id, int monotonic, unsigned int countdown_us)
 	if (countdown & ~TIMER_CTL_COUNTDOWN_MASK)
 		return -EINVAL;
 
-	spin_lock_irqsave(&timer_reg_lock, flags);
+	raw_spin_lock_irqsave(&timer_reg_lock, flags);
 	reg = bcm_timer_readl(TIMER_CTLx_REG(id));
 
 	if (monotonic)
@@ -171,7 +172,7 @@ int bcm63xx_timer_set(int id, int monotonic, unsigned int countdown_us)
 	reg |= countdown;
 	bcm_timer_writel(reg, TIMER_CTLx_REG(id));
 
-	spin_unlock_irqrestore(&timer_reg_lock, flags);
+	raw_spin_unlock_irqrestore(&timer_reg_lock, flags);
 	return 0;
 }
 
@@ -195,7 +196,7 @@ int bcm63xx_timer_init(void)
 	irq = bcm63xx_get_irq_number(IRQ_TIMER);
 	ret = request_irq(irq, timer_interrupt, 0, "bcm63xx_timer", NULL);
 	if (ret) {
-		printk(KERN_ERR "bcm63xx_timer: failed to register irq\n");
+		pr_err("%s: failed to register irq\n", __func__);
 		return ret;
 	}
 

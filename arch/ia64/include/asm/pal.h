@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_IA64_PAL_H
 #define _ASM_IA64_PAL_H
 
@@ -1669,7 +1670,7 @@ typedef union pal_vp_info_u {
 } pal_vp_info_u_t;
 
 /*
- * Returns infomation about virtual processor features
+ * Returns information about virtual processor features
  */
 static inline s64
 ia64_pal_vp_info (u64 feature_set, u64 vp_buffer, u64 *vp_info, u64 *vmm_id)

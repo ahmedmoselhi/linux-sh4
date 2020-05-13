@@ -1,30 +1,27 @@
-/*
+/* SPDX-License-Identifier: GPL-2.0
+ *
  *  include/asm-sh/magicpanelr2.h
  *
  *  Copyright (C) 2007  Markus Brunner, Mark Jonas
  *
  *  I/O addresses and bitmasks for Magic Panel Release 2 board
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 
 #ifndef __ASM_SH_MAGICPANELR2_H
 #define __ASM_SH_MAGICPANELR2_H
 
-#include <asm/gpio.h>
+#include <linux/gpio.h>
 
 #define __IO_PREFIX mpr2
 #include <asm/io_generic.h>
 
 
-#define SETBITS_OUTB(mask, reg)   ctrl_outb(ctrl_inb(reg) | mask, reg)
-#define SETBITS_OUTW(mask, reg)   ctrl_outw(ctrl_inw(reg) | mask, reg)
-#define SETBITS_OUTL(mask, reg)   ctrl_outl(ctrl_inl(reg) | mask, reg)
-#define CLRBITS_OUTB(mask, reg)   ctrl_outb(ctrl_inb(reg) & ~mask, reg)
-#define CLRBITS_OUTW(mask, reg)   ctrl_outw(ctrl_inw(reg) & ~mask, reg)
-#define CLRBITS_OUTL(mask, reg)   ctrl_outl(ctrl_inl(reg) & ~mask, reg)
+#define SETBITS_OUTB(mask, reg)   __raw_writeb(__raw_readb(reg) | mask, reg)
+#define SETBITS_OUTW(mask, reg)   __raw_writew(__raw_readw(reg) | mask, reg)
+#define SETBITS_OUTL(mask, reg)   __raw_writel(__raw_readl(reg) | mask, reg)
+#define CLRBITS_OUTB(mask, reg)   __raw_writeb(__raw_readb(reg) & ~mask, reg)
+#define CLRBITS_OUTW(mask, reg)   __raw_writew(__raw_readw(reg) & ~mask, reg)
+#define CLRBITS_OUTL(mask, reg)   __raw_writel(__raw_readl(reg) & ~mask, reg)
 
 
 #define PA_LED          PORT_PADR      /* LED */

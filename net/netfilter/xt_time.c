@@ -1,7 +1,6 @@
 /*
  *	xt_time
  *	Copyright © CC Computer Consultants GmbH, 2007
- *	Contact: <jengelh@computergmbh.de>
  *
  *	based on ipt_time by Fabrice MARIE <fabrice@netfilter.org>
  *	This is a module which is used for time matching
@@ -10,6 +9,9 @@
  *	This file is distributed under the terms of the GNU General Public
  *	License (GPL). Copies of the GPL can be obtained from gnu.org/gpl.
  */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/ktime.h>
 #include <linux/module.h>
 #include <linux/skbuff.h>
@@ -43,6 +45,7 @@ static const u_int16_t days_since_leapyear[] = {
  */
 enum {
 	DSE_FIRST = 2039,
+	SECONDS_PER_DAY = 86400,
 };
 static const u_int16_t days_since_epoch[] = {
 	/* 2039 - 2030 */
@@ -74,12 +77,12 @@ static inline bool is_leap(unsigned int y)
  * This is done in three separate functions so that the most expensive
  * calculations are done last, in case a "simple match" can be found earlier.
  */
-static inline unsigned int localtime_1(struct xtm *r, time_t time)
+static inline unsigned int localtime_1(struct xtm *r, time64_t time)
 {
 	unsigned int v, w;
 
 	/* Each day has 86400s, so finding the hour/minute is actually easy. */
-	v         = time % 86400;
+	div_u64_rem(time, SECONDS_PER_DAY, &v);
 	r->second = v % 60;
 	w         = v / 60;
 	r->minute = w % 60;
@@ -87,13 +90,13 @@ static inline unsigned int localtime_1(struct xtm *r, time_t time)
 	return v;
 }
 
-static inline void localtime_2(struct xtm *r, time_t time)
+static inline void localtime_2(struct xtm *r, time64_t time)
 {
 	/*
 	 * Here comes the rest (weekday, monthday). First, divide the SSTE
 	 * by seconds-per-day to get the number of _days_ since the epoch.
 	 */
-	r->dse = time / 86400;
+	r->dse = div_u64(time, SECONDS_PER_DAY);
 
 	/*
 	 * 1970-01-01 (w=0) was a Thursday (4).
@@ -102,7 +105,7 @@ static inline void localtime_2(struct xtm *r, time_t time)
 	r->weekday = (4 + r->dse - 1) % 7 + 1;
 }
 
-static void localtime_3(struct xtm *r, time_t time)
+static void localtime_3(struct xtm *r, time64_t time)
 {
 	unsigned int year, i, w = r->dse;
 
@@ -149,31 +152,35 @@ static void localtime_3(struct xtm *r, time_t time)
 	}
 
 	r->month    = i + 1;
-	return;
 }
 
 static bool
-time_mt(const struct sk_buff *skb, const struct xt_match_param *par)
+time_mt(const struct sk_buff *skb, struct xt_action_param *par)
 {
 	const struct xt_time_info *info = par->matchinfo;
 	unsigned int packet_time;
 	struct xtm current_time;
-	s64 stamp;
+	time64_t stamp;
 
 	/*
-	 * We cannot use get_seconds() instead of __net_timestamp() here.
+	 * We need real time here, but we can neither use skb->tstamp
+	 * nor __net_timestamp().
+	 *
+	 * skb->tstamp and skb->skb_mstamp_ns overlap, however, they
+	 * use different clock types (real vs monotonic).
+	 *
 	 * Suppose you have two rules:
-	 * 	1. match before 13:00
-	 * 	2. match after 13:00
-	 * If you match against processing time (get_seconds) it
+	 *	1. match before 13:00
+	 *	2. match after 13:00
+	 *
+	 * If you match against processing time (ktime_get_real_seconds) it
 	 * may happen that the same packet matches both rules if
-	 * it arrived at the right moment before 13:00.
+	 * it arrived at the right moment before 13:00, so it would be
+	 * better to check skb->tstamp and set it via __net_timestamp()
+	 * if needed.  This however breaks outgoing packets tx timestamp,
+	 * and causes them to get delayed forever by fq packet scheduler.
 	 */
-	if (skb->tstamp.tv64 == 0)
-		__net_timestamp((struct sk_buff *)skb);
-
-	stamp = ktime_to_ns(skb->tstamp);
-	stamp = div_s64(stamp, NSEC_PER_SEC);
+	stamp = ktime_get_real_seconds();
 
 	if (info->flags & XT_TIME_LOCAL_TZ)
 		/* Adjust for local timezone */
@@ -186,6 +193,9 @@ time_mt(const struct sk_buff *skb, const struct xt_match_param *par)
 	 *   - 'now' is in the weekday mask
 	 *   - 'now' is in the daytime range time_start..time_end
 	 * (and by default, libxt_time will set these so as to match)
+	 *
+	 * note: info->date_start/stop are unsigned 32-bit values that
+	 *	 can hold values beyond y2038, but not after y2106.
 	 */
 
 	if (stamp < info->date_start || stamp > info->date_stop)
@@ -201,6 +211,18 @@ time_mt(const struct sk_buff *skb, const struct xt_match_param *par)
 		if (packet_time < info->daytime_start &&
 		    packet_time > info->daytime_stop)
 			return false;
+
+		/** if user asked to ignore 'next day', then e.g.
+		 *  '1 PM Wed, August 1st' should be treated
+		 *  like 'Tue 1 PM July 31st'.
+		 *
+		 * This also causes
+		 * 'Monday, "23:00 to 01:00", to match for 2 hours, starting
+		 * Monday 23:00 to Tuesday 01:00.
+		 */
+		if ((info->flags & XT_TIME_CONTIGUOUS) &&
+		     packet_time <= info->daytime_stop)
+			stamp -= SECONDS_PER_DAY;
 	}
 
 	localtime_2(&current_time, stamp);
@@ -218,18 +240,27 @@ time_mt(const struct sk_buff *skb, const struct xt_match_param *par)
 	return true;
 }
 
-static bool time_mt_check(const struct xt_mtchk_param *par)
+static int time_mt_check(const struct xt_mtchk_param *par)
 {
 	const struct xt_time_info *info = par->matchinfo;
 
 	if (info->daytime_start > XT_TIME_MAX_DAYTIME ||
 	    info->daytime_stop > XT_TIME_MAX_DAYTIME) {
-		printk(KERN_WARNING "xt_time: invalid argument - start or "
-		       "stop time greater than 23:59:59\n");
-		return false;
+		pr_info_ratelimited("invalid argument - start or stop time greater than 23:59:59\n");
+		return -EDOM;
 	}
 
-	return true;
+	if (info->flags & ~XT_TIME_ALL_FLAGS) {
+		pr_info_ratelimited("unknown flags 0x%x\n",
+				    info->flags & ~XT_TIME_ALL_FLAGS);
+		return -EINVAL;
+	}
+
+	if ((info->flags & XT_TIME_CONTIGUOUS) &&
+	     info->daytime_start < info->daytime_stop)
+		return -EINVAL;
+
+	return 0;
 }
 
 static struct xt_match xt_time_mt_reg __read_mostly = {
@@ -246,13 +277,11 @@ static int __init time_mt_init(void)
 	int minutes = sys_tz.tz_minuteswest;
 
 	if (minutes < 0) /* east of Greenwich */
-		printk(KERN_INFO KBUILD_MODNAME
-		       ": kernel timezone is +%02d%02d\n",
-		       -minutes / 60, -minutes % 60);
+		pr_info("kernel timezone is +%02d%02d\n",
+			-minutes / 60, -minutes % 60);
 	else /* west of Greenwich */
-		printk(KERN_INFO KBUILD_MODNAME
-		       ": kernel timezone is -%02d%02d\n",
-		       minutes / 60, minutes % 60);
+		pr_info("kernel timezone is -%02d%02d\n",
+			minutes / 60, minutes % 60);
 
 	return xt_register_match(&xt_time_mt_reg);
 }
@@ -264,7 +293,7 @@ static void __exit time_mt_exit(void)
 
 module_init(time_mt_init);
 module_exit(time_mt_exit);
-MODULE_AUTHOR("Jan Engelhardt <jengelh@computergmbh.de>");
+MODULE_AUTHOR("Jan Engelhardt <jengelh@medozas.de>");
 MODULE_DESCRIPTION("Xtables: time-based matching");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("ipt_time");

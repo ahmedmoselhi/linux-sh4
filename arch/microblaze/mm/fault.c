@@ -17,7 +17,7 @@
  *
  */
 
-#include <linux/module.h>
+#include <linux/extable.h>
 #include <linux/signal.h>
 #include <linux/sched.h>
 #include <linux/kernel.h>
@@ -32,14 +32,9 @@
 #include <asm/page.h>
 #include <asm/pgtable.h>
 #include <asm/mmu.h>
-#include <asm/mmu_context.h>
-#include <asm/system.h>
+#include <linux/mmu_context.h>
 #include <linux/uaccess.h>
 #include <asm/exceptions.h>
-
-#if defined(CONFIG_KGDB)
-int debugger_kernel_faults = 1;
-#endif
 
 static unsigned long pte_misses;	/* updated by do_page_fault() */
 static unsigned long pte_errors;	/* updated by do_page_fault() */
@@ -52,7 +47,7 @@ static int store_updates_sp(struct pt_regs *regs)
 {
 	unsigned int inst;
 
-	if (get_user(inst, (unsigned int *)regs->pc))
+	if (get_user(inst, (unsigned int __user *)regs->pc))
 		return 0;
 	/* check for 1 in the rD field */
 	if (((inst >> 21) & 0x1f) != 1)
@@ -81,10 +76,6 @@ void bad_page_fault(struct pt_regs *regs, unsigned long address, int sig)
 	}
 
 	/* kernel has accessed a bad area */
-#if defined(CONFIG_KGDB)
-	if (debugger_kernel_faults)
-		debugger(regs);
-#endif
 	die("kernel access of bad area", regs, sig);
 }
 
@@ -97,17 +88,17 @@ void do_page_fault(struct pt_regs *regs, unsigned long address,
 {
 	struct vm_area_struct *vma;
 	struct mm_struct *mm = current->mm;
-	siginfo_t info;
 	int code = SEGV_MAPERR;
 	int is_write = error_code & ESR_S;
-	int fault;
+	vm_fault_t fault;
+	unsigned int flags = FAULT_FLAG_DEFAULT;
 
 	regs->ear = address;
 	regs->esr = error_code;
 
 	/* On a kernel SLB miss we can only check for a valid exception entry */
-	if (kernel_mode(regs) && (address >= TASK_SIZE)) {
-		printk(KERN_WARNING "kernel task_size exceed");
+	if (unlikely(kernel_mode(regs) && (address >= TASK_SIZE))) {
+		pr_warn("kernel task_size exceed");
 		_exception(SIGSEGV, regs, code, address);
 	}
 
@@ -115,25 +106,21 @@ void do_page_fault(struct pt_regs *regs, unsigned long address,
 	if ((error_code & 0x13) == 0x13 || (error_code & 0x11) == 0x11)
 		is_write = 0;
 
-#if defined(CONFIG_KGDB)
-	if (debugger_fault_handler && regs->trap == 0x300) {
-		debugger_fault_handler(regs);
-		return;
-	}
-#endif /* CONFIG_KGDB */
-
-	if (in_atomic() || !mm) {
+	if (unlikely(faulthandler_disabled() || !mm)) {
 		if (kernel_mode(regs))
 			goto bad_area_nosemaphore;
 
-		/* in_atomic() in user mode is really bad,
+		/* faulthandler_disabled() in user mode is really bad,
 		   as is current->mm == NULL. */
-		printk(KERN_EMERG "Page fault in user mode with "
-		       "in_atomic(), mm = %p\n", mm);
-		printk(KERN_EMERG "r15 = %lx  MSR = %lx\n",
+		pr_emerg("Page fault in user mode with faulthandler_disabled(), mm = %p\n",
+			 mm);
+		pr_emerg("r15 = %lx  MSR = %lx\n",
 		       regs->r15, regs->msr);
 		die("Weird page fault", regs, SIGSEGV);
 	}
+
+	if (user_mode(regs))
+		flags |= FAULT_FLAG_USER;
 
 	/* When running in the kernel we expect faults to occur only to
 	 * addresses in user space.  All other faults represent errors in the
@@ -150,24 +137,25 @@ void do_page_fault(struct pt_regs *regs, unsigned long address,
 	 * source.  If this is invalid we can skip the address space check,
 	 * thus avoiding the deadlock.
 	 */
-	if (!down_read_trylock(&mm->mmap_sem)) {
+	if (unlikely(!down_read_trylock(&mm->mmap_sem))) {
 		if (kernel_mode(regs) && !search_exception_tables(regs->pc))
 			goto bad_area_nosemaphore;
 
+retry:
 		down_read(&mm->mmap_sem);
 	}
 
 	vma = find_vma(mm, address);
-	if (!vma)
+	if (unlikely(!vma))
 		goto bad_area;
 
 	if (vma->vm_start <= address)
 		goto good_area;
 
-	if (!(vma->vm_flags & VM_GROWSDOWN))
+	if (unlikely(!(vma->vm_flags & VM_GROWSDOWN)))
 		goto bad_area;
 
-	if (!is_write)
+	if (unlikely(!is_write))
 		goto bad_area;
 
 	/*
@@ -179,7 +167,7 @@ void do_page_fault(struct pt_regs *regs, unsigned long address,
 	 * before setting the user r1.  Thus we allow the stack to
 	 * expand to 1MB without further checks.
 	 */
-	if (address + 0x100000 < vma->vm_end) {
+	if (unlikely(address + 0x100000 < vma->vm_end)) {
 
 		/* get user regs even if this fault is in kernel mode */
 		struct pt_regs *uregs = current->thread.regs;
@@ -209,15 +197,16 @@ good_area:
 	code = SEGV_ACCERR;
 
 	/* a write */
-	if (is_write) {
-		if (!(vma->vm_flags & VM_WRITE))
+	if (unlikely(is_write)) {
+		if (unlikely(!(vma->vm_flags & VM_WRITE)))
 			goto bad_area;
+		flags |= FAULT_FLAG_WRITE;
 	/* a read */
 	} else {
 		/* protection fault */
-		if (error_code & 0x08000000)
+		if (unlikely(error_code & 0x08000000))
 			goto bad_area;
-		if (!(vma->vm_flags & (VM_READ | VM_EXEC)))
+		if (unlikely(!(vma->vm_flags & (VM_READ | VM_EXEC))))
 			goto bad_area;
 	}
 
@@ -226,20 +215,41 @@ good_area:
 	 * make sure we exit gracefully rather than endlessly redo
 	 * the fault.
 	 */
-survive:
-	fault = handle_mm_fault(mm, vma, address, is_write ? FAULT_FLAG_WRITE : 0);
+	fault = handle_mm_fault(vma, address, flags);
+
+	if (fault_signal_pending(fault, regs))
+		return;
+
 	if (unlikely(fault & VM_FAULT_ERROR)) {
 		if (fault & VM_FAULT_OOM)
 			goto out_of_memory;
+		else if (fault & VM_FAULT_SIGSEGV)
+			goto bad_area;
 		else if (fault & VM_FAULT_SIGBUS)
 			goto do_sigbus;
 		BUG();
 	}
-	if (fault & VM_FAULT_MAJOR)
-		current->maj_flt++;
-	else
-		current->min_flt++;
+
+	if (flags & FAULT_FLAG_ALLOW_RETRY) {
+		if (unlikely(fault & VM_FAULT_MAJOR))
+			current->maj_flt++;
+		else
+			current->min_flt++;
+		if (fault & VM_FAULT_RETRY) {
+			flags |= FAULT_FLAG_TRIED;
+
+			/*
+			 * No need to up_read(&mm->mmap_sem) as we would
+			 * have already released it in __lock_page_or_retry
+			 * in mm/filemap.c.
+			 */
+
+			goto retry;
+		}
+	}
+
 	up_read(&mm->mmap_sem);
+
 	/*
 	 * keep track of tlb+htab misses that are good addrs but
 	 * just need pte's created via handle_mm_fault()
@@ -257,11 +267,6 @@ bad_area_nosemaphore:
 	/* User mode accesses cause a SIGSEGV */
 	if (user_mode(regs)) {
 		_exception(SIGSEGV, regs, code, address);
-/*		info.si_signo = SIGSEGV;
-		info.si_errno = 0;
-		info.si_code = code;
-		info.si_addr = (void *) address;
-		force_sig_info(SIGSEGV, &info, current);*/
 		return;
 	}
 
@@ -273,26 +278,17 @@ bad_area_nosemaphore:
  * us unable to handle the page fault gracefully.
  */
 out_of_memory:
-	if (current->pid == 1) {
-		yield();
-		down_read(&mm->mmap_sem);
-		goto survive;
-	}
 	up_read(&mm->mmap_sem);
-	printk(KERN_WARNING "VM: killing process %s\n", current->comm);
-	if (user_mode(regs))
-		do_exit(SIGKILL);
-	bad_page_fault(regs, address, SIGKILL);
+	if (!user_mode(regs))
+		bad_page_fault(regs, address, SIGKILL);
+	else
+		pagefault_out_of_memory();
 	return;
 
 do_sigbus:
 	up_read(&mm->mmap_sem);
 	if (user_mode(regs)) {
-		info.si_signo = SIGBUS;
-		info.si_errno = 0;
-		info.si_code = BUS_ADRERR;
-		info.si_addr = (void __user *)address;
-		force_sig_info(SIGBUS, &info, current);
+		force_sig_fault(SIGBUS, BUS_ADRERR, (void __user *)address);
 		return;
 	}
 	bad_page_fault(regs, address, SIGBUS);

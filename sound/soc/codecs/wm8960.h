@@ -1,9 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * wm8960.h  --  WM8960 Soc Audio driver
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef _WM8960_H
@@ -76,13 +73,13 @@
 #define WM8960_OPCLKDIV			2
 #define WM8960_DCLKDIV			3
 #define WM8960_TOCLKSEL			4
-#define WM8960_SYSCLKSEL		5
 
 #define WM8960_SYSCLK_DIV_1		(0 << 1)
 #define WM8960_SYSCLK_DIV_2		(2 << 1)
 
 #define WM8960_SYSCLK_MCLK		(0 << 0)
 #define WM8960_SYSCLK_PLL		(1 << 0)
+#define WM8960_SYSCLK_AUTO		(2 << 0)
 
 #define WM8960_DAC_DIV_1		(0 << 3)
 #define WM8960_DAC_DIV_1_5		(1 << 3)
@@ -110,18 +107,5 @@
 #define WM8960_OPCLK_DIV_4		(3 << 0)
 #define WM8960_OPCLK_DIV_5_5		(4 << 0)
 #define WM8960_OPCLK_DIV_6		(5 << 0)
-
-extern struct snd_soc_dai wm8960_dai;
-extern struct snd_soc_codec_device soc_codec_dev_wm8960;
-
-#define WM8960_DRES_400R 0
-#define WM8960_DRES_200R 1
-#define WM8960_DRES_600R 2
-#define WM8960_DRES_150R 3
-#define WM8960_DRES_MAX  3
-
-struct wm8960_data {
-	int dres;
-};
 
 #endif

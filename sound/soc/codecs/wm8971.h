@@ -1,15 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * wm8971.h  --  audio driver for WM8971
  *
  * Copyright 2005 Lab126, Inc.
  *
  * Author: Kenneth Kiraly <kiraly@lab126.com>
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
- *
  */
 
 #ifndef _WM8971_H
@@ -52,13 +47,5 @@
 #define WM8971_MOUTV	0x2A
 
 #define WM8971_SYSCLK	0
-
-struct wm8971_setup_data {
-	int i2c_bus;
-	unsigned short i2c_address;
-};
-
-extern struct snd_soc_dai wm8971_dai;
-extern struct snd_soc_codec_device soc_codec_dev_wm8971;
 
 #endif

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/fs/binfmt_em86.c
  *
@@ -11,7 +12,6 @@
 #include <linux/module.h>
 #include <linux/string.h>
 #include <linux/stat.h>
-#include <linux/slab.h>
 #include <linux/binfmts.h>
 #include <linux/elf.h>
 #include <linux/init.h>
@@ -23,9 +23,10 @@
 #define EM86_INTERP	"/usr/bin/em86"
 #define EM86_I_NAME	"em86"
 
-static int load_em86(struct linux_binprm *bprm,struct pt_regs *regs)
+static int load_em86(struct linux_binprm *bprm)
 {
-	char *interp, *i_name, *i_arg;
+	const char *i_name, *i_arg;
+	char *interp;
 	struct file * file;
 	int retval;
 	struct elfhdr	elf_ex;
@@ -39,9 +40,13 @@ static int load_em86(struct linux_binprm *bprm,struct pt_regs *regs)
 	/* First of all, some simple consistency checks */
 	if ((elf_ex.e_type != ET_EXEC && elf_ex.e_type != ET_DYN) ||
 		(!((elf_ex.e_machine == EM_386) || (elf_ex.e_machine == EM_486))) ||
-		(!bprm->file->f_op || !bprm->file->f_op->mmap)) {
+		!bprm->file->f_op->mmap) {
 			return -ENOEXEC;
 	}
+
+	/* Need to be able to load the file after exec */
+	if (bprm->interp_flags & BINPRM_FLAGS_PATH_INACCESSIBLE)
+		return -ENOENT;
 
 	allow_write_access(bprm->file);
 	fput(bprm->file);
@@ -90,7 +95,7 @@ static int load_em86(struct linux_binprm *bprm,struct pt_regs *regs)
 	if (retval < 0)
 		return retval;
 
-	return search_binary_handler(bprm, regs);
+	return search_binary_handler(bprm);
 }
 
 static struct linux_binfmt em86_format = {
@@ -100,7 +105,8 @@ static struct linux_binfmt em86_format = {
 
 static int __init init_em86_binfmt(void)
 {
-	return register_binfmt(&em86_format);
+	register_binfmt(&em86_format);
+	return 0;
 }
 
 static void __exit exit_em86_binfmt(void)

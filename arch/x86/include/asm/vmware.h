@@ -1,27 +1,57 @@
+/* SPDX-License-Identifier: GPL-2.0 or MIT */
+#ifndef _ASM_X86_VMWARE_H
+#define _ASM_X86_VMWARE_H
+
+#include <asm/cpufeatures.h>
+#include <asm/alternative.h>
+#include <linux/stringify.h>
+
 /*
- * Copyright (C) 2008, VMware, Inc.
+ * The hypercall definitions differ in the low word of the %edx argument
+ * in the following way: the old port base interface uses the port
+ * number to distinguish between high- and low bandwidth versions.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
+ * The new vmcall interface instead uses a set of flags to select
+ * bandwidth mode and transfer direction. The flags should be loaded
+ * into %dx by any user and are automatically replaced by the port
+ * number if the VMWARE_HYPERVISOR_PORT method is used.
  *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, GOOD TITLE or
- * NON INFRINGEMENT.  See the GNU General Public License for more
- * details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
- *
+ * In short, new driver code should strictly use the new definition of
+ * %dx content.
  */
-#ifndef ASM_X86__VMWARE_H
-#define ASM_X86__VMWARE_H
 
-extern void vmware_platform_setup(void);
-extern int vmware_platform(void);
-extern void vmware_set_feature_bits(struct cpuinfo_x86 *c);
+/* Old port-based version */
+#define VMWARE_HYPERVISOR_PORT    0x5658
+#define VMWARE_HYPERVISOR_PORT_HB 0x5659
 
+/* Current vmcall / vmmcall version */
+#define VMWARE_HYPERVISOR_HB   BIT(0)
+#define VMWARE_HYPERVISOR_OUT  BIT(1)
+
+/* The low bandwidth call. The low word of edx is presumed clear. */
+#define VMWARE_HYPERCALL						\
+	ALTERNATIVE_2("movw $" __stringify(VMWARE_HYPERVISOR_PORT) ", %%dx; " \
+		      "inl (%%dx), %%eax",				\
+		      "vmcall", X86_FEATURE_VMCALL,			\
+		      "vmmcall", X86_FEATURE_VMW_VMMCALL)
+
+/*
+ * The high bandwidth out call. The low word of edx is presumed to have the
+ * HB and OUT bits set.
+ */
+#define VMWARE_HYPERCALL_HB_OUT						\
+	ALTERNATIVE_2("movw $" __stringify(VMWARE_HYPERVISOR_PORT_HB) ", %%dx; " \
+		      "rep outsb",					\
+		      "vmcall", X86_FEATURE_VMCALL,			\
+		      "vmmcall", X86_FEATURE_VMW_VMMCALL)
+
+/*
+ * The high bandwidth in call. The low word of edx is presumed to have the
+ * HB bit set.
+ */
+#define VMWARE_HYPERCALL_HB_IN						\
+	ALTERNATIVE_2("movw $" __stringify(VMWARE_HYPERVISOR_PORT_HB) ", %%dx; " \
+		      "rep insb",					\
+		      "vmcall", X86_FEATURE_VMCALL,			\
+		      "vmmcall", X86_FEATURE_VMW_VMMCALL)
 #endif

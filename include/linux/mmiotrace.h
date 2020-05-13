@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_MMIOTRACE_H
 #define _LINUX_MMIOTRACE_H
 
@@ -49,8 +50,7 @@ extern void mmiotrace_ioremap(resource_size_t offset, unsigned long size,
 extern void mmiotrace_iounmap(volatile void __iomem *addr);
 
 /* For anyone to insert markers. Remember trailing newline. */
-extern int mmiotrace_printk(const char *fmt, ...)
-				__attribute__ ((format (printf, 1, 2)));
+extern __printf(1, 2) int mmiotrace_printk(const char *fmt, ...);
 #else /* !CONFIG_MMIOTRACE: */
 static inline int is_kmmio_active(void)
 {
@@ -71,10 +71,7 @@ static inline void mmiotrace_iounmap(volatile void __iomem *addr)
 {
 }
 
-static inline int mmiotrace_printk(const char *fmt, ...)
-				__attribute__ ((format (printf, 1, 0)));
-
-static inline int mmiotrace_printk(const char *fmt, ...)
+static inline __printf(1, 2) int mmiotrace_printk(const char *fmt, ...)
 {
 	return 0;
 }
@@ -110,6 +107,6 @@ extern void enable_mmiotrace(void);
 extern void disable_mmiotrace(void);
 extern void mmio_trace_rw(struct mmiotrace_rw *rw);
 extern void mmio_trace_mapping(struct mmiotrace_map *map);
-extern int mmio_trace_printk(const char *fmt, va_list args);
+extern __printf(1, 0) int mmio_trace_printk(const char *fmt, va_list args);
 
 #endif /* _LINUX_MMIOTRACE_H */

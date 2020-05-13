@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/arch/m68k/kernel/time.c
  *
@@ -11,8 +12,10 @@
  */
 
 #include <linux/errno.h>
+#include <linux/export.h>
 #include <linux/module.h>
 #include <linux/sched.h>
+#include <linux/sched/loadavg.h>
 #include <linux/kernel.h>
 #include <linux/param.h>
 #include <linux/string.h>
@@ -28,23 +31,19 @@
 #include <linux/timex.h>
 #include <linux/profile.h>
 
-static inline int set_rtc_mmss(unsigned long nowtime)
-{
-  if (mach_set_clock_mmss)
-    return mach_set_clock_mmss (nowtime);
-  return -1;
-}
+
+unsigned long (*mach_random_get_entropy)(void);
+EXPORT_SYMBOL_GPL(mach_random_get_entropy);
+
 
 /*
  * timer_interrupt() needs to keep up the real-time clock,
- * as well as call the "do_timer()" routine every clocktick
+ * as well as call the "xtime_update()" routine every clocktick
  */
 static irqreturn_t timer_interrupt(int irq, void *dummy)
 {
-	do_timer(1);
-#ifndef CONFIG_SMP
+	xtime_update(1);
 	update_process_times(user_mode(get_irq_regs()));
-#endif
 	profile_tick(CPU_PROFILING);
 
 #ifdef CONFIG_HEARTBEAT
@@ -73,28 +72,68 @@ static irqreturn_t timer_interrupt(int irq, void *dummy)
 	return IRQ_HANDLED;
 }
 
-void __init time_init(void)
+#ifdef CONFIG_M68KCLASSIC
+#if !IS_BUILTIN(CONFIG_RTC_DRV_GENERIC)
+void read_persistent_clock64(struct timespec64 *ts)
 {
 	struct rtc_time time;
 
-	if (mach_hwclk) {
-		mach_hwclk(0, &time);
+	ts->tv_sec = 0;
+	ts->tv_nsec = 0;
 
-		if ((time.tm_year += 1900) < 1970)
-			time.tm_year += 100;
-		xtime.tv_sec = mktime(time.tm_year, time.tm_mon, time.tm_mday,
-				      time.tm_hour, time.tm_min, time.tm_sec);
-		xtime.tv_nsec = 0;
-	}
-	wall_to_monotonic.tv_sec = -xtime.tv_sec;
+	if (!mach_hwclk)
+		return;
 
-	mach_sched_init(timer_interrupt);
+	mach_hwclk(0, &time);
+
+	ts->tv_sec = mktime64(time.tm_year + 1900, time.tm_mon + 1, time.tm_mday,
+			      time.tm_hour, time.tm_min, time.tm_sec);
 }
+#endif
 
-u32 arch_gettimeoffset(void)
+#if IS_ENABLED(CONFIG_RTC_DRV_GENERIC)
+static int rtc_generic_get_time(struct device *dev, struct rtc_time *tm)
 {
-	return mach_gettimeoffset() * 1000;
+	mach_hwclk(0, tm);
+	return 0;
 }
+
+static int rtc_generic_set_time(struct device *dev, struct rtc_time *tm)
+{
+	if (mach_hwclk(1, tm) < 0)
+		return -EOPNOTSUPP;
+	return 0;
+}
+
+static int rtc_ioctl(struct device *dev, unsigned int cmd, unsigned long arg)
+{
+	struct rtc_pll_info pll;
+	struct rtc_pll_info __user *argp = (void __user *)arg;
+
+	switch (cmd) {
+	case RTC_PLL_GET:
+		if (!mach_get_rtc_pll || mach_get_rtc_pll(&pll))
+			return -EINVAL;
+		return copy_to_user(argp, &pll, sizeof pll) ? -EFAULT : 0;
+
+	case RTC_PLL_SET:
+		if (!mach_set_rtc_pll)
+			return -EINVAL;
+		if (!capable(CAP_SYS_TIME))
+			return -EACCES;
+		if (copy_from_user(&pll, argp, sizeof(pll)))
+			return -EFAULT;
+		return mach_set_rtc_pll(&pll);
+	}
+
+	return -ENOIOCTLCMD;
+}
+
+static const struct rtc_class_ops generic_rtc_ops = {
+	.ioctl = rtc_ioctl,
+	.read_time = rtc_generic_get_time,
+	.set_time = rtc_generic_set_time,
+};
 
 static int __init rtc_init(void)
 {
@@ -103,11 +142,17 @@ static int __init rtc_init(void)
 	if (!mach_hwclk)
 		return -ENODEV;
 
-	pdev = platform_device_register_simple("rtc-generic", -1, NULL, 0);
-	if (IS_ERR(pdev))
-		return PTR_ERR(pdev);
-
-	return 0;
+	pdev = platform_device_register_data(NULL, "rtc-generic", -1,
+					     &generic_rtc_ops,
+					     sizeof(generic_rtc_ops));
+	return PTR_ERR_OR_ZERO(pdev);
 }
 
 module_init(rtc_init);
+#endif /* CONFIG_RTC_DRV_GENERIC */
+#endif /* CONFIG M68KCLASSIC */
+
+void __init time_init(void)
+{
+	mach_sched_init(timer_interrupt);
+}

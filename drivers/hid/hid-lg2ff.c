@@ -1,31 +1,18 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
- *  Force feedback support for Logitech Rumblepad 2
+ *  Force feedback support for Logitech RumblePad and Rumblepad 2
  *
  *  Copyright (c) 2008 Anssi Hannula <anssi.hannula@gmail.com>
  */
 
 /*
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 
 #include <linux/input.h>
-#include <linux/usb.h>
+#include <linux/slab.h>
 #include <linux/hid.h>
 
-#include "usbhid/usbhid.h"
 #include "hid-lg.h"
 
 struct lg2ff_device {
@@ -55,7 +42,7 @@ static int play_effect(struct input_dev *dev, void *data,
 		lg2ff->report->field[0]->value[4] = 0x00;
 	}
 
-	usbhid_submit_report(hid, lg2ff->report, USB_DIR_OUT);
+	hid_hw_request(hid, lg2ff->report, HID_REQ_SET_REPORT);
 	return 0;
 }
 
@@ -63,10 +50,16 @@ int lg2ff_init(struct hid_device *hid)
 {
 	struct lg2ff_device *lg2ff;
 	struct hid_report *report;
-	struct hid_input *hidinput = list_entry(hid->inputs.next,
-						struct hid_input, list);
-	struct input_dev *dev = hidinput->input;
+	struct hid_input *hidinput;
+	struct input_dev *dev;
 	int error;
+
+	if (list_empty(&hid->inputs)) {
+		hid_err(hid, "no inputs found\n");
+		return -ENODEV;
+	}
+	hidinput = list_entry(hid->inputs.next, struct hid_input, list);
+	dev = hidinput->input;
 
 	/* Check that the report looks ok */
 	report = hid_validate_values(hid, HID_OUTPUT_REPORT, 0, 0, 7);
@@ -94,10 +87,9 @@ int lg2ff_init(struct hid_device *hid)
 	report->field[0]->value[5] = 0x00;
 	report->field[0]->value[6] = 0x00;
 
-	usbhid_submit_report(hid, report, USB_DIR_OUT);
+	hid_hw_request(hid, report, HID_REQ_SET_REPORT);
 
-	dev_info(&hid->dev, "Force feedback for Logitech Rumblepad 2 by "
-	       "Anssi Hannula <anssi.hannula@gmail.com>\n");
+	hid_info(hid, "Force feedback for Logitech variant 2 rumble devices by Anssi Hannula <anssi.hannula@gmail.com>\n");
 
 	return 0;
 }

@@ -6,6 +6,7 @@
 
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/slab.h>
 #include <net/sock.h>
 #include <linux/workqueue.h>
 #include <linux/connector.h>
@@ -65,7 +66,7 @@ static int dm_ulog_sendto_server(struct dm_ulog_request *tfr)
 	msg->seq = tfr->seq;
 	msg->len = sizeof(struct dm_ulog_request) + tfr->data_size;
 
-	r = cn_netlink_send(msg, 0, gfp_any());
+	r = cn_netlink_send(msg, 0, 0, gfp_any());
 
 	return r;
 }
@@ -133,7 +134,7 @@ static void cn_ulog_callback(struct cn_msg *msg, struct netlink_skb_parms *nsp)
 {
 	struct dm_ulog_request *tfr = (struct dm_ulog_request *)(msg + 1);
 
-	if (!cap_raised(nsp->eff_cap, CAP_SYS_ADMIN))
+	if (!capable(CAP_SYS_ADMIN))
 		return;
 
 	spin_lock(&receiving_list_lock);
@@ -171,6 +172,7 @@ int dm_consult_userspace(const char *uuid, uint64_t luid, int request_type,
 			 char *rdata, size_t *rdata_size)
 {
 	int r = 0;
+	unsigned long tmo;
 	size_t dummy = 0;
 	int overhead_size = sizeof(struct dm_ulog_request) + sizeof(struct cn_msg);
 	struct dm_ulog_request *tfr = prealloced_ulog_tfr;
@@ -197,6 +199,7 @@ resend:
 
 	memset(tfr, 0, DM_ULOG_PREALLOCED_SIZE - sizeof(struct cn_msg));
 	memcpy(tfr->uuid, uuid, DM_UUID_LEN);
+	tfr->version = DM_ULOG_REQUEST_VERSION;
 	tfr->luid = luid;
 	tfr->seq = dm_ulog_seq++;
 
@@ -234,11 +237,11 @@ resend:
 		goto out;
 	}
 
-	r = wait_for_completion_timeout(&(pkg.complete), DM_ULOG_RETRY_TIMEOUT);
+	tmo = wait_for_completion_timeout(&(pkg.complete), DM_ULOG_RETRY_TIMEOUT);
 	spin_lock(&receiving_list_lock);
 	list_del_init(&(pkg.list));
 	spin_unlock(&receiving_list_lock);
-	if (!r) {
+	if (!tmo) {
 		DMWARN("[%s] Request timed out: [%u/%u] - retrying",
 		       (strlen(uuid) > 8) ?
 		       (uuid + (strlen(uuid) - 8)) : (uuid),
@@ -270,7 +273,7 @@ int dm_ulog_tfr_init(void)
 
 	r = cn_add_callback(&ulog_cn_id, "dmlogusr", cn_ulog_callback);
 	if (r) {
-		cn_del_callback(&ulog_cn_id);
+		kfree(prealloced_cn_msg);
 		return r;
 	}
 

@@ -215,7 +215,6 @@ static int dma;
 #include <linux/ioport.h>
 #include <linux/spinlock.h>
 #include <linux/in.h>
-#include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/errno.h>
 #include <linux/init.h>
@@ -228,8 +227,8 @@ static int dma;
 #include <linux/timer.h>
 #include <linux/atalk.h>
 #include <linux/bitops.h>
+#include <linux/gfp.h>
 
-#include <asm/system.h>
 #include <asm/dma.h>
 #include <asm/io.h>
 
@@ -641,7 +640,6 @@ done:
 		inb_p(base+7);
 		inb_p(base+7);
 	}
-	return;
 }
 
 
@@ -653,9 +651,9 @@ static int do_write(struct net_device *dev, void *cbuf, int cbuflen,
 	int ret;
 
 	if(i) {
-		qels[i].cbuf = (unsigned char *) cbuf;
+		qels[i].cbuf = cbuf;
 		qels[i].cbuflen = cbuflen;
-		qels[i].dbuf = (unsigned char *) dbuf;
+		qels[i].dbuf = dbuf;
 		qels[i].dbuflen = dbuflen;
 		qels[i].QWrite = 1;
 		qels[i].mailbox = i;  /* this should be initted rather */
@@ -677,9 +675,9 @@ static int do_read(struct net_device *dev, void *cbuf, int cbuflen,
 	int ret;
 
 	if(i) {
-		qels[i].cbuf = (unsigned char *) cbuf;
+		qels[i].cbuf = cbuf;
 		qels[i].cbuflen = cbuflen;
-		qels[i].dbuf = (unsigned char *) dbuf;
+		qels[i].dbuf = dbuf;
 		qels[i].dbuflen = dbuflen;
 		qels[i].QWrite = 0;
 		qels[i].mailbox = i;  /* this should be initted rather */
@@ -696,6 +694,7 @@ static int do_read(struct net_device *dev, void *cbuf, int cbuflen,
 /* end of idle handlers -- what should be seen is do_read, do_write */
 
 static struct timer_list ltpc_timer;
+static struct net_device *ltpc_timer_dev;
 
 static netdev_tx_t ltpc_xmit(struct sk_buff *skb, struct net_device *dev);
 
@@ -728,7 +727,7 @@ static int sendup_buffer (struct net_device *dev)
 
 	if (ltc->command != LT_RCVLAP) {
 		printk("unknown command 0x%02x from ltpc card\n",ltc->command);
-		return(-1);
+		return -1;
 	}
 	dnode = ltc->dnode;
 	snode = ltc->snode;
@@ -869,10 +868,8 @@ static void set_multicast_list(struct net_device *dev)
 
 static int ltpc_poll_counter;
 
-static void ltpc_poll(unsigned long l)
+static void ltpc_poll(struct timer_list *unused)
 {
-	struct net_device *dev = (struct net_device *) l;
-
 	del_timer(&ltpc_timer);
 
 	if(debug & DEBUG_VERBOSE) {
@@ -882,14 +879,10 @@ static void ltpc_poll(unsigned long l)
 		}
 		ltpc_poll_counter--;
 	}
-  
-	if (!dev)
-		return;  /* we've been downed */
 
 	/* poll 20 times per second */
-	idle(dev);
+	idle(ltpc_timer_dev);
 	ltpc_timer.expires = jiffies + HZ/20;
-	
 	add_timer(&ltpc_timer);
 }
 
@@ -1015,7 +1008,7 @@ static int __init ltpc_probe_dma(int base, int dma)
 static const struct net_device_ops ltpc_netdev = {
 	.ndo_start_xmit		= ltpc_xmit,
 	.ndo_do_ioctl		= ltpc_ioctl,
-	.ndo_set_multicast_list = set_multicast_list,
+	.ndo_set_rx_mode	= set_multicast_list,
 };
 
 struct net_device * __init ltpc_probe(void)
@@ -1125,7 +1118,6 @@ struct net_device * __init ltpc_probe(void)
 		printk(KERN_INFO "Apple/Farallon LocalTalk-PC card at %03x, DMA%d.  Using polled mode.\n",io,dma);
 
 	dev->netdev_ops = &ltpc_netdev;
-	dev->mc_list = NULL;
 	dev->base_addr = io;
 	dev->irq = irq;
 	dev->dma = dma;
@@ -1158,7 +1150,7 @@ struct net_device * __init ltpc_probe(void)
 	}
 
 	/* grab it and don't let go :-) */
-	if (irq && request_irq( irq, &ltpc_interrupt, 0, "ltpc", dev) >= 0)
+	if (irq && request_irq( irq, ltpc_interrupt, 0, "ltpc", dev) >= 0)
 	{
 		(void) inb_p(io+7);  /* enable interrupts from board */
 		(void) inb_p(io+7);  /* and reset irq line */
@@ -1168,9 +1160,8 @@ struct net_device * __init ltpc_probe(void)
 		dev->irq = 0;
 		/* polled mode -- 20 times per second */
 		/* this is really, really slow... should it poll more often? */
-		init_timer(&ltpc_timer);
-		ltpc_timer.function=ltpc_poll;
-		ltpc_timer.data = (unsigned long) dev;
+		ltpc_timer_dev = dev;
+		timer_setup(&ltpc_timer, ltpc_poll, 0);
 
 		ltpc_timer.expires = jiffies + HZ/20;
 		add_timer(&ltpc_timer);
@@ -1234,9 +1225,9 @@ static struct net_device *dev_ltpc;
 
 MODULE_LICENSE("GPL");
 module_param(debug, int, 0);
-module_param(io, int, 0);
-module_param(irq, int, 0);
-module_param(dma, int, 0);
+module_param_hw(io, int, ioport, 0);
+module_param_hw(irq, int, irq, 0);
+module_param_hw(dma, int, dma, 0);
 
 
 static int __init ltpc_module_init(void)
@@ -1246,9 +1237,7 @@ static int __init ltpc_module_init(void)
 		       "ltpc: Autoprobing is not recommended for modules\n");
 
 	dev_ltpc = ltpc_probe();
-	if (IS_ERR(dev_ltpc))
-		return PTR_ERR(dev_ltpc);
-	return 0;
+	return PTR_ERR_OR_ZERO(dev_ltpc);
 }
 module_init(ltpc_module_init);
 #endif
@@ -1258,8 +1247,6 @@ static void __exit ltpc_cleanup(void)
 
 	if(debug & DEBUG_VERBOSE) printk("unregister_netdev\n");
 	unregister_netdev(dev_ltpc);
-
-	ltpc_timer.data = 0;  /* signal the poll routine that we're done */
 
 	del_timer_sync(&ltpc_timer);
 

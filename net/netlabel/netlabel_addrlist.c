@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * NetLabel Network Address Lists
  *
@@ -6,27 +7,11 @@
  * system manages static and dynamic label mappings for network protocols such
  * as CIPSO and RIPSO.
  *
- * Author: Paul Moore <paul.moore@hp.com>
- *
+ * Author: Paul Moore <paul@paul-moore.com>
  */
 
 /*
  * (c) Copyright Hewlett-Packard Development Company, L.P., 2008
- *
- * This program is free software;  you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY;  without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See
- * the GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program;  if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
- *
  */
 
 #include <linux/types.h>
@@ -96,7 +81,7 @@ struct netlbl_af4list *netlbl_af4list_search_exact(__be32 addr,
 }
 
 
-#if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
+#if IS_ENABLED(CONFIG_IPV6)
 /**
  * netlbl_af6list_search - Search for a matching IPv6 address entry
  * @addr: IPv6 address
@@ -185,7 +170,7 @@ int netlbl_af4list_add(struct netlbl_af4list *entry, struct list_head *head)
 	return 0;
 }
 
-#if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
+#if IS_ENABLED(CONFIG_IPV6)
 /**
  * netlbl_af6list_add - Add a new IPv6 address entry to a list
  * @entry: address entry
@@ -263,7 +248,7 @@ struct netlbl_af4list *netlbl_af4list_remove(__be32 addr, __be32 mask,
 	return entry;
 }
 
-#if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
+#if IS_ENABLED(CONFIG_IPV6)
 /**
  * netlbl_af6list_remove_entry - Remove an IPv6 address entry
  * @entry: address entry
@@ -342,7 +327,7 @@ void netlbl_af4list_audit_addr(struct audit_buffer *audit_buf,
 	}
 }
 
-#if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
+#if IS_ENABLED(CONFIG_IPV6)
 /**
  * netlbl_af6list_audit_addr - Audit an IPv6 address
  * @audit_buf: audit buffer

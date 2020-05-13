@@ -1,21 +1,17 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * include/linux/mmc/sh_mmcif.h
  *
  * platform data for eMMC driver
  *
  * Copyright (C) 2010 Renesas Solutions Corp.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License.
- *
  */
 
-#ifndef __SH_MMCIF_H__
-#define __SH_MMCIF_H__
+#ifndef LINUX_MMC_SH_MMCIF_H
+#define LINUX_MMC_SH_MMCIF_H
 
-#include <linux/platform_device.h>
 #include <linux/io.h>
+#include <linux/platform_device.h>
 
 /*
  * MMCIF : CE_CLK_CTRL [19:16]
@@ -32,12 +28,11 @@
  */
 
 struct sh_mmcif_plat_data {
-	void (*set_pwr)(struct platform_device *pdev, int state);
-	void (*down_pwr)(struct platform_device *pdev);
-	int (*get_cd)(struct platform_device *pdef);
-	u8	sup_pclk;	/* 1 :SH7757, 0: SH7724/SH7372 */
-	unsigned long caps;
-	u32	ocr;
+	unsigned int		slave_id_tx;	/* embedded slave_id_[tr]x */
+	unsigned int		slave_id_rx;
+	u8			sup_pclk;	/* 1 :SH7757, 0: SH7724/SH7372 */
+	unsigned long		caps;
+	u32			ocr;
 };
 
 #define MMCIF_CE_CMD_SET	0x00000000
@@ -57,16 +52,40 @@ struct sh_mmcif_plat_data {
 #define MMCIF_CE_INT_MASK	0x00000044
 #define MMCIF_CE_HOST_STS1	0x00000048
 #define MMCIF_CE_HOST_STS2	0x0000004C
+#define MMCIF_CE_CLK_CTRL2	0x00000070
 #define MMCIF_CE_VERSION	0x0000007C
+
+/* CE_BUF_ACC */
+#define BUF_ACC_DMAWEN		(1 << 25)
+#define BUF_ACC_DMAREN		(1 << 24)
+#define BUF_ACC_BUSW_32		(0 << 17)
+#define BUF_ACC_BUSW_16		(1 << 17)
+#define BUF_ACC_ATYP		(1 << 16)
+
+/* CE_CLK_CTRL */
+#define CLK_ENABLE		(1 << 24) /* 1: output mmc clock */
+#define CLK_CLEAR		(0xf << 16)
+#define CLK_SUP_PCLK		(0xf << 16)
+#define CLKDIV_4		(1 << 16) /* mmc clock frequency.
+					   * n: bus clock/(2^(n+1)) */
+#define CLKDIV_256		(7 << 16) /* mmc clock frequency. (see above) */
+#define SRSPTO_256		(2 << 12) /* resp timeout */
+#define SRBSYTO_29		(0xf << 8) /* resp busy timeout */
+#define SRWDTO_29		(0xf << 4) /* read/write timeout */
+#define SCCSTO_29		(0xf << 0) /* ccs timeout */
+
+/* CE_VERSION */
+#define SOFT_RST_ON		(1 << 31)
+#define SOFT_RST_OFF		0
 
 static inline u32 sh_mmcif_readl(void __iomem *addr, int reg)
 {
-	return readl(addr + reg);
+	return __raw_readl(addr + reg);
 }
 
 static inline void sh_mmcif_writel(void __iomem *addr, int reg, u32 val)
 {
-	writel(val, addr + reg);
+	__raw_writel(val, addr + reg);
 }
 
 #define SH_MMCIF_BBS 512 /* boot block size */
@@ -133,6 +152,17 @@ static inline int sh_mmcif_boot_do_read(void __iomem *base,
 	unsigned long k;
 	int ret = 0;
 
+	/* In data transfer mode: Set clock to Bus clock/4 (about 20Mhz) */
+	sh_mmcif_writel(base, MMCIF_CE_CLK_CTRL,
+			CLK_ENABLE | CLKDIV_4 | SRSPTO_256 |
+			SRBSYTO_29 | SRWDTO_29 | SCCSTO_29);
+
+	/* CMD9 - Get CSD */
+	sh_mmcif_boot_cmd(base, 0x09806000, 0x00010000);
+
+	/* CMD7 - Select the card */
+	sh_mmcif_boot_cmd(base, 0x07400000, 0x00010000);
+
 	/* CMD16 - Set the block size */
 	sh_mmcif_boot_cmd(base, 0x10400000, SH_MMCIF_BBS);
 
@@ -145,21 +175,20 @@ static inline int sh_mmcif_boot_do_read(void __iomem *base,
 
 static inline void sh_mmcif_boot_init(void __iomem *base)
 {
-	unsigned long tmp;
-
 	/* reset */
-	tmp = sh_mmcif_readl(base, MMCIF_CE_VERSION);
-	sh_mmcif_writel(base, MMCIF_CE_VERSION, tmp | 0x80000000);
-	sh_mmcif_writel(base, MMCIF_CE_VERSION, tmp & ~0x80000000);
+	sh_mmcif_writel(base, MMCIF_CE_VERSION, SOFT_RST_ON);
+	sh_mmcif_writel(base, MMCIF_CE_VERSION, SOFT_RST_OFF);
 
 	/* byte swap */
-	sh_mmcif_writel(base, MMCIF_CE_BUF_ACC, 0x00010000);
+	sh_mmcif_writel(base, MMCIF_CE_BUF_ACC, BUF_ACC_ATYP);
 
 	/* Set block size in MMCIF hardware */
 	sh_mmcif_writel(base, MMCIF_CE_BLOCK_SET, SH_MMCIF_BBS);
 
-	/* Enable the clock, set it to Bus clock/256 (about 325Khz)*/
-	sh_mmcif_writel(base, MMCIF_CE_CLK_CTRL, 0x01072fff);
+	/* Enable the clock, set it to Bus clock/256 (about 325Khz). */
+	sh_mmcif_writel(base, MMCIF_CE_CLK_CTRL,
+			CLK_ENABLE | CLKDIV_256 | SRSPTO_256 |
+			SRBSYTO_29 | SRWDTO_29 | SCCSTO_29);
 
 	/* CMD0 */
 	sh_mmcif_boot_cmd(base, 0x00000040, 0);
@@ -177,25 +206,4 @@ static inline void sh_mmcif_boot_init(void __iomem *base)
 	sh_mmcif_boot_cmd(base, 0x03400040, 0x00010000);
 }
 
-static inline void sh_mmcif_boot_slurp(void __iomem *base,
-				       unsigned char *buf,
-				       unsigned long no_bytes)
-{
-	unsigned long tmp;
-
-	/* In data transfer mode: Set clock to Bus clock/4 (about 20Mhz) */
-	sh_mmcif_writel(base, MMCIF_CE_CLK_CTRL, 0x01012fff);
-
-	/* CMD9 - Get CSD */
-	sh_mmcif_boot_cmd(base, 0x09806000, 0x00010000);
-
-	/* CMD7 - Select the card */
-	sh_mmcif_boot_cmd(base, 0x07400000, 0x00010000);
-
-	tmp = no_bytes / SH_MMCIF_BBS;
-	tmp += (no_bytes % SH_MMCIF_BBS) ? 1 : 0;
-
-	sh_mmcif_boot_do_read(base, 512, tmp, buf);
-}
-
-#endif /* __SH_MMCIF_H__ */
+#endif /* LINUX_MMC_SH_MMCIF_H */

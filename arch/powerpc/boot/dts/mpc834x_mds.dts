@@ -1,12 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * MPC8349E MDS Device Tree Source
  *
  * Copyright 2005, 2006 Freescale Semiconductor Inc.
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  */
 
 /dts-v1/;
@@ -193,14 +189,12 @@
 					interrupt-parent = <&ipic>;
 					interrupts = <17 0x8>;
 					reg = <0x0>;
-					device_type = "ethernet-phy";
 				};
 
 				phy1: ethernet-phy@1 {
 					interrupt-parent = <&ipic>;
 					interrupts = <18 0x8>;
 					reg = <0x1>;
-					device_type = "ethernet-phy";
 				};
 
 				tbi0: tbi-phy@11 {
@@ -242,7 +236,7 @@
 		serial0: serial@4500 {
 			cell-index = <0>;
 			device_type = "serial";
-			compatible = "ns16550";
+			compatible = "fsl,ns16550", "ns16550";
 			reg = <0x4500 0x100>;
 			clock-frequency = <0>;
 			interrupts = <9 0x8>;
@@ -252,7 +246,7 @@
 		serial1: serial@4600 {
 			cell-index = <1>;
 			device_type = "serial";
-			compatible = "ns16550";
+			compatible = "fsl,ns16550", "ns16550";
 			reg = <0x4600 0x100>;
 			clock-frequency = <0>;
 			interrupts = <10 0x8>;

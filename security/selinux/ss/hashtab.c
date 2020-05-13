@@ -1,30 +1,54 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Implementation of the hash table type.
  *
- * Author : Stephen Smalley, <sds@epoch.ncsc.mil>
+ * Author : Stephen Smalley, <sds@tycho.nsa.gov>
  */
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/errno.h>
+#include <linux/sched.h>
 #include "hashtab.h"
+
+static struct kmem_cache *hashtab_node_cachep;
+
+/*
+ * Here we simply round the number of elements up to the nearest power of two.
+ * I tried also other options like rouding down or rounding to the closest
+ * power of two (up or down based on which is closer), but I was unable to
+ * find any significant difference in lookup/insert performance that would
+ * justify switching to a different (less intuitive) formula. It could be that
+ * a different formula is actually more optimal, but any future changes here
+ * should be supported with performance/memory usage data.
+ *
+ * The total memory used by the htable arrays (only) with Fedora policy loaded
+ * is approximately 163 KB at the time of writing.
+ */
+static u32 hashtab_compute_size(u32 nel)
+{
+	return nel == 0 ? 0 : roundup_pow_of_two(nel);
+}
 
 struct hashtab *hashtab_create(u32 (*hash_value)(struct hashtab *h, const void *key),
 			       int (*keycmp)(struct hashtab *h, const void *key1, const void *key2),
-			       u32 size)
+			       u32 nel_hint)
 {
 	struct hashtab *p;
-	u32 i;
+	u32 i, size = hashtab_compute_size(nel_hint);
 
 	p = kzalloc(sizeof(*p), GFP_KERNEL);
-	if (p == NULL)
+	if (!p)
 		return p;
 
 	p->size = size;
 	p->nel = 0;
 	p->hash_value = hash_value;
 	p->keycmp = keycmp;
-	p->htable = kmalloc(sizeof(*(p->htable)) * size, GFP_KERNEL);
-	if (p->htable == NULL) {
+	if (!size)
+		return p;
+
+	p->htable = kmalloc_array(size, sizeof(*p->htable), GFP_KERNEL);
+	if (!p->htable) {
 		kfree(p);
 		return NULL;
 	}
@@ -40,7 +64,9 @@ int hashtab_insert(struct hashtab *h, void *key, void *datum)
 	u32 hvalue;
 	struct hashtab_node *prev, *cur, *newnode;
 
-	if (!h || h->nel == HASHTAB_MAX_NODES)
+	cond_resched();
+
+	if (!h || !h->size || h->nel == HASHTAB_MAX_NODES)
 		return -EINVAL;
 
 	hvalue = h->hash_value(h, key);
@@ -54,8 +80,8 @@ int hashtab_insert(struct hashtab *h, void *key, void *datum)
 	if (cur && (h->keycmp(h, key, cur->key) == 0))
 		return -EEXIST;
 
-	newnode = kzalloc(sizeof(*newnode), GFP_KERNEL);
-	if (newnode == NULL)
+	newnode = kmem_cache_zalloc(hashtab_node_cachep, GFP_KERNEL);
+	if (!newnode)
 		return -ENOMEM;
 	newnode->key = key;
 	newnode->datum = datum;
@@ -76,7 +102,7 @@ void *hashtab_search(struct hashtab *h, const void *key)
 	u32 hvalue;
 	struct hashtab_node *cur;
 
-	if (!h)
+	if (!h || !h->size)
 		return NULL;
 
 	hvalue = h->hash_value(h, key);
@@ -84,7 +110,7 @@ void *hashtab_search(struct hashtab *h, const void *key)
 	while (cur && h->keycmp(h, key, cur->key) > 0)
 		cur = cur->next;
 
-	if (cur == NULL || (h->keycmp(h, key, cur->key) != 0))
+	if (!cur || (h->keycmp(h, key, cur->key) != 0))
 		return NULL;
 
 	return cur->datum;
@@ -103,7 +129,7 @@ void hashtab_destroy(struct hashtab *h)
 		while (cur) {
 			temp = cur;
 			cur = cur->next;
-			kfree(temp);
+			kmem_cache_free(hashtab_node_cachep, temp);
 		}
 		h->htable[i] = NULL;
 	}
@@ -145,7 +171,7 @@ void hashtab_stat(struct hashtab *h, struct hashtab_info *info)
 
 	slots_used = 0;
 	max_chain_len = 0;
-	for (slots_used = max_chain_len = i = 0; i < h->size; i++) {
+	for (i = 0; i < h->size; i++) {
 		cur = h->htable[i];
 		if (cur) {
 			slots_used++;
@@ -162,4 +188,11 @@ void hashtab_stat(struct hashtab *h, struct hashtab_info *info)
 
 	info->slots_used = slots_used;
 	info->max_chain_len = max_chain_len;
+}
+
+void __init hashtab_cache_init(void)
+{
+		hashtab_node_cachep = kmem_cache_create("hashtab_node",
+			sizeof(struct hashtab_node),
+			0, SLAB_PANIC, NULL);
 }

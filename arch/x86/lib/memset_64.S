@@ -1,62 +1,94 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* Copyright 2002 Andi Kleen, SuSE Labs */
 
 #include <linux/linkage.h>
-#include <asm/dwarf2.h>
+#include <asm/cpufeatures.h>
+#include <asm/alternative-asm.h>
+#include <asm/export.h>
+
+.weak memset
 
 /*
- * ISO C memset - set a memory block to a byte value.
- *	
+ * ISO C memset - set a memory block to a byte value. This function uses fast
+ * string to get better performance than the original function. The code is
+ * simpler and shorter than the original function as well.
+ *
  * rdi   destination
- * rsi   value (char) 
- * rdx   count (bytes) 
- * 
+ * rsi   value (char)
+ * rdx   count (bytes)
+ *
  * rax   original destination
- */	
-	ALIGN
-memset_c:
-	CFI_STARTPROC
+ */
+SYM_FUNC_START_ALIAS(memset)
+SYM_FUNC_START(__memset)
+	/*
+	 * Some CPUs support enhanced REP MOVSB/STOSB feature. It is recommended
+	 * to use it when possible. If not available, use fast string instructions.
+	 *
+	 * Otherwise, use original memset function.
+	 */
+	ALTERNATIVE_2 "jmp memset_orig", "", X86_FEATURE_REP_GOOD, \
+		      "jmp memset_erms", X86_FEATURE_ERMS
+
 	movq %rdi,%r9
-	movl %edx,%r8d
-	andl $7,%r8d
-	movl %edx,%ecx
-	shrl $3,%ecx
+	movq %rdx,%rcx
+	andl $7,%edx
+	shrq $3,%rcx
 	/* expand byte value  */
 	movzbl %sil,%esi
 	movabs $0x0101010101010101,%rax
-	mulq %rsi		/* with rax, clobbers rdx */
+	imulq %rsi,%rax
 	rep stosq
-	movl %r8d,%ecx
+	movl %edx,%ecx
 	rep stosb
 	movq %r9,%rax
 	ret
-	CFI_ENDPROC
-ENDPROC(memset_c)
+SYM_FUNC_END(__memset)
+SYM_FUNC_END_ALIAS(memset)
+EXPORT_SYMBOL(memset)
+EXPORT_SYMBOL(__memset)
 
-ENTRY(memset)
-ENTRY(__memset)
-	CFI_STARTPROC
+/*
+ * ISO C memset - set a memory block to a byte value. This function uses
+ * enhanced rep stosb to override the fast string function.
+ * The code is simpler and shorter than the fast string function as well.
+ *
+ * rdi   destination
+ * rsi   value (char)
+ * rdx   count (bytes)
+ *
+ * rax   original destination
+ */
+SYM_FUNC_START_LOCAL(memset_erms)
+	movq %rdi,%r9
+	movb %sil,%al
+	movq %rdx,%rcx
+	rep stosb
+	movq %r9,%rax
+	ret
+SYM_FUNC_END(memset_erms)
+
+SYM_FUNC_START_LOCAL(memset_orig)
 	movq %rdi,%r10
-	movq %rdx,%r11
 
 	/* expand byte value  */
 	movzbl %sil,%ecx
 	movabs $0x0101010101010101,%rax
-	mul    %rcx		/* with rax, clobbers rdx */
+	imulq  %rcx,%rax
 
 	/* align dst */
 	movl  %edi,%r9d
 	andl  $7,%r9d
 	jnz  .Lbad_alignment
-	CFI_REMEMBER_STATE
 .Lafter_bad_alignment:
 
-	movl %r11d,%ecx
-	shrl $6,%ecx
+	movq  %rdx,%rcx
+	shrq  $6,%rcx
 	jz	 .Lhandle_tail
 
 	.p2align 4
 .Lloop_64:
-	decl   %ecx
+	decq  %rcx
 	movq  %rax,(%rdi)
 	movq  %rax,8(%rdi)
 	movq  %rax,16(%rdi)
@@ -72,7 +104,7 @@ ENTRY(__memset)
 	   to predict jump tables. */
 	.p2align 4
 .Lhandle_tail:
-	movl	%r11d,%ecx
+	movl	%edx,%ecx
 	andl    $63&(~7),%ecx
 	jz 		.Lhandle_7
 	shrl	$3,%ecx
@@ -84,12 +116,11 @@ ENTRY(__memset)
 	jnz    .Lloop_8
 
 .Lhandle_7:
-	movl	%r11d,%ecx
-	andl	$7,%ecx
+	andl	$7,%edx
 	jz      .Lende
 	.p2align 4
 .Lloop_1:
-	decl    %ecx
+	decl    %edx
 	movb 	%al,(%rdi)
 	leaq	1(%rdi),%rdi
 	jnz     .Lloop_1
@@ -98,36 +129,14 @@ ENTRY(__memset)
 	movq	%r10,%rax
 	ret
 
-	CFI_RESTORE_STATE
 .Lbad_alignment:
-	cmpq $7,%r11
+	cmpq $7,%rdx
 	jbe	.Lhandle_7
 	movq %rax,(%rdi)	/* unaligned store */
 	movq $8,%r8
 	subq %r9,%r8
 	addq %r8,%rdi
-	subq %r8,%r11
+	subq %r8,%rdx
 	jmp .Lafter_bad_alignment
 .Lfinal:
-	CFI_ENDPROC
-ENDPROC(memset)
-ENDPROC(__memset)
-
-	/* Some CPUs run faster using the string instructions.
-	   It is also a lot simpler. Use this when possible */
-
-#include <asm/cpufeature.h>
-
-	.section .altinstr_replacement,"ax"
-1:	.byte 0xeb				/* jmp <disp8> */
-	.byte (memset_c - memset) - (2f - 1b)	/* offset */
-2:
-	.previous
-	.section .altinstructions,"a"
-	.align 8
-	.quad memset
-	.quad 1b
-	.byte X86_FEATURE_REP_GOOD
-	.byte .Lfinal - memset
-	.byte 2b - 1b
-	.previous
+SYM_FUNC_END(memset_orig)

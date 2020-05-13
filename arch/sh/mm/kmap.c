@@ -1,10 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * arch/sh/mm/kmap.c
  *
  * Copyright (C) 1999, 2000, 2002  Niibe Yutaka
  * Copyright (C) 2002 - 2009  Paul Mundt
- *
- * Released under the terms of the GNU GPL v2.0.
  */
 #include <linux/mm.h>
 #include <linux/init.h>
@@ -34,12 +33,15 @@ void *kmap_coherent(struct page *page, unsigned long addr)
 	enum fixed_addresses idx;
 	unsigned long vaddr;
 
-	BUG_ON(test_bit(PG_dcache_dirty, &page->flags));
+	BUG_ON(!test_bit(PG_dcache_clean, &page->flags));
 
+	preempt_disable();
 	pagefault_disable();
 
 	idx = FIX_CMAP_END -
-		((addr & current_cpu_data.dcache.alias_mask) >> PAGE_SHIFT);
+		(((addr >> PAGE_SHIFT) & (FIX_N_COLOURS - 1)) +
+		 (FIX_N_COLOURS * smp_processor_id()));
+
 	vaddr = __fix_to_virt(idx);
 
 	BUG_ON(!pte_none(*(kmap_coherent_pte - idx)));
@@ -62,4 +64,5 @@ void kunmap_coherent(void *kvaddr)
 	}
 
 	pagefault_enable();
+	preempt_enable();
 }

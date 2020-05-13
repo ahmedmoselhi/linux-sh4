@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* checksum.S: Sparc optimized checksum code.
  *
  *  Copyright(C) 1995 Linus Torvalds
@@ -14,6 +15,7 @@
  */
 
 #include <asm/errno.h>
+#include <asm/export.h>
 
 #define CSUM_BIGCHUNK(buf, offset, sum, t0, t1, t2, t3, t4, t5)	\
 	ldd	[buf + offset + 0x00], t0;			\
@@ -104,6 +106,7 @@ csum_partial_fix_alignment:
 	 * buffer of size 0x20.  Follow the code path for that case.
 	 */
 	.globl	csum_partial
+	EXPORT_SYMBOL(csum_partial)
 csum_partial:			/* %o0=buf, %o1=len, %o2=sum */
 	andcc	%o0, 0x7, %g0				! alignment problems?
 	bne	csum_partial_fix_alignment		! yep, handle it
@@ -289,10 +292,16 @@ cc_end_cruft:
 
 	/* Also, handle the alignment code out of band. */
 cc_dword_align:
-	cmp	%g1, 6
-	bl,a	ccte
+	cmp	%g1, 16
+	bge	1f
+	 srl	%g1, 1, %o3
+2:	cmp	%o3, 0
+	be,a	ccte
 	 andcc	%g1, 0xf, %o3
-	andcc	%o0, 0x1, %g0
+	andcc	%o3, %o0, %g0	! Check %o0 only (%o1 has the same last 2 bits)
+	be,a	2b
+	 srl	%o3, 1, %o3
+1:	andcc	%o0, 0x1, %g0
 	bne	ccslow
 	 andcc	%o0, 0x2, %g0
 	be	1f
@@ -329,6 +338,7 @@ cc_dword_align:
 	 */
 	.align	8
 	.globl	__csum_partial_copy_sparc_generic
+	EXPORT_SYMBOL(__csum_partial_copy_sparc_generic)
 __csum_partial_copy_sparc_generic:
 					/* %o0=src, %o1=dest, %g1=len, %g7=sum */
 	xor	%o0, %o1, %o4		! get changing bits
@@ -560,7 +570,7 @@ __csum_partial_copy_end:
 	 mov	%i0, %o1
 	mov	%i1, %o0
 5:
-	call	__memcpy
+	call	memcpy
 	 mov	%i2, %o2
 	tst	%o0
 	bne,a	2f

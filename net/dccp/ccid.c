@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  net/dccp/ccid.c
  *
@@ -5,11 +6,9 @@
  *  Arnaldo Carvalho de Melo <acme@conectiva.com.br>
  *
  *  CCID infrastructure
- *
- *	This program is free software; you can redistribute it and/or modify it
- *	under the terms of the GNU General Public License version 2 as
- *	published by the Free Software Foundation.
  */
+
+#include <linux/slab.h>
 
 #include "ccid.h"
 #include "ccids/lib/tfrc.h"
@@ -44,6 +43,7 @@ bool ccid_support_check(u8 const *ccid_array, u8 array_len)
  * ccid_get_builtin_ccids  -  Populate a list of built-in CCIDs
  * @ccid_array: pointer to copy into
  * @array_len: value to return length into
+ *
  * This function allocates memory - caller must see that it is freed after use.
  */
 int ccid_get_builtin_ccids(u8 **ccid_array, u8 *array_len)
@@ -63,56 +63,45 @@ int ccid_getsockopt_builtin_ccids(struct sock *sk, int len,
 	u8 *ccid_array, array_len;
 	int err = 0;
 
-	if (len < ARRAY_SIZE(ccids))
-		return -EINVAL;
-
 	if (ccid_get_builtin_ccids(&ccid_array, &array_len))
 		return -ENOBUFS;
 
-	if (put_user(array_len, optlen) ||
-	    copy_to_user(optval, ccid_array, array_len))
+	if (put_user(array_len, optlen))
+		err = -EFAULT;
+	else if (len > 0 && copy_to_user(optval, ccid_array,
+					 len > array_len ? array_len : len))
 		err = -EFAULT;
 
 	kfree(ccid_array);
 	return err;
 }
 
-static struct kmem_cache *ccid_kmem_cache_create(int obj_size, const char *fmt,...)
+static struct kmem_cache *ccid_kmem_cache_create(int obj_size, char *slab_name_fmt, const char *fmt,...)
 {
 	struct kmem_cache *slab;
-	char slab_name_fmt[32], *slab_name;
 	va_list args;
 
 	va_start(args, fmt);
-	vsnprintf(slab_name_fmt, sizeof(slab_name_fmt), fmt, args);
+	vsnprintf(slab_name_fmt, CCID_SLAB_NAME_LENGTH, fmt, args);
 	va_end(args);
 
-	slab_name = kstrdup(slab_name_fmt, GFP_KERNEL);
-	if (slab_name == NULL)
-		return NULL;
-	slab = kmem_cache_create(slab_name, sizeof(struct ccid) + obj_size, 0,
+	slab = kmem_cache_create(slab_name_fmt, sizeof(struct ccid) + obj_size, 0,
 				 SLAB_HWCACHE_ALIGN, NULL);
-	if (slab == NULL)
-		kfree(slab_name);
 	return slab;
 }
 
 static void ccid_kmem_cache_destroy(struct kmem_cache *slab)
 {
-	if (slab != NULL) {
-		const char *name = kmem_cache_name(slab);
-
-		kmem_cache_destroy(slab);
-		kfree(name);
-	}
+	kmem_cache_destroy(slab);
 }
 
-static int ccid_activate(struct ccid_operations *ccid_ops)
+static int __init ccid_activate(struct ccid_operations *ccid_ops)
 {
 	int err = -ENOBUFS;
 
 	ccid_ops->ccid_hc_rx_slab =
 			ccid_kmem_cache_create(ccid_ops->ccid_hc_rx_obj_size,
+					       ccid_ops->ccid_hc_rx_slab_name,
 					       "ccid%u_hc_rx_sock",
 					       ccid_ops->ccid_id);
 	if (ccid_ops->ccid_hc_rx_slab == NULL)
@@ -120,12 +109,13 @@ static int ccid_activate(struct ccid_operations *ccid_ops)
 
 	ccid_ops->ccid_hc_tx_slab =
 			ccid_kmem_cache_create(ccid_ops->ccid_hc_tx_obj_size,
+					       ccid_ops->ccid_hc_tx_slab_name,
 					       "ccid%u_hc_tx_sock",
 					       ccid_ops->ccid_id);
 	if (ccid_ops->ccid_hc_tx_slab == NULL)
 		goto out_free_rx_slab;
 
-	pr_info("CCID: Activated CCID %d (%s)\n",
+	pr_info("DCCP: Activated CCID %d (%s)\n",
 		ccid_ops->ccid_id, ccid_ops->ccid_name);
 	err = 0;
 out:
@@ -143,7 +133,7 @@ static void ccid_deactivate(struct ccid_operations *ccid_ops)
 	ccid_kmem_cache_destroy(ccid_ops->ccid_hc_rx_slab);
 	ccid_ops->ccid_hc_rx_slab = NULL;
 
-	pr_info("CCID: Deactivated CCID %d (%s)\n",
+	pr_info("DCCP: Deactivated CCID %d (%s)\n",
 		ccid_ops->ccid_id, ccid_ops->ccid_name);
 }
 

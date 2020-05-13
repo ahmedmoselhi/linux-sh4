@@ -1,26 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Driver for Sound Core PDAudioCF soundcard
  *
  * Copyright (c) 2003 by Jaroslav Kysela <perex@perex.cz>
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
 #include <sound/core.h>
 #include <linux/slab.h>
-#include <linux/moduleparam.h>
+#include <linux/module.h>
 #include <pcmcia/ciscode.h>
 #include <pcmcia/cisreg.h>
 #include "pdaudiocf.h"
@@ -39,7 +26,7 @@ MODULE_SUPPORTED_DEVICE("{{Sound Core," CARD_NAME "}}");
 
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;	/* Index 0-MAX */
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;	/* ID for this card */
-static int enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;	/* Enable switches */
+static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;	/* Enable switches */
 
 module_param_array(index, int, NULL, 0444);
 MODULE_PARM_DESC(index, "Index value for " CARD_NAME " soundcard.");
@@ -61,6 +48,7 @@ static void snd_pdacf_detach(struct pcmcia_device *p_dev);
 
 static void pdacf_release(struct pcmcia_device *link)
 {
+	free_irq(link->irq, link->priv);
 	pcmcia_disable_device(link);
 }
 
@@ -94,7 +82,7 @@ static int snd_pdacf_probe(struct pcmcia_device *link)
 	int i, err;
 	struct snd_pdacf *pdacf;
 	struct snd_card *card;
-	static struct snd_device_ops ops = {
+	static const struct snd_device_ops ops = {
 		.dev_free =	snd_pdacf_dev_free,
 	};
 
@@ -112,7 +100,8 @@ static int snd_pdacf_probe(struct pcmcia_device *link)
 		return -ENODEV; /* disabled explicitly */
 
 	/* ok, create a card instance */
-	err = snd_card_create(index[i], id[i], THIS_MODULE, 0, &card);
+	err = snd_card_new(&link->dev, index[i], id[i], THIS_MODULE,
+			   0, &card);
 	if (err < 0) {
 		snd_printk(KERN_ERR "pdacf: cannot create a card instance\n");
 		return err;
@@ -131,27 +120,18 @@ static int snd_pdacf_probe(struct pcmcia_device *link)
 		return err;
 	}
 
-	snd_card_set_dev(card, &handle_to_dev(link));
-
 	pdacf->index = i;
 	card_list[i] = card;
 
 	pdacf->p_dev = link;
 	link->priv = pdacf;
 
-	link->io.Attributes1 = IO_DATA_PATH_WIDTH_AUTO;
-	link->io.NumPorts1 = 16;
+	link->resource[0]->flags |= IO_DATA_PATH_WIDTH_AUTO;
+	link->resource[0]->end = 16;
 
-	link->irq.Attributes = IRQ_TYPE_EXCLUSIVE | IRQ_HANDLE_PRESENT | IRQ_FORCED_PULSE;
-	// link->irq.Attributes = IRQ_TYPE_DYNAMIC_SHARING|IRQ_FIRST_SHARED;
-
-	link->irq.IRQInfo1 = 0 /* | IRQ_LEVEL_ID */;
-	link->irq.Handler = pdacf_interrupt;
-	link->irq.Instance = pdacf;
-	link->conf.Attributes = CONF_ENABLE_IRQ;
-	link->conf.IntType = INT_MEMORY_AND_IO;
-	link->conf.ConfigIndex = 1;
-	link->conf.Present = PRESENT_OPTION;
+	link->config_flags = CONF_ENABLE_IRQ | CONF_ENABLE_PULSE_IRQ;
+	link->config_index = 1;
+	link->config_regs = PRESENT_OPTION;
 
 	return pdacf_config(link);
 }
@@ -223,27 +203,33 @@ static int pdacf_config(struct pcmcia_device *link)
 	int ret;
 
 	snd_printdd(KERN_DEBUG "pdacf_config called\n");
-	link->conf.ConfigIndex = 0x5;
+	link->config_index = 0x5;
+	link->config_flags |= CONF_ENABLE_IRQ | CONF_ENABLE_PULSE_IRQ;
 
-	ret = pcmcia_request_io(link, &link->io);
+	ret = pcmcia_request_io(link);
+	if (ret)
+		goto failed_preirq;
+
+	ret = request_threaded_irq(link->irq, pdacf_interrupt,
+				   pdacf_threaded_irq,
+				   IRQF_SHARED, link->devname, link->priv);
+	if (ret)
+		goto failed_preirq;
+
+	ret = pcmcia_enable_device(link);
 	if (ret)
 		goto failed;
 
-	ret = pcmcia_request_irq(link, &link->irq);
-	if (ret)
+	if (snd_pdacf_assign_resources(pdacf, link->resource[0]->start,
+					link->irq) < 0)
 		goto failed;
 
-	ret = pcmcia_request_configuration(link, &link->conf);
-	if (ret)
-		goto failed;
-
-	if (snd_pdacf_assign_resources(pdacf, link->io.BasePort1, link->irq.AssignedIRQ) < 0)
-		goto failed;
-
-	link->dev_node = &pdacf->node;
+	pdacf->card->sync_irq = link->irq;
 	return 0;
 
-failed:
+ failed:
+	free_irq(link->irq, link->priv);
+failed_preirq:
 	pcmcia_disable_device(link);
 	return -ENODEV;
 }
@@ -257,7 +243,7 @@ static int pdacf_suspend(struct pcmcia_device *link)
 	snd_printdd(KERN_DEBUG "SUSPEND\n");
 	if (chip) {
 		snd_printdd(KERN_DEBUG "snd_pdacf_suspend calling\n");
-		snd_pdacf_suspend(chip, PMSG_SUSPEND);
+		snd_pdacf_suspend(chip);
 	}
 
 	return 0;
@@ -284,7 +270,7 @@ static int pdacf_resume(struct pcmcia_device *link)
 /*
  * Module entry points
  */
-static struct pcmcia_device_id snd_pdacf_ids[] = {
+static const struct pcmcia_device_id snd_pdacf_ids[] = {
 	/* this is too general PCMCIA_DEVICE_MANF_CARD(0x015d, 0x4c45), */
 	PCMCIA_DEVICE_PROD_ID12("Core Sound","PDAudio-CF",0x396d19d2,0x71717b49),
 	PCMCIA_DEVICE_NULL
@@ -293,9 +279,7 @@ MODULE_DEVICE_TABLE(pcmcia, snd_pdacf_ids);
 
 static struct pcmcia_driver pdacf_cs_driver = {
 	.owner		= THIS_MODULE,
-	.drv		= {
-		.name	= "snd-pdaudiocf",
-	},
+	.name		= "snd-pdaudiocf",
 	.probe		= snd_pdacf_probe,
 	.remove		= snd_pdacf_detach,
 	.id_table	= snd_pdacf_ids,
@@ -303,18 +287,5 @@ static struct pcmcia_driver pdacf_cs_driver = {
 	.suspend	= pdacf_suspend,
 	.resume		= pdacf_resume,
 #endif
-
 };
-
-static int __init init_pdacf(void)
-{
-	return pcmcia_register_driver(&pdacf_cs_driver);
-}
-
-static void __exit exit_pdacf(void)
-{
-	pcmcia_unregister_driver(&pdacf_cs_driver);
-}
-
-module_init(init_pdacf);
-module_exit(exit_pdacf);
+module_pcmcia_driver(pdacf_cs_driver);

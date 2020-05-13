@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * iSCSI lib definitions
  *
@@ -5,20 +6,6 @@
  * Copyright (C) 2004 - 2006 Mike Christie
  * Copyright (C) 2004 - 2005 Dmitry Yusupov
  * Copyright (C) 2004 - 2005 Alex Aizman
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  */
 #ifndef LIBISCSI_H
 #define LIBISCSI_H
@@ -28,6 +15,8 @@
 #include <linux/mutex.h>
 #include <linux/timer.h>
 #include <linux/workqueue.h>
+#include <linux/kfifo.h>
+#include <linux/refcount.h>
 #include <scsi/iscsi_proto.h>
 #include <scsi/iscsi_if.h>
 #include <scsi/scsi_transport_iscsi.h>
@@ -61,6 +50,8 @@ enum {
 	TMF_NOT_FOUND,
 };
 
+#define ISID_SIZE			6
+
 /* Connection suspend "bit" */
 #define ISCSI_SUSPEND_BIT		1
 
@@ -88,6 +79,7 @@ enum {
 	ISCSI_TASK_RUNNING,
 	ISCSI_TASK_ABRT_TMF,		/* aborted due to TMF */
 	ISCSI_TASK_ABRT_SESS_RECOV,	/* aborted due to session recovery */
+	ISCSI_TASK_REQUEUE_SCSIQ,	/* qcmd requeueing to scsi-ml */
 };
 
 struct iscsi_r2t_info {
@@ -113,7 +105,7 @@ struct iscsi_task {
 	/* copied values in case we need to send tmfs */
 	itt_t			hdr_itt;
 	__be32			cmdsn;
-	uint8_t			lun[8];
+	struct scsi_lun		lun;
 
 	int			itt;		/* this ITT */
 
@@ -129,9 +121,13 @@ struct iscsi_task {
 	unsigned long		last_xfer;
 	unsigned long		last_timeout;
 	bool			have_checked_conn;
+
+	/* T10 protection information */
+	bool			protected;
+
 	/* state set/tested under session->lock */
 	int			state;
-	atomic_t		refcount;
+	refcount_t		refcount;
 	struct list_head	running;	/* running cmd list */
 	void			*dd_data;	/* driver/transport data */
 };
@@ -171,6 +167,7 @@ struct iscsi_conn {
 
 	/* iSCSI connection-wide sequencing */
 	uint32_t		exp_statsn;
+	uint32_t		statsn;
 
 	/* control data */
 	int			id;		/* CID */
@@ -187,6 +184,7 @@ struct iscsi_conn {
 	struct iscsi_task	*task;		/* xmit task in progress */
 
 	/* xmit */
+	spinlock_t		taskqueuelock;  /* protects the next three lists */
 	struct list_head	mgmtqueue;	/* mgmt (control) xmit queue */
 	struct list_head	cmdqueue;	/* data-path cmd queue */
 	struct list_head	requeue;	/* tasks needing another run */
@@ -210,9 +208,23 @@ struct iscsi_conn {
 	/* values userspace uses to id a conn */
 	int			persistent_port;
 	char			*persistent_address;
-	/* remote portal currently connected to */
-	int			portal_port;
-	char			portal_address[ISCSI_ADDRESS_BUF_LEN];
+
+	unsigned		max_segment_size;
+	unsigned		tcp_xmit_wsf;
+	unsigned		tcp_recv_wsf;
+	uint16_t		keepalive_tmo;
+	uint16_t		local_port;
+	uint8_t			tcp_timestamp_stat;
+	uint8_t			tcp_nagle_disable;
+	uint8_t			tcp_wsf_disable;
+	uint8_t			tcp_timer_scale;
+	uint8_t			tcp_timestamp_en;
+	uint8_t			fragment_disable;
+	uint8_t			ipv4_tos;
+	uint8_t			ipv6_traffic_class;
+	uint8_t			ipv6_flow_label;
+	uint8_t			is_fw_assigned_ipv6;
+	char			*local_ipaddr;
 
 	/* MIB-statistics */
 	uint64_t		txdata_octets;
@@ -231,7 +243,7 @@ struct iscsi_conn {
 };
 
 struct iscsi_pool {
-	struct kfifo		*queue;		/* FIFO Queue */
+	struct kfifo		queue;		/* FIFO Queue */
 	void			**pool;		/* Pool of elements */
 	int			max;		/* Max number of elements */
 };
@@ -267,8 +279,9 @@ struct iscsi_session {
 	/* configuration */
 	int			abort_timeout;
 	int			lu_reset_timeout;
+	int			tgt_reset_timeout;
 	int			initial_r2t_en;
-	unsigned		max_r2t;
+	unsigned short		max_r2t;
 	int			imm_data_en;
 	unsigned		first_burst;
 	unsigned		max_burst;
@@ -284,18 +297,42 @@ struct iscsi_session {
 	char			*password;
 	char			*password_in;
 	char			*targetname;
+	char			*targetalias;
 	char			*ifacename;
 	char			*initiatorname;
+	char			*boot_root;
+	char			*boot_nic;
+	char			*boot_target;
+	char			*portal_type;
+	char			*discovery_parent_type;
+	uint16_t		discovery_parent_idx;
+	uint16_t		def_taskmgmt_tmo;
+	uint16_t		tsid;
+	uint8_t			auto_snd_tgt_disable;
+	uint8_t			discovery_sess;
+	uint8_t			chap_auth_en;
+	uint8_t			discovery_logout_en;
+	uint8_t			bidi_chap_en;
+	uint8_t			discovery_auth_optional;
+	uint8_t			isid[ISID_SIZE];
+
 	/* control data */
 	struct iscsi_transport	*tt;
 	struct Scsi_Host	*host;
 	struct iscsi_conn	*leadconn;	/* leading connection */
-	spinlock_t		lock;		/* protects session state, *
-						 * sequence numbers,       *
+	/* Between the forward and the backward locks exists a strict locking
+	 * hierarchy. The mutual exclusion zone protected by the forward lock
+	 * can enclose the mutual exclusion zone protected by the backward lock
+	 * but not vice versa.
+	 */
+	spinlock_t		frwd_lock;	/* protects session state, *
+						 * cmdsn, queued_cmdsn     *
 						 * session resources:      *
-						 * - cmdpool,		   *
-						 * - mgmtpool,		   *
-						 * - r2tpool		   */
+						 * - cmdpool kfifo_out ,   *
+						 * - mgmtpool,		   */
+	spinlock_t		back_lock;	/* protects cmdsn_exp      *
+						 * cmdsn_max,              *
+						 * cmdpool kfifo_in        */
 	int			state;		/* session state           */
 	int			age;		/* counts session re-opens */
 
@@ -316,9 +353,6 @@ struct iscsi_host {
 	/* hw address or netdev iscsi connection is bound to */
 	char			*hwaddress;
 	char			*netdev;
-	/* local address */
-	int			local_port;
-	char			local_address[ISCSI_ADDRESS_BUF_LEN];
 
 	wait_queue_head_t	session_removal_wq;
 	/* protects sessions and state */
@@ -333,12 +367,12 @@ struct iscsi_host {
 /*
  * scsi host template
  */
-extern int iscsi_change_queue_depth(struct scsi_device *sdev, int depth);
 extern int iscsi_eh_abort(struct scsi_cmnd *sc);
-extern int iscsi_eh_target_reset(struct scsi_cmnd *sc);
+extern int iscsi_eh_recover_target(struct scsi_cmnd *sc);
+extern int iscsi_eh_session_reset(struct scsi_cmnd *sc);
 extern int iscsi_eh_device_reset(struct scsi_cmnd *sc);
-extern int iscsi_queuecommand(struct scsi_cmnd *sc,
-			      void (*done)(struct scsi_cmnd *));
+extern int iscsi_queuecommand(struct Scsi_Host *host, struct scsi_cmnd *sc);
+extern enum blk_eh_timer_return iscsi_eh_cmd_timed_out(struct scsi_cmnd *sc);
 
 /*
  * iSCSI host helpers.
@@ -390,6 +424,8 @@ extern void iscsi_session_failure(struct iscsi_session *session,
 				  enum iscsi_err err);
 extern int iscsi_conn_get_param(struct iscsi_cls_conn *cls_conn,
 				enum iscsi_param param, char *buf);
+extern int iscsi_conn_get_addr_param(struct sockaddr_storage *addr,
+				     enum iscsi_param param, char *buf);
 extern void iscsi_suspend_tx(struct iscsi_conn *conn);
 extern void iscsi_suspend_queue(struct iscsi_conn *conn);
 extern void iscsi_conn_queue_work(struct iscsi_conn *conn);
@@ -416,6 +452,7 @@ extern struct iscsi_task *iscsi_itt_to_ctask(struct iscsi_conn *, itt_t);
 extern struct iscsi_task *iscsi_itt_to_task(struct iscsi_conn *, itt_t);
 extern void iscsi_requeue_task(struct iscsi_task *task);
 extern void iscsi_put_task(struct iscsi_task *task);
+extern void __iscsi_put_task(struct iscsi_task *task);
 extern void __iscsi_get_task(struct iscsi_task *task);
 extern void iscsi_complete_scsi_task(struct iscsi_task *task,
 				     uint32_t exp_cmdsn, uint32_t max_cmdsn);
@@ -425,6 +462,7 @@ extern void iscsi_complete_scsi_task(struct iscsi_task *task,
  */
 extern void iscsi_pool_free(struct iscsi_pool *);
 extern int iscsi_pool_init(struct iscsi_pool *, int, void ***, int);
+extern int iscsi_switch_str_param(char **, char *);
 
 /*
  * inline functions to deal with padding.

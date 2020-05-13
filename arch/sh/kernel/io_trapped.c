@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Trapped io support
  *
  * Copyright (C) 2008 Magnus Damm
  *
  * Intercept io operations by trapping.
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 #include <linux/kernel.h>
 #include <linux/mm.h>
@@ -15,15 +12,14 @@
 #include <linux/vmalloc.h>
 #include <linux/module.h>
 #include <linux/init.h>
-#include <asm/system.h>
 #include <asm/mmu_context.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/io.h>
 #include <asm/io_trapped.h>
 
 #define TRAPPED_PAGES_MAX 16
 
-#ifdef CONFIG_HAS_IOPORT
+#ifdef CONFIG_HAS_IOPORT_MAP
 LIST_HEAD(trapped_io);
 EXPORT_SYMBOL_GPL(trapped_io);
 #endif
@@ -58,7 +54,7 @@ int register_trapped_io(struct trapped_io *tiop)
 
 	for (k = 0; k < tiop->num_resources; k++) {
 		res = tiop->resource + k;
-		len += roundup((res->end - res->start) + 1, PAGE_SIZE);
+		len += roundup(resource_size(res), PAGE_SIZE);
 		flags |= res->flags;
 	}
 
@@ -85,21 +81,25 @@ int register_trapped_io(struct trapped_io *tiop)
 		       (unsigned long)(tiop->virt_base + len),
 		       res->flags & IORESOURCE_IO ? "io" : "mmio",
 		       (unsigned long)res->start);
-		len += roundup((res->end - res->start) + 1, PAGE_SIZE);
+		len += roundup(resource_size(res), PAGE_SIZE);
 	}
 
 	tiop->magic = IO_TRAPPED_MAGIC;
 	INIT_LIST_HEAD(&tiop->list);
 	spin_lock_irq(&trapped_lock);
+#ifdef CONFIG_HAS_IOPORT_MAP
 	if (flags & IORESOURCE_IO)
 		list_add(&tiop->list, &trapped_io);
+#endif
+#ifdef CONFIG_HAS_IOMEM
 	if (flags & IORESOURCE_MEM)
 		list_add(&tiop->list, &trapped_mem);
+#endif
 	spin_unlock_irq(&trapped_lock);
 
 	return 0;
  bad:
-	pr_warning("unable to install trapped io filter\n");
+	pr_warn("unable to install trapped io filter\n");
 	return -1;
 }
 EXPORT_SYMBOL_GPL(register_trapped_io);
@@ -124,7 +124,7 @@ void __iomem *match_trapped_io_handler(struct list_head *list,
 				return tiop->virt_base + voffs;
 			}
 
-			len = (res->end - res->start) + 1;
+			len = resource_size(res);
 			voffs += roundup(len, PAGE_SIZE);
 		}
 	}
@@ -169,7 +169,7 @@ static unsigned long lookup_address(struct trapped_io *tiop,
 
 	for (k = 0; k < tiop->num_resources; k++) {
 		res = tiop->resource + k;
-		len = roundup((res->end - res->start) + 1, PAGE_SIZE);
+		len = roundup(resource_size(res), PAGE_SIZE);
 		if (address < (vaddr + len))
 			return res->start + (address - vaddr);
 		vaddr += len;
@@ -184,31 +184,31 @@ static unsigned long long copy_word(unsigned long src_addr, int src_len,
 
 	switch (src_len) {
 	case 1:
-		tmp = ctrl_inb(src_addr);
+		tmp = __raw_readb(src_addr);
 		break;
 	case 2:
-		tmp = ctrl_inw(src_addr);
+		tmp = __raw_readw(src_addr);
 		break;
 	case 4:
-		tmp = ctrl_inl(src_addr);
+		tmp = __raw_readl(src_addr);
 		break;
 	case 8:
-		tmp = ctrl_inq(src_addr);
+		tmp = __raw_readq(src_addr);
 		break;
 	}
 
 	switch (dst_len) {
 	case 1:
-		ctrl_outb(tmp, dst_addr);
+		__raw_writeb(tmp, dst_addr);
 		break;
 	case 2:
-		ctrl_outw(tmp, dst_addr);
+		__raw_writew(tmp, dst_addr);
 		break;
 	case 4:
-		ctrl_outl(tmp, dst_addr);
+		__raw_writel(tmp, dst_addr);
 		break;
 	case 8:
-		ctrl_outq(tmp, dst_addr);
+		__raw_writeq(tmp, dst_addr);
 		break;
 	}
 
@@ -271,6 +271,8 @@ int handle_trapped_io(struct pt_regs *regs, unsigned long address)
 	insn_size_t instruction;
 	int tmp;
 
+	if (trapped_io_disable)
+		return 0;
 	if (!lookup_tiop(address))
 		return 0;
 
@@ -285,7 +287,7 @@ int handle_trapped_io(struct pt_regs *regs, unsigned long address)
 	}
 
 	tmp = handle_unaligned_access(instruction, regs,
-				      &trapped_io_access, 1);
+				      &trapped_io_access, 1, address);
 	set_fs(oldfs);
 	return tmp == 0;
 }

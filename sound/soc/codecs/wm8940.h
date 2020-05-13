@@ -1,9 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * wm8940.h -- WM8940 Soc Audio driver
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef _WM8940_H
@@ -15,8 +12,6 @@ struct wm8940_setup_data {
 #define WM8940_VROI_30K 1
 	unsigned int vroi:1;
 };
-extern struct snd_soc_dai wm8940_dai;
-extern struct snd_soc_codec_device soc_codec_dev_wm8940;
 
 /* WM8940 register space */
 #define WM8940_SOFTRESET	0x00

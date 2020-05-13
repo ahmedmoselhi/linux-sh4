@@ -1,18 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /* -*- mode: c; c-basic-offset: 8; -*-
  * vim: noexpandtab sw=8 ts=8 sts=0:
  *
  * xattr.h
  *
  * Copyright (C) 2004, 2008 Oracle.  All rights reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public
- * License version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
  */
 
 #ifndef OCFS2_XATTR_H
@@ -32,19 +24,15 @@ enum ocfs2_xattr_type {
 
 struct ocfs2_security_xattr_info {
 	int enable;
-	char *name;
+	const char *name;
 	void *value;
 	size_t value_len;
 };
 
-extern struct xattr_handler ocfs2_xattr_user_handler;
-extern struct xattr_handler ocfs2_xattr_trusted_handler;
-extern struct xattr_handler ocfs2_xattr_security_handler;
-#ifdef CONFIG_OCFS2_FS_POSIX_ACL
-extern struct xattr_handler ocfs2_xattr_acl_access_handler;
-extern struct xattr_handler ocfs2_xattr_acl_default_handler;
-#endif
-extern struct xattr_handler *ocfs2_xattr_handlers[];
+extern const struct xattr_handler ocfs2_xattr_user_handler;
+extern const struct xattr_handler ocfs2_xattr_trusted_handler;
+extern const struct xattr_handler ocfs2_xattr_security_handler;
+extern const struct xattr_handler *ocfs2_xattr_handlers[];
 
 ssize_t ocfs2_listxattr(struct dentry *, char *, size_t);
 int ocfs2_xattr_get_nolock(struct inode *, struct buffer_head *, int,
@@ -59,6 +47,7 @@ int ocfs2_has_inline_xattr_value_outside(struct inode *inode,
 					 struct ocfs2_dinode *di);
 int ocfs2_xattr_remove(struct inode *, struct buffer_head *);
 int ocfs2_init_security_get(struct inode *, struct inode *,
+			    const struct qstr *,
 			    struct ocfs2_security_xattr_info *);
 int ocfs2_init_security_set(handle_t *, struct inode *,
 			    struct buffer_head *,
@@ -69,7 +58,7 @@ int ocfs2_calc_security_init(struct inode *,
 			     struct ocfs2_security_xattr_info *,
 			     int *, int *, struct ocfs2_alloc_context **);
 int ocfs2_calc_xattr_init(struct inode *, struct buffer_head *,
-			  int, struct ocfs2_security_xattr_info *,
+			  umode_t, struct ocfs2_security_xattr_info *,
 			  int *, int *, int *);
 
 /*
@@ -96,5 +85,6 @@ int ocfs2_reflink_xattrs(struct inode *old_inode,
 			 struct buffer_head *new_bh,
 			 bool preserve_security);
 int ocfs2_init_security_and_acl(struct inode *dir,
-				struct inode *inode);
+				struct inode *inode,
+				const struct qstr *qstr);
 #endif /* OCFS2_XATTR_H */

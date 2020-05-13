@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * linux/net/sunrpc/sysctl.c
  *
@@ -14,11 +15,13 @@
 #include <linux/sysctl.h>
 #include <linux/module.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/sunrpc/types.h>
 #include <linux/sunrpc/sched.h>
 #include <linux/sunrpc/stats.h>
 #include <linux/sunrpc/svc_xprt.h>
+
+#include "netns.h"
 
 /*
  * Declare the debug flags here
@@ -35,10 +38,10 @@ EXPORT_SYMBOL_GPL(nfsd_debug);
 unsigned int	nlm_debug;
 EXPORT_SYMBOL_GPL(nlm_debug);
 
-#ifdef RPC_DEBUG
+#if IS_ENABLED(CONFIG_SUNRPC_DEBUG)
 
 static struct ctl_table_header *sunrpc_table_header;
-static ctl_table		sunrpc_table[];
+static struct ctl_table sunrpc_table[];
 
 void
 rpc_register_sysctl(void)
@@ -56,7 +59,7 @@ rpc_unregister_sysctl(void)
 	}
 }
 
-static int proc_do_xprt(ctl_table *table, int write,
+static int proc_do_xprt(struct ctl_table *table, int write,
 			void __user *buffer, size_t *lenp, loff_t *ppos)
 {
 	char tmpbuf[256];
@@ -71,10 +74,10 @@ static int proc_do_xprt(ctl_table *table, int write,
 }
 
 static int
-proc_dodebug(ctl_table *table, int write,
+proc_dodebug(struct ctl_table *table, int write,
 				void __user *buffer, size_t *lenp, loff_t *ppos)
 {
-	char		tmpbuf[20], c, *s;
+	char		tmpbuf[20], c, *s = NULL;
 	char __user *p;
 	unsigned int	value;
 	size_t		left, len;
@@ -87,7 +90,7 @@ proc_dodebug(ctl_table *table, int write,
 	left = *lenp;
 
 	if (write) {
-		if (!access_ok(VERIFY_READ, buffer, left))
+		if (!access_ok(buffer, left))
 			return -EFAULT;
 		p = buffer;
 		while (left && __get_user(c, p) >= 0 && isspace(c))
@@ -101,23 +104,24 @@ proc_dodebug(ctl_table *table, int write,
 			return -EFAULT;
 		tmpbuf[left] = '\0';
 
-		for (s = tmpbuf, value = 0; '0' <= *s && *s <= '9'; s++, left--)
-			value = 10 * value + (*s - '0');
-		if (*s && !isspace(*s))
-			return -EINVAL;
-		while (left && isspace(*s))
-			left--, s++;
+		value = simple_strtol(tmpbuf, &s, 0);
+		if (s) {
+			left -= (s - tmpbuf);
+			if (left && !isspace(*s))
+				return -EINVAL;
+			while (left && isspace(*s))
+				left--, s++;
+		} else
+			left = 0;
 		*(unsigned int *) table->data = value;
 		/* Display the RPC tasks on writing to rpc_debug */
 		if (strcmp(table->procname, "rpc_debug") == 0)
-			rpc_show_tasks();
+			rpc_show_tasks(&init_net);
 	} else {
-		if (!access_ok(VERIFY_WRITE, buffer, left))
-			return -EFAULT;
-		len = sprintf(tmpbuf, "%d", *(unsigned int *) table->data);
+		len = sprintf(tmpbuf, "0x%04x", *(unsigned int *) table->data);
 		if (len > left)
 			len = left;
-		if (__copy_to_user(buffer, tmpbuf, len))
+		if (copy_to_user(buffer, tmpbuf, len))
 			return -EFAULT;
 		if ((left -= len) > 0) {
 			if (put_user('\n', (char __user *)buffer + len))
@@ -133,52 +137,51 @@ done:
 }
 
 
-static ctl_table debug_table[] = {
+static struct ctl_table debug_table[] = {
 	{
 		.procname	= "rpc_debug",
 		.data		= &rpc_debug,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dodebug
+		.proc_handler	= proc_dodebug
 	},
 	{
 		.procname	= "nfs_debug",
 		.data		= &nfs_debug,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dodebug
+		.proc_handler	= proc_dodebug
 	},
 	{
 		.procname	= "nfsd_debug",
 		.data		= &nfsd_debug,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dodebug
+		.proc_handler	= proc_dodebug
 	},
 	{
 		.procname	= "nlm_debug",
 		.data		= &nlm_debug,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
-		.proc_handler	= &proc_dodebug
+		.proc_handler	= proc_dodebug
 	},
 	{
 		.procname	= "transports",
 		.maxlen		= 256,
 		.mode		= 0444,
-		.proc_handler	= &proc_do_xprt,
+		.proc_handler	= proc_do_xprt,
 	},
-	{ .ctl_name = 0 }
+	{ }
 };
 
-static ctl_table sunrpc_table[] = {
+static struct ctl_table sunrpc_table[] = {
 	{
-		.ctl_name	= CTL_SUNRPC,
 		.procname	= "sunrpc",
 		.mode		= 0555,
 		.child		= debug_table
 	},
-	{ .ctl_name = 0 }
+	{ }
 };
 
 #endif

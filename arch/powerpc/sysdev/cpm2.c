@@ -66,10 +66,6 @@ void __init cpm2_reset(void)
 	cpm2_immr = ioremap(get_immrbase(), CPM_MAP_SIZE);
 #endif
 
-	/* Reclaim the DP memory for our use.
-	 */
-	cpm_muram_init();
-
 	/* Tell everyone where the comm processor resides.
 	 */
 	cpmp = &cpm2_immr->im_cpm;
@@ -244,9 +240,6 @@ int cpm2_clk_setup(enum cpm_clk_target target, int clock, int mode)
 		return -EINVAL;
 	}
 
-	if (mode == CPM_CLK_RX)
-		shift += 3;
-
 	for (i = 0; i < ARRAY_SIZE(clk_map); i++) {
 		if (clk_map[i][0] == target && clk_map[i][1] == clock) {
 			bits = clk_map[i][2];
@@ -258,6 +251,14 @@ int cpm2_clk_setup(enum cpm_clk_target target, int clock, int mode)
 
 	bits <<= shift;
 	mask <<= shift;
+
+	if (mode == CPM_CLK_RTX) {
+		bits |= bits << 3;
+		mask |= mask << 3;
+	} else if (mode == CPM_CLK_RX) {
+		bits <<= 3;
+		mask <<= 3;
+	}
 
 	out_be32(reg, (in_be32(reg) & ~mask) | bits);
 
@@ -353,14 +354,3 @@ void cpm2_set_pin(int port, int pin, int flags)
 	else
 		clrbits32(&iop[port].odr, pin);
 }
-
-static int cpm_init_par_io(void)
-{
-	struct device_node *np;
-
-	for_each_compatible_node(np, NULL, "fsl,cpm2-pario-bank")
-		cpm2_gpiochip_add32(np);
-	return 0;
-}
-arch_initcall(cpm_init_par_io);
-

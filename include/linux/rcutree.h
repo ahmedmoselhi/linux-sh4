@@ -1,26 +1,13 @@
+/* SPDX-License-Identifier: GPL-2.0+ */
 /*
  * Read-Copy Update mechanism for mutual exclusion (tree-based version)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  *
  * Copyright IBM Corporation, 2008
  *
  * Author: Dipankar Sarma <dipankar@in.ibm.com>
- *	   Paul E. McKenney <paulmck@linux.vnet.ibm.com> Hierarchical algorithm
+ *	   Paul E. McKenney <paulmck@linux.ibm.com> Hierarchical algorithm
  *
- * Based on the original work by Paul McKenney <paulmck@us.ibm.com>
+ * Based on the original work by Paul McKenney <paulmck@linux.ibm.com>
  * and inputs from Rusty Russell, Andrea Arcangeli and Andi Kleen.
  *
  * For detailed explanation of Read-Copy Update mechanism see -
@@ -30,82 +17,55 @@
 #ifndef __LINUX_RCUTREE_H
 #define __LINUX_RCUTREE_H
 
-struct notifier_block;
+void rcu_softirq_qs(void);
+void rcu_note_context_switch(bool preempt);
+int rcu_needs_cpu(u64 basem, u64 *nextevt);
+void rcu_cpu_stall_reset(void);
 
-extern void rcu_sched_qs(int cpu);
-extern void rcu_bh_qs(int cpu);
-extern int rcu_cpu_notify(struct notifier_block *self,
-			  unsigned long action, void *hcpu);
-extern int rcu_needs_cpu(int cpu);
-extern int rcu_expedited_torture_stats(char *page);
-
-#ifdef CONFIG_TREE_PREEMPT_RCU
-
-extern void __rcu_read_lock(void);
-extern void __rcu_read_unlock(void);
-extern void exit_rcu(void);
-
-#else /* #ifdef CONFIG_TREE_PREEMPT_RCU */
-
-static inline void __rcu_read_lock(void)
+/*
+ * Note a virtualization-based context switch.  This is simply a
+ * wrapper around rcu_note_context_switch(), which allows TINY_RCU
+ * to save a few bytes. The caller must have disabled interrupts.
+ */
+static inline void rcu_virt_note_context_switch(int cpu)
 {
-	preempt_disable();
+	rcu_note_context_switch(false);
 }
 
-static inline void __rcu_read_unlock(void)
-{
-	preempt_enable();
-}
+void synchronize_rcu_expedited(void);
+void kfree_call_rcu(struct rcu_head *head, rcu_callback_t func);
 
-#define __synchronize_sched() synchronize_rcu()
+void rcu_barrier(void);
+bool rcu_eqs_special_set(int cpu);
+void rcu_momentary_dyntick_idle(void);
+void kfree_rcu_scheduler_running(void);
+unsigned long get_state_synchronize_rcu(void);
+void cond_synchronize_rcu(unsigned long oldstate);
 
-static inline void exit_rcu(void)
-{
-}
+void rcu_idle_enter(void);
+void rcu_idle_exit(void);
+void rcu_irq_enter(void);
+void rcu_irq_exit(void);
+void rcu_irq_enter_irqson(void);
+void rcu_irq_exit_irqson(void);
 
-#endif /* #else #ifdef CONFIG_TREE_PREEMPT_RCU */
+void exit_rcu(void);
 
-static inline void __rcu_read_lock_bh(void)
-{
-	local_bh_disable();
-}
-static inline void __rcu_read_unlock_bh(void)
-{
-	local_bh_enable();
-}
+void rcu_scheduler_starting(void);
+extern int rcu_scheduler_active __read_mostly;
+void rcu_end_inkernel_boot(void);
+bool rcu_inkernel_boot_has_ended(void);
+bool rcu_is_watching(void);
+#ifndef CONFIG_PREEMPTION
+void rcu_all_qs(void);
+#endif
 
-extern void call_rcu_sched(struct rcu_head *head,
-			   void (*func)(struct rcu_head *rcu));
-extern void synchronize_rcu_expedited(void);
-
-static inline void synchronize_rcu_bh_expedited(void)
-{
-	synchronize_sched_expedited();
-}
-
-extern void __rcu_init(void);
-extern void rcu_check_callbacks(int cpu, int user);
-
-extern long rcu_batches_completed(void);
-extern long rcu_batches_completed_bh(void);
-extern long rcu_batches_completed_sched(void);
-
-#ifdef CONFIG_NO_HZ
-void rcu_enter_nohz(void);
-void rcu_exit_nohz(void);
-#else /* CONFIG_NO_HZ */
-static inline void rcu_enter_nohz(void)
-{
-}
-static inline void rcu_exit_nohz(void)
-{
-}
-#endif /* CONFIG_NO_HZ */
-
-/* A context switch is a grace period for RCU-sched and RCU-bh. */
-static inline int rcu_blocking_is_gp(void)
-{
-	return num_online_cpus() == 1;
-}
+/* RCUtree hotplug events */
+int rcutree_prepare_cpu(unsigned int cpu);
+int rcutree_online_cpu(unsigned int cpu);
+int rcutree_offline_cpu(unsigned int cpu);
+int rcutree_dead_cpu(unsigned int cpu);
+int rcutree_dying_cpu(unsigned int cpu);
+void rcu_cpu_starting(unsigned int cpu);
 
 #endif /* __LINUX_RCUTREE_H */

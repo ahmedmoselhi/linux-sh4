@@ -1,10 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ARCH_MIPS_LOCAL_H
 #define _ARCH_MIPS_LOCAL_H
 
 #include <linux/percpu.h>
 #include <linux/bitops.h>
-#include <asm/atomic.h>
+#include <linux/atomic.h>
 #include <asm/cmpxchg.h>
+#include <asm/compiler.h>
 #include <asm/war.h>
 
 typedef struct
@@ -15,10 +17,10 @@ typedef struct
 #define LOCAL_INIT(i)	{ ATOMIC_LONG_INIT(i) }
 
 #define local_read(l)	atomic_long_read(&(l)->a)
-#define local_set(l, i)	atomic_long_set(&(l)->a, (i))
+#define local_set(l, i) atomic_long_set(&(l)->a, (i))
 
-#define local_add(i, l)	atomic_long_add((i), (&(l)->a))
-#define local_sub(i, l)	atomic_long_sub((i), (&(l)->a))
+#define local_add(i, l) atomic_long_add((i), (&(l)->a))
+#define local_sub(i, l) atomic_long_sub((i), (&(l)->a))
 #define local_inc(l)	atomic_long_inc(&(l)->a)
 #define local_dec(l)	atomic_long_dec(&(l)->a)
 
@@ -33,13 +35,15 @@ static __inline__ long local_add_return(long i, local_t * l)
 		unsigned long temp;
 
 		__asm__ __volatile__(
-		"	.set	mips3					\n"
+		"	.set	push					\n"
+		"	.set	arch=r4000				\n"
+			__SYNC(full, loongson3_war) "			\n"
 		"1:"	__LL	"%1, %2		# local_add_return	\n"
 		"	addu	%0, %1, %3				\n"
 			__SC	"%0, %2					\n"
 		"	beqzl	%0, 1b					\n"
 		"	addu	%0, %1, %3				\n"
-		"	.set	mips0					\n"
+		"	.set	pop					\n"
 		: "=&r" (result), "=&r" (temp), "=m" (l->a.counter)
 		: "Ir" (i), "m" (l->a.counter)
 		: "memory");
@@ -47,13 +51,15 @@ static __inline__ long local_add_return(long i, local_t * l)
 		unsigned long temp;
 
 		__asm__ __volatile__(
-		"	.set	mips3					\n"
+		"	.set	push					\n"
+		"	.set	"MIPS_ISA_ARCH_LEVEL"			\n"
+			__SYNC(full, loongson3_war) "			\n"
 		"1:"	__LL	"%1, %2		# local_add_return	\n"
 		"	addu	%0, %1, %3				\n"
 			__SC	"%0, %2					\n"
 		"	beqz	%0, 1b					\n"
 		"	addu	%0, %1, %3				\n"
-		"	.set	mips0					\n"
+		"	.set	pop					\n"
 		: "=&r" (result), "=&r" (temp), "=m" (l->a.counter)
 		: "Ir" (i), "m" (l->a.counter)
 		: "memory");
@@ -78,13 +84,15 @@ static __inline__ long local_sub_return(long i, local_t * l)
 		unsigned long temp;
 
 		__asm__ __volatile__(
-		"	.set	mips3					\n"
+		"	.set	push					\n"
+		"	.set	arch=r4000				\n"
+			__SYNC(full, loongson3_war) "			\n"
 		"1:"	__LL	"%1, %2		# local_sub_return	\n"
 		"	subu	%0, %1, %3				\n"
 			__SC	"%0, %2					\n"
 		"	beqzl	%0, 1b					\n"
 		"	subu	%0, %1, %3				\n"
-		"	.set	mips0					\n"
+		"	.set	pop					\n"
 		: "=&r" (result), "=&r" (temp), "=m" (l->a.counter)
 		: "Ir" (i), "m" (l->a.counter)
 		: "memory");
@@ -92,13 +100,15 @@ static __inline__ long local_sub_return(long i, local_t * l)
 		unsigned long temp;
 
 		__asm__ __volatile__(
-		"	.set	mips3					\n"
+		"	.set	push					\n"
+		"	.set	"MIPS_ISA_ARCH_LEVEL"			\n"
+			__SYNC(full, loongson3_war) "			\n"
 		"1:"	__LL	"%1, %2		# local_sub_return	\n"
 		"	subu	%0, %1, %3				\n"
 			__SC	"%0, %2					\n"
 		"	beqz	%0, 1b					\n"
 		"	subu	%0, %1, %3				\n"
-		"	.set	mips0					\n"
+		"	.set	pop					\n"
 		: "=&r" (result), "=&r" (temp), "=m" (l->a.counter)
 		: "Ir" (i), "m" (l->a.counter)
 		: "memory");
@@ -117,7 +127,7 @@ static __inline__ long local_sub_return(long i, local_t * l)
 
 #define local_cmpxchg(l, o, n) \
 	((long)cmpxchg_local(&((l)->a.counter), (o), (n)))
-#define local_xchg(l, n) (xchg_local(&((l)->a.counter), (n)))
+#define local_xchg(l, n) (atomic_long_xchg((&(l)->a), (n)))
 
 /**
  * local_add_unless - add unless the number is a given value
@@ -192,30 +202,5 @@ static __inline__ long local_sub_return(long i, local_t * l)
 #define __local_dec(l)		((l)->a.counter++)
 #define __local_add(i, l)	((l)->a.counter+=(i))
 #define __local_sub(i, l)	((l)->a.counter-=(i))
-
-/* Need to disable preemption for the cpu local counters otherwise we could
-   still access a variable of a previous CPU in a non atomic way. */
-#define cpu_local_wrap_v(l)	 	\
-	({ local_t res__;		\
-	   preempt_disable(); 		\
-	   res__ = (l);			\
-	   preempt_enable();		\
-	   res__; })
-#define cpu_local_wrap(l)		\
-	({ preempt_disable();		\
-	   l;				\
-	   preempt_enable(); })		\
-
-#define cpu_local_read(l)    cpu_local_wrap_v(local_read(&__get_cpu_var(l)))
-#define cpu_local_set(l, i)  cpu_local_wrap(local_set(&__get_cpu_var(l), (i)))
-#define cpu_local_inc(l)     cpu_local_wrap(local_inc(&__get_cpu_var(l)))
-#define cpu_local_dec(l)     cpu_local_wrap(local_dec(&__get_cpu_var(l)))
-#define cpu_local_add(i, l)  cpu_local_wrap(local_add((i), &__get_cpu_var(l)))
-#define cpu_local_sub(i, l)  cpu_local_wrap(local_sub((i), &__get_cpu_var(l)))
-
-#define __cpu_local_inc(l)	cpu_local_inc(l)
-#define __cpu_local_dec(l)	cpu_local_dec(l)
-#define __cpu_local_add(i, l)	cpu_local_add((i), (l))
-#define __cpu_local_sub(i, l)	cpu_local_sub((i), (l))
 
 #endif /* _ARCH_MIPS_LOCAL_H */

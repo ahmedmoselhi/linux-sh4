@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * pata_optidma.c 	- Opti DMA PATA for new ATA layer
  *			  (C) 2006 Red Hat Inc
@@ -25,7 +26,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
-#include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <scsi/scsi_host.h>
@@ -411,11 +411,9 @@ static int optidma_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 		.port_ops = &optiplus_port_ops
 	};
 	const struct ata_port_info *ppi[] = { &info_82c700, NULL };
-	static int printed_version;
 	int rc;
 
-	if (!printed_version++)
-		dev_printk(KERN_DEBUG, &dev->dev, "version " DRV_VERSION "\n");
+	ata_print_version_once(&dev->dev, DRV_VERSION);
 
 	rc = pcim_enable_device(dev);
 	if (rc)
@@ -429,7 +427,7 @@ static int optidma_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 	if (optiplus_with_udma(dev))
 		ppi[0] = &info_82c700_udma;
 
-	return ata_pci_sff_init_one(dev, ppi, &optidma_sht, NULL);
+	return ata_pci_bmdma_init_one(dev, ppi, &optidma_sht, NULL, 0);
 }
 
 static const struct pci_device_id optidma[] = {
@@ -443,27 +441,16 @@ static struct pci_driver optidma_pci_driver = {
 	.id_table	= optidma,
 	.probe 		= optidma_init_one,
 	.remove		= ata_pci_remove_one,
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend	= ata_pci_device_suspend,
 	.resume		= ata_pci_device_resume,
 #endif
 };
 
-static int __init optidma_init(void)
-{
-	return pci_register_driver(&optidma_pci_driver);
-}
-
-static void __exit optidma_exit(void)
-{
-	pci_unregister_driver(&optidma_pci_driver);
-}
+module_pci_driver(optidma_pci_driver);
 
 MODULE_AUTHOR("Alan Cox");
 MODULE_DESCRIPTION("low-level driver for Opti Firestar/Firestar Plus");
 MODULE_LICENSE("GPL");
 MODULE_DEVICE_TABLE(pci, optidma);
 MODULE_VERSION(DRV_VERSION);
-
-module_init(optidma_init);
-module_exit(optidma_exit);

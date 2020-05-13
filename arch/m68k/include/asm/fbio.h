@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __LINUX_FBIO_H
 #define __LINUX_FBIO_H
 
@@ -173,7 +174,7 @@ struct mdi_cfginfo {
 	int     mdi_ncluts;     /* Number of implemented CLUTs in this MDI */
         int     mdi_type;       /* FBTYPE name */
         int     mdi_height;     /* height */
-        int     mdi_width;      /* widht */
+        int     mdi_width;      /* width */
         int     mdi_size;       /* available ram */
         int     mdi_mode;       /* 8bpp, 16bpp or 32bpp */
         int     mdi_pixfreq;    /* pixel clock (from PROM) */

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Functions related to setting various queue properties from drivers
  */
@@ -6,61 +7,20 @@
 #include <linux/init.h>
 #include <linux/bio.h>
 #include <linux/blkdev.h>
-#include <linux/bootmem.h>	/* for max_pfn/max_low_pfn */
+#include <linux/memblock.h>	/* for max_pfn/max_low_pfn */
 #include <linux/gcd.h>
 #include <linux/lcm.h>
+#include <linux/jiffies.h>
+#include <linux/gfp.h>
+#include <linux/dma-mapping.h>
 
 #include "blk.h"
+#include "blk-wbt.h"
 
 unsigned long blk_max_low_pfn;
 EXPORT_SYMBOL(blk_max_low_pfn);
 
 unsigned long blk_max_pfn;
-
-/**
- * blk_queue_prep_rq - set a prepare_request function for queue
- * @q:		queue
- * @pfn:	prepare_request function
- *
- * It's possible for a queue to register a prepare_request callback which
- * is invoked before the request is handed to the request_fn. The goal of
- * the function is to prepare a request for I/O, it can be used to build a
- * cdb from the request data for instance.
- *
- */
-void blk_queue_prep_rq(struct request_queue *q, prep_rq_fn *pfn)
-{
-	q->prep_rq_fn = pfn;
-}
-EXPORT_SYMBOL(blk_queue_prep_rq);
-
-/**
- * blk_queue_merge_bvec - set a merge_bvec function for queue
- * @q:		queue
- * @mbfn:	merge_bvec_fn
- *
- * Usually queues have static limitations on the max sectors or segments that
- * we can put in a request. Stacking drivers may have some settings that
- * are dynamic, and thus we have to query the queue whether it is ok to
- * add a new bio_vec to a bio at a given offset or not. If the block device
- * has such limitations, it needs to register a merge_bvec_fn to control
- * the size of bio's sent to it. Note that a block device *must* allow a
- * single page to be added to an empty bio. The block device driver may want
- * to use the bio_split() function to deal with these bio's. By default
- * no merge_bvec_fn is defined for a queue, and only the fixed limits are
- * honored.
- */
-void blk_queue_merge_bvec(struct request_queue *q, merge_bvec_fn *mbfn)
-{
-	q->merge_bvec_fn = mbfn;
-}
-EXPORT_SYMBOL(blk_queue_merge_bvec);
-
-void blk_queue_softirq_done(struct request_queue *q, softirq_done_fn *fn)
-{
-	q->softirq_done_fn = fn;
-}
-EXPORT_SYMBOL(blk_queue_softirq_done);
 
 void blk_queue_rq_timeout(struct request_queue *q, unsigned int timeout)
 {
@@ -68,118 +28,78 @@ void blk_queue_rq_timeout(struct request_queue *q, unsigned int timeout)
 }
 EXPORT_SYMBOL_GPL(blk_queue_rq_timeout);
 
-void blk_queue_rq_timed_out(struct request_queue *q, rq_timed_out_fn *fn)
-{
-	q->rq_timed_out_fn = fn;
-}
-EXPORT_SYMBOL_GPL(blk_queue_rq_timed_out);
-
-void blk_queue_lld_busy(struct request_queue *q, lld_busy_fn *fn)
-{
-	q->lld_busy_fn = fn;
-}
-EXPORT_SYMBOL_GPL(blk_queue_lld_busy);
-
 /**
  * blk_set_default_limits - reset limits to default values
  * @lim:  the queue_limits structure to reset
  *
  * Description:
- *   Returns a queue_limit struct to its default state.  Can be used by
- *   stacking drivers like DM that stage table swaps and reuse an
- *   existing device queue.
+ *   Returns a queue_limit struct to its default state.
  */
 void blk_set_default_limits(struct queue_limits *lim)
 {
-	lim->max_phys_segments = MAX_PHYS_SEGMENTS;
-	lim->max_hw_segments = MAX_HW_SEGMENTS;
+	lim->max_segments = BLK_MAX_SEGMENTS;
+	lim->max_discard_segments = 1;
+	lim->max_integrity_segments = 0;
 	lim->seg_boundary_mask = BLK_SEG_BOUNDARY_MASK;
-	lim->max_segment_size = MAX_SEGMENT_SIZE;
-	lim->max_sectors = BLK_DEF_MAX_SECTORS;
-	lim->max_hw_sectors = INT_MAX;
-	lim->max_discard_sectors = SAFE_MAX_SECTORS;
+	lim->virt_boundary_mask = 0;
+	lim->max_segment_size = BLK_MAX_SEGMENT_SIZE;
+	lim->max_sectors = lim->max_hw_sectors = BLK_SAFE_MAX_SECTORS;
+	lim->max_dev_sectors = 0;
+	lim->chunk_sectors = 0;
+	lim->max_write_same_sectors = 0;
+	lim->max_write_zeroes_sectors = 0;
+	lim->max_discard_sectors = 0;
+	lim->max_hw_discard_sectors = 0;
+	lim->discard_granularity = 0;
+	lim->discard_alignment = 0;
+	lim->discard_misaligned = 0;
 	lim->logical_block_size = lim->physical_block_size = lim->io_min = 512;
 	lim->bounce_pfn = (unsigned long)(BLK_BOUNCE_ANY >> PAGE_SHIFT);
 	lim->alignment_offset = 0;
 	lim->io_opt = 0;
 	lim->misaligned = 0;
-	lim->cluster = 1;
+	lim->zoned = BLK_ZONED_NONE;
 }
 EXPORT_SYMBOL(blk_set_default_limits);
 
 /**
- * blk_queue_make_request - define an alternate make_request function for a device
- * @q:  the request queue for the device to be affected
- * @mfn: the alternate make_request function
+ * blk_set_stacking_limits - set default limits for stacking devices
+ * @lim:  the queue_limits structure to reset
  *
  * Description:
- *    The normal way for &struct bios to be passed to a device
- *    driver is for them to be collected into requests on a request
- *    queue, and then to allow the device driver to select requests
- *    off that queue when it is ready.  This works well for many block
- *    devices. However some block devices (typically virtual devices
- *    such as md or lvm) do not benefit from the processing on the
- *    request queue, and are served best by having the requests passed
- *    directly to them.  This can be achieved by providing a function
- *    to blk_queue_make_request().
- *
- * Caveat:
- *    The driver that does this *must* be able to deal appropriately
- *    with buffers in "highmemory". This can be accomplished by either calling
- *    __bio_kmap_atomic() to get a temporary kernel mapping, or by calling
- *    blk_queue_bounce() to create a buffer in normal memory.
- **/
-void blk_queue_make_request(struct request_queue *q, make_request_fn *mfn)
+ *   Returns a queue_limit struct to its default state. Should be used
+ *   by stacking drivers like DM that have no internal limits.
+ */
+void blk_set_stacking_limits(struct queue_limits *lim)
 {
-	/*
-	 * set defaults
-	 */
-	q->nr_requests = BLKDEV_MAX_RQ;
+	blk_set_default_limits(lim);
 
-	q->make_request_fn = mfn;
-	blk_queue_dma_alignment(q, 511);
-	blk_queue_congestion_threshold(q);
-	q->nr_batching = BLK_BATCH_REQ;
-
-	q->unplug_thresh = 4;		/* hmm */
-	q->unplug_delay = (3 * HZ) / 1000;	/* 3 milliseconds */
-	if (q->unplug_delay == 0)
-		q->unplug_delay = 1;
-
-	q->unplug_timer.function = blk_unplug_timeout;
-	q->unplug_timer.data = (unsigned long)q;
-
-	blk_set_default_limits(&q->limits);
-	blk_queue_max_sectors(q, SAFE_MAX_SECTORS);
-
-	/*
-	 * If the caller didn't supply a lock, fall back to our embedded
-	 * per-queue locks
-	 */
-	if (!q->queue_lock)
-		q->queue_lock = &q->__queue_lock;
-
-	/*
-	 * by default assume old behaviour and bounce for any highmem page
-	 */
-	blk_queue_bounce_limit(q, BLK_BOUNCE_HIGH);
+	/* Inherit limits from component devices */
+	lim->max_segments = USHRT_MAX;
+	lim->max_discard_segments = USHRT_MAX;
+	lim->max_hw_sectors = UINT_MAX;
+	lim->max_segment_size = UINT_MAX;
+	lim->max_sectors = UINT_MAX;
+	lim->max_dev_sectors = UINT_MAX;
+	lim->max_write_same_sectors = UINT_MAX;
+	lim->max_write_zeroes_sectors = UINT_MAX;
 }
-EXPORT_SYMBOL(blk_queue_make_request);
+EXPORT_SYMBOL(blk_set_stacking_limits);
 
 /**
  * blk_queue_bounce_limit - set bounce buffer limit for queue
  * @q: the request queue for the device
- * @dma_mask: the maximum address the device can handle
+ * @max_addr: the maximum address the device can handle
  *
  * Description:
  *    Different hardware can have different requirements as to what pages
  *    it can do I/O directly to. A low level driver can call
  *    blk_queue_bounce_limit to have lower memory pages allocated as bounce
- *    buffers for doing I/O to pages residing above @dma_mask.
+ *    buffers for doing I/O to pages residing above @max_addr.
  **/
-void blk_queue_bounce_limit(struct request_queue *q, u64 dma_mask)
+void blk_queue_bounce_limit(struct request_queue *q, u64 max_addr)
 {
-	unsigned long b_pfn = dma_mask >> PAGE_SHIFT;
+	unsigned long b_pfn = max_addr >> PAGE_SHIFT;
 	int dma = 0;
 
 	q->bounce_gfp = GFP_NOIO;
@@ -191,7 +111,7 @@ void blk_queue_bounce_limit(struct request_queue *q, u64 dma_mask)
 	 */
 	if (b_pfn < (min_t(u64, 0xffffffffUL, BLK_BOUNCE_HIGH) >> PAGE_SHIFT))
 		dma = 1;
-	q->limits.bounce_pfn = max_low_pfn;
+	q->limits.bounce_pfn = max(max_low_pfn, b_pfn);
 #else
 	if (b_pfn < blk_max_low_pfn)
 		dma = 1;
@@ -206,39 +126,62 @@ void blk_queue_bounce_limit(struct request_queue *q, u64 dma_mask)
 EXPORT_SYMBOL(blk_queue_bounce_limit);
 
 /**
- * blk_queue_max_sectors - set max sectors for a request for this queue
+ * blk_queue_max_hw_sectors - set max sectors for a request for this queue
  * @q:  the request queue for the device
- * @max_sectors:  max sectors in the usual 512b unit
+ * @max_hw_sectors:  max hardware sectors in the usual 512b unit
  *
  * Description:
- *    Enables a low level driver to set an upper limit on the size of
- *    received requests.
+ *    Enables a low level driver to set a hard upper limit,
+ *    max_hw_sectors, on the size of requests.  max_hw_sectors is set by
+ *    the device driver based upon the capabilities of the I/O
+ *    controller.
+ *
+ *    max_dev_sectors is a hard limit imposed by the storage device for
+ *    READ/WRITE requests. It is set by the disk driver.
+ *
+ *    max_sectors is a soft limit imposed by the block layer for
+ *    filesystem type requests.  This value can be overridden on a
+ *    per-device basis in /sys/block/<device>/queue/max_sectors_kb.
+ *    The soft limit can not exceed max_hw_sectors.
  **/
-void blk_queue_max_sectors(struct request_queue *q, unsigned int max_sectors)
+void blk_queue_max_hw_sectors(struct request_queue *q, unsigned int max_hw_sectors)
 {
-	if ((max_sectors << 9) < PAGE_CACHE_SIZE) {
-		max_sectors = 1 << (PAGE_CACHE_SHIFT - 9);
+	struct queue_limits *limits = &q->limits;
+	unsigned int max_sectors;
+
+	if ((max_hw_sectors << 9) < PAGE_SIZE) {
+		max_hw_sectors = 1 << (PAGE_SHIFT - 9);
 		printk(KERN_INFO "%s: set to minimum %d\n",
-		       __func__, max_sectors);
+		       __func__, max_hw_sectors);
 	}
 
-	if (BLK_DEF_MAX_SECTORS > max_sectors)
-		q->limits.max_hw_sectors = q->limits.max_sectors = max_sectors;
-	else {
-		q->limits.max_sectors = BLK_DEF_MAX_SECTORS;
-		q->limits.max_hw_sectors = max_sectors;
-	}
-}
-EXPORT_SYMBOL(blk_queue_max_sectors);
-
-void blk_queue_max_hw_sectors(struct request_queue *q, unsigned int max_sectors)
-{
-	if (BLK_DEF_MAX_SECTORS > max_sectors)
-		q->limits.max_hw_sectors = BLK_DEF_MAX_SECTORS;
-	else
-		q->limits.max_hw_sectors = max_sectors;
+	limits->max_hw_sectors = max_hw_sectors;
+	max_sectors = min_not_zero(max_hw_sectors, limits->max_dev_sectors);
+	max_sectors = min_t(unsigned int, max_sectors, BLK_DEF_MAX_SECTORS);
+	limits->max_sectors = max_sectors;
+	q->backing_dev_info->io_pages = max_sectors >> (PAGE_SHIFT - 9);
 }
 EXPORT_SYMBOL(blk_queue_max_hw_sectors);
+
+/**
+ * blk_queue_chunk_sectors - set size of the chunk for this queue
+ * @q:  the request queue for the device
+ * @chunk_sectors:  chunk sectors in the usual 512b unit
+ *
+ * Description:
+ *    If a driver doesn't want IOs to cross a given chunk size, it can set
+ *    this limit and prevent merging across chunks. Note that the chunk size
+ *    must currently be a power-of-2 in sectors. Also note that the block
+ *    layer must accept a page worth of data at any offset. So if the
+ *    crossing of chunks is a hard limitation in the driver, it must still be
+ *    prepared to split single page bios.
+ **/
+void blk_queue_chunk_sectors(struct request_queue *q, unsigned int chunk_sectors)
+{
+	BUG_ON(!is_power_of_2(chunk_sectors));
+	q->limits.chunk_sectors = chunk_sectors;
+}
+EXPORT_SYMBOL(blk_queue_chunk_sectors);
 
 /**
  * blk_queue_max_discard_sectors - set max sectors for a single discard
@@ -248,46 +191,46 @@ EXPORT_SYMBOL(blk_queue_max_hw_sectors);
 void blk_queue_max_discard_sectors(struct request_queue *q,
 		unsigned int max_discard_sectors)
 {
+	q->limits.max_hw_discard_sectors = max_discard_sectors;
 	q->limits.max_discard_sectors = max_discard_sectors;
 }
 EXPORT_SYMBOL(blk_queue_max_discard_sectors);
 
 /**
- * blk_queue_max_phys_segments - set max phys segments for a request for this queue
+ * blk_queue_max_write_same_sectors - set max sectors for a single write same
  * @q:  the request queue for the device
- * @max_segments:  max number of segments
- *
- * Description:
- *    Enables a low level driver to set an upper limit on the number of
- *    physical data segments in a request.  This would be the largest sized
- *    scatter list the driver could handle.
+ * @max_write_same_sectors: maximum number of sectors to write per command
  **/
-void blk_queue_max_phys_segments(struct request_queue *q,
-				 unsigned short max_segments)
+void blk_queue_max_write_same_sectors(struct request_queue *q,
+				      unsigned int max_write_same_sectors)
 {
-	if (!max_segments) {
-		max_segments = 1;
-		printk(KERN_INFO "%s: set to minimum %d\n",
-		       __func__, max_segments);
-	}
-
-	q->limits.max_phys_segments = max_segments;
+	q->limits.max_write_same_sectors = max_write_same_sectors;
 }
-EXPORT_SYMBOL(blk_queue_max_phys_segments);
+EXPORT_SYMBOL(blk_queue_max_write_same_sectors);
 
 /**
- * blk_queue_max_hw_segments - set max hw segments for a request for this queue
+ * blk_queue_max_write_zeroes_sectors - set max sectors for a single
+ *                                      write zeroes
+ * @q:  the request queue for the device
+ * @max_write_zeroes_sectors: maximum number of sectors to write per command
+ **/
+void blk_queue_max_write_zeroes_sectors(struct request_queue *q,
+		unsigned int max_write_zeroes_sectors)
+{
+	q->limits.max_write_zeroes_sectors = max_write_zeroes_sectors;
+}
+EXPORT_SYMBOL(blk_queue_max_write_zeroes_sectors);
+
+/**
+ * blk_queue_max_segments - set max hw segments for a request for this queue
  * @q:  the request queue for the device
  * @max_segments:  max number of segments
  *
  * Description:
  *    Enables a low level driver to set an upper limit on the number of
- *    hw data segments in a request.  This would be the largest number of
- *    address/length pairs the host adapter can actually give at once
- *    to the device.
+ *    hw data segments in a request.
  **/
-void blk_queue_max_hw_segments(struct request_queue *q,
-			       unsigned short max_segments)
+void blk_queue_max_segments(struct request_queue *q, unsigned short max_segments)
 {
 	if (!max_segments) {
 		max_segments = 1;
@@ -295,9 +238,25 @@ void blk_queue_max_hw_segments(struct request_queue *q,
 		       __func__, max_segments);
 	}
 
-	q->limits.max_hw_segments = max_segments;
+	q->limits.max_segments = max_segments;
 }
-EXPORT_SYMBOL(blk_queue_max_hw_segments);
+EXPORT_SYMBOL(blk_queue_max_segments);
+
+/**
+ * blk_queue_max_discard_segments - set max segments for discard requests
+ * @q:  the request queue for the device
+ * @max_segments:  max number of segments
+ *
+ * Description:
+ *    Enables a low level driver to set an upper limit on the number of
+ *    segments in a discard request.
+ **/
+void blk_queue_max_discard_segments(struct request_queue *q,
+		unsigned short max_segments)
+{
+	q->limits.max_discard_segments = max_segments;
+}
+EXPORT_SYMBOL_GPL(blk_queue_max_discard_segments);
 
 /**
  * blk_queue_max_segment_size - set max segment size for blk_rq_map_sg
@@ -310,11 +269,14 @@ EXPORT_SYMBOL(blk_queue_max_hw_segments);
  **/
 void blk_queue_max_segment_size(struct request_queue *q, unsigned int max_size)
 {
-	if (max_size < PAGE_CACHE_SIZE) {
-		max_size = PAGE_CACHE_SIZE;
+	if (max_size < PAGE_SIZE) {
+		max_size = PAGE_SIZE;
 		printk(KERN_INFO "%s: set to minimum %d\n",
 		       __func__, max_size);
 	}
+
+	/* see blk_queue_virt_boundary() for the explanation */
+	WARN_ON_ONCE(q->limits.virt_boundary_mask);
 
 	q->limits.max_segment_size = max_size;
 }
@@ -330,7 +292,7 @@ EXPORT_SYMBOL(blk_queue_max_segment_size);
  *   storage device can address.  The default of 512 covers most
  *   hardware.
  **/
-void blk_queue_logical_block_size(struct request_queue *q, unsigned short size)
+void blk_queue_logical_block_size(struct request_queue *q, unsigned int size)
 {
 	q->limits.logical_block_size = size;
 
@@ -464,11 +426,6 @@ void blk_queue_io_opt(struct request_queue *q, unsigned int opt)
 }
 EXPORT_SYMBOL(blk_queue_io_opt);
 
-/*
- * Returns the minimum that is _not_ zero, unless both are zero.
- */
-#define min_not_zero(l, r) (l == 0) ? r : ((r == 0) ? l : min(l, r))
-
 /**
  * blk_queue_stack_limits - inherit underlying queue limits for stacked drivers
  * @t:	the stacking driver (top)
@@ -484,7 +441,7 @@ EXPORT_SYMBOL(blk_queue_stack_limits);
  * blk_stack_limits - adjust queue_limits for stacked devices
  * @t:	the stacking driver limits (top device)
  * @b:  the underlying queue limits (bottom, component device)
- * @offset:  offset to beginning of data within component device
+ * @start:  first data sector within component device
  *
  * Description:
  *    This function is used by stacking drivers like MD and DM to ensure
@@ -502,30 +459,36 @@ EXPORT_SYMBOL(blk_queue_stack_limits);
  *    the alignment_offset is undefined.
  */
 int blk_stack_limits(struct queue_limits *t, struct queue_limits *b,
-		     sector_t offset)
+		     sector_t start)
 {
-	sector_t alignment;
-	unsigned int top, bottom, ret = 0;
+	unsigned int top, bottom, alignment, ret = 0;
 
 	t->max_sectors = min_not_zero(t->max_sectors, b->max_sectors);
 	t->max_hw_sectors = min_not_zero(t->max_hw_sectors, b->max_hw_sectors);
+	t->max_dev_sectors = min_not_zero(t->max_dev_sectors, b->max_dev_sectors);
+	t->max_write_same_sectors = min(t->max_write_same_sectors,
+					b->max_write_same_sectors);
+	t->max_write_zeroes_sectors = min(t->max_write_zeroes_sectors,
+					b->max_write_zeroes_sectors);
 	t->bounce_pfn = min_not_zero(t->bounce_pfn, b->bounce_pfn);
 
 	t->seg_boundary_mask = min_not_zero(t->seg_boundary_mask,
 					    b->seg_boundary_mask);
+	t->virt_boundary_mask = min_not_zero(t->virt_boundary_mask,
+					    b->virt_boundary_mask);
 
-	t->max_phys_segments = min_not_zero(t->max_phys_segments,
-					    b->max_phys_segments);
-
-	t->max_hw_segments = min_not_zero(t->max_hw_segments,
-					  b->max_hw_segments);
+	t->max_segments = min_not_zero(t->max_segments, b->max_segments);
+	t->max_discard_segments = min_not_zero(t->max_discard_segments,
+					       b->max_discard_segments);
+	t->max_integrity_segments = min_not_zero(t->max_integrity_segments,
+						 b->max_integrity_segments);
 
 	t->max_segment_size = min_not_zero(t->max_segment_size,
 					   b->max_segment_size);
 
 	t->misaligned |= b->misaligned;
 
-	alignment = queue_limit_alignment_offset(b, offset);
+	alignment = queue_limit_alignment_offset(b, start);
 
 	/* Bottom device has different alignment.  Check that it is
 	 * compatible with the current top alignment.
@@ -537,7 +500,7 @@ int blk_stack_limits(struct queue_limits *t, struct queue_limits *b,
 		bottom = max(b->physical_block_size, b->io_min) + alignment;
 
 		/* Verify that top and bottom intervals line up */
-		if (max(top, bottom) & (min(top, bottom) - 1)) {
+		if (max(top, bottom) % min(top, bottom)) {
 			t->misaligned = 1;
 			ret = -1;
 		}
@@ -550,9 +513,7 @@ int blk_stack_limits(struct queue_limits *t, struct queue_limits *b,
 				     b->physical_block_size);
 
 	t->io_min = max(t->io_min, b->io_min);
-	t->io_opt = lcm(t->io_opt, b->io_opt);
-
-	t->cluster &= b->cluster;
+	t->io_opt = lcm_not_zero(t->io_opt, b->io_opt);
 
 	/* Physical block size a multiple of the logical block size? */
 	if (t->physical_block_size & (t->logical_block_size - 1)) {
@@ -575,9 +536,13 @@ int blk_stack_limits(struct queue_limits *t, struct queue_limits *b,
 		ret = -1;
 	}
 
+	t->raid_partial_stripes_expensive =
+		max(t->raid_partial_stripes_expensive,
+		    b->raid_partial_stripes_expensive);
+
 	/* Find lowest common alignment_offset */
-	t->alignment_offset = lcm(t->alignment_offset, alignment)
-		& (max(t->physical_block_size, t->io_min) - 1);
+	t->alignment_offset = lcm_not_zero(t->alignment_offset, alignment)
+		% max(t->physical_block_size, t->io_min);
 
 	/* Verify that new alignment_offset is on a logical block boundary */
 	if (t->alignment_offset & (t->logical_block_size - 1)) {
@@ -585,9 +550,33 @@ int blk_stack_limits(struct queue_limits *t, struct queue_limits *b,
 		ret = -1;
 	}
 
-	/* Discard */
-	t->max_discard_sectors = min_not_zero(t->max_discard_sectors,
-					      b->max_discard_sectors);
+	/* Discard alignment and granularity */
+	if (b->discard_granularity) {
+		alignment = queue_limit_discard_alignment(b, start);
+
+		if (t->discard_granularity != 0 &&
+		    t->discard_alignment != alignment) {
+			top = t->discard_granularity + t->discard_alignment;
+			bottom = b->discard_granularity + alignment;
+
+			/* Verify that top and bottom intervals line up */
+			if ((max(top, bottom) % min(top, bottom)) != 0)
+				t->discard_misaligned = 1;
+		}
+
+		t->max_discard_sectors = min_not_zero(t->max_discard_sectors,
+						      b->max_discard_sectors);
+		t->max_hw_discard_sectors = min_not_zero(t->max_hw_discard_sectors,
+							 b->max_hw_discard_sectors);
+		t->discard_granularity = max(t->discard_granularity,
+					     b->discard_granularity);
+		t->discard_alignment = lcm_not_zero(t->discard_alignment, alignment) %
+			t->discard_granularity;
+	}
+
+	if (b->chunk_sectors)
+		t->chunk_sectors = min_not_zero(t->chunk_sectors,
+						b->chunk_sectors);
 
 	return ret;
 }
@@ -611,7 +600,7 @@ int bdev_stack_limits(struct queue_limits *t, struct block_device *bdev,
 
 	start += get_start_sect(bdev);
 
-	return blk_stack_limits(t, &bq->limits, start << 9);
+	return blk_stack_limits(t, &bq->limits, start);
 }
 EXPORT_SYMBOL(bdev_stack_limits);
 
@@ -622,19 +611,15 @@ EXPORT_SYMBOL(bdev_stack_limits);
  * @offset:  offset to beginning of data within component device
  *
  * Description:
- *    Merges the limits for two queues.  Returns 0 if alignment
- *    didn't change.  Returns -1 if adding the bottom device caused
- *    misalignment.
+ *    Merges the limits for a top level gendisk and a bottom level
+ *    block_device.
  */
 void disk_stack_limits(struct gendisk *disk, struct block_device *bdev,
 		       sector_t offset)
 {
 	struct request_queue *t = disk->queue;
-	struct request_queue *b = bdev_get_queue(bdev);
 
-	offset += get_start_sect(bdev) << 9;
-
-	if (blk_stack_limits(&t->limits, &b->limits, offset) < 0) {
+	if (bdev_stack_limits(&t->limits, bdev, offset >> 9) < 0) {
 		char top[BDEVNAME_SIZE], bottom[BDEVNAME_SIZE];
 
 		disk_name(disk, 0, top);
@@ -643,24 +628,11 @@ void disk_stack_limits(struct gendisk *disk, struct block_device *bdev,
 		printk(KERN_NOTICE "%s: Warning: Device %s is misaligned\n",
 		       top, bottom);
 	}
+
+	t->backing_dev_info->io_pages =
+		t->limits.max_sectors >> (PAGE_SHIFT - 9);
 }
 EXPORT_SYMBOL(disk_stack_limits);
-
-/**
- * blk_queue_dma_pad - set pad mask
- * @q:     the request queue for the device
- * @mask:  pad mask
- *
- * Set dma pad mask.
- *
- * Appending pad buffer to a request modifies the last entry of a
- * scatter list such that it includes the pad buffer.
- **/
-void blk_queue_dma_pad(struct request_queue *q, unsigned int mask)
-{
-	q->dma_pad_mask = mask;
-}
-EXPORT_SYMBOL(blk_queue_dma_pad);
 
 /**
  * blk_queue_update_dma_pad - update pad mask
@@ -695,22 +667,19 @@ EXPORT_SYMBOL(blk_queue_update_dma_pad);
  * does is adjust the queue so that the buf is always appended
  * silently to the scatterlist.
  *
- * Note: This routine adjusts max_hw_segments to make room for
- * appending the drain buffer.  If you call
- * blk_queue_max_hw_segments() or blk_queue_max_phys_segments() after
- * calling this routine, you must set the limit to one fewer than your
- * device can support otherwise there won't be room for the drain
- * buffer.
+ * Note: This routine adjusts max_hw_segments to make room for appending
+ * the drain buffer.  If you call blk_queue_max_segments() after calling
+ * this routine, you must set the limit to one fewer than your device
+ * can support otherwise there won't be room for the drain buffer.
  */
 int blk_queue_dma_drain(struct request_queue *q,
 			       dma_drain_needed_fn *dma_drain_needed,
 			       void *buf, unsigned int size)
 {
-	if (queue_max_hw_segments(q) < 2 || queue_max_phys_segments(q) < 2)
+	if (queue_max_segments(q) < 2)
 		return -EINVAL;
 	/* make room for appending the drain */
-	blk_queue_max_hw_segments(q, queue_max_hw_segments(q) - 1);
-	blk_queue_max_phys_segments(q, queue_max_phys_segments(q) - 1);
+	blk_queue_max_segments(q, queue_max_segments(q) - 1);
 	q->dma_drain_needed = dma_drain_needed;
 	q->dma_drain_buffer = buf;
 	q->dma_drain_size = size;
@@ -726,8 +695,8 @@ EXPORT_SYMBOL_GPL(blk_queue_dma_drain);
  **/
 void blk_queue_segment_boundary(struct request_queue *q, unsigned long mask)
 {
-	if (mask < PAGE_CACHE_SIZE - 1) {
-		mask = PAGE_CACHE_SIZE - 1;
+	if (mask < PAGE_SIZE - 1) {
+		mask = PAGE_SIZE - 1;
 		printk(KERN_INFO "%s: set to minimum %lx\n",
 		       __func__, mask);
 	}
@@ -735,6 +704,26 @@ void blk_queue_segment_boundary(struct request_queue *q, unsigned long mask)
 	q->limits.seg_boundary_mask = mask;
 }
 EXPORT_SYMBOL(blk_queue_segment_boundary);
+
+/**
+ * blk_queue_virt_boundary - set boundary rules for bio merging
+ * @q:  the request queue for the device
+ * @mask:  the memory boundary mask
+ **/
+void blk_queue_virt_boundary(struct request_queue *q, unsigned long mask)
+{
+	q->limits.virt_boundary_mask = mask;
+
+	/*
+	 * Devices that require a virtual boundary do not support scatter/gather
+	 * I/O natively, but instead require a descriptor list entry for each
+	 * page (which might not be idential to the Linux PAGE_SIZE).  Because
+	 * of that they are not limited by our notion of "segment size".
+	 */
+	if (mask)
+		q->limits.max_segment_size = UINT_MAX;
+}
+EXPORT_SYMBOL(blk_queue_virt_boundary);
 
 /**
  * blk_queue_dma_alignment - set dma length and memory alignment
@@ -774,6 +763,80 @@ void blk_queue_update_dma_alignment(struct request_queue *q, int mask)
 		q->dma_alignment = mask;
 }
 EXPORT_SYMBOL(blk_queue_update_dma_alignment);
+
+/**
+ * blk_set_queue_depth - tell the block layer about the device queue depth
+ * @q:		the request queue for the device
+ * @depth:		queue depth
+ *
+ */
+void blk_set_queue_depth(struct request_queue *q, unsigned int depth)
+{
+	q->queue_depth = depth;
+	rq_qos_queue_depth_changed(q);
+}
+EXPORT_SYMBOL(blk_set_queue_depth);
+
+/**
+ * blk_queue_write_cache - configure queue's write cache
+ * @q:		the request queue for the device
+ * @wc:		write back cache on or off
+ * @fua:	device supports FUA writes, if true
+ *
+ * Tell the block layer about the write cache of @q.
+ */
+void blk_queue_write_cache(struct request_queue *q, bool wc, bool fua)
+{
+	if (wc)
+		blk_queue_flag_set(QUEUE_FLAG_WC, q);
+	else
+		blk_queue_flag_clear(QUEUE_FLAG_WC, q);
+	if (fua)
+		blk_queue_flag_set(QUEUE_FLAG_FUA, q);
+	else
+		blk_queue_flag_clear(QUEUE_FLAG_FUA, q);
+
+	wbt_set_write_cache(q, test_bit(QUEUE_FLAG_WC, &q->queue_flags));
+}
+EXPORT_SYMBOL_GPL(blk_queue_write_cache);
+
+/**
+ * blk_queue_required_elevator_features - Set a queue required elevator features
+ * @q:		the request queue for the target device
+ * @features:	Required elevator features OR'ed together
+ *
+ * Tell the block layer that for the device controlled through @q, only the
+ * only elevators that can be used are those that implement at least the set of
+ * features specified by @features.
+ */
+void blk_queue_required_elevator_features(struct request_queue *q,
+					  unsigned int features)
+{
+	q->required_elevator_features = features;
+}
+EXPORT_SYMBOL_GPL(blk_queue_required_elevator_features);
+
+/**
+ * blk_queue_can_use_dma_map_merging - configure queue for merging segments.
+ * @q:		the request queue for the device
+ * @dev:	the device pointer for dma
+ *
+ * Tell the block layer about merging the segments by dma map of @q.
+ */
+bool blk_queue_can_use_dma_map_merging(struct request_queue *q,
+				       struct device *dev)
+{
+	unsigned long boundary = dma_get_merge_boundary(dev);
+
+	if (!boundary)
+		return false;
+
+	/* No need to update max_segment_size. see blk_queue_virt_boundary() */
+	blk_queue_virt_boundary(q, boundary);
+
+	return true;
+}
+EXPORT_SYMBOL_GPL(blk_queue_can_use_dma_map_merging);
 
 static int __init blk_settings_init(void)
 {

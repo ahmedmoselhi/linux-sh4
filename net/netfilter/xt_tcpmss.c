@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* Kernel module to match TCP MSS values. */
 
 /* Copyright (C) 2000 Marc Boucher <marc@mbsi.ca>
  * Portions (C) 2005 by Harald Welte <laforge@netfilter.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/module.h>
@@ -25,7 +22,7 @@ MODULE_ALIAS("ipt_tcpmss");
 MODULE_ALIAS("ip6t_tcpmss");
 
 static bool
-tcpmss_mt(const struct sk_buff *skb, const struct xt_match_param *par)
+tcpmss_mt(const struct sk_buff *skb, struct xt_action_param *par)
 {
 	const struct xt_tcpmss_match_info *info = par->matchinfo;
 	const struct tcphdr *th;
@@ -73,7 +70,7 @@ out:
 	return info->invert;
 
 dropit:
-	*par->hotdrop = true;
+	par->hotdrop = true;
 	return false;
 }
 

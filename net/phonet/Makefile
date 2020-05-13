@@ -1,6 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0
 obj-$(CONFIG_PHONET) += phonet.o pn_pep.o
 
-phonet-objs := \
+phonet-y := \
 	pn_dev.o \
 	pn_netlink.o \
 	socket.o \
@@ -8,4 +9,4 @@ phonet-objs := \
 	sysctl.o \
 	af_phonet.o
 
-pn_pep-objs := pep.o pep-gprs.o
+pn_pep-y := pep.o pep-gprs.o

@@ -1,9 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef US122L_H
 #define US122L_H
 
 
 struct us122l {
-	struct snd_usb_audio 	chip;
+	struct usb_device	*dev;
+	int			card_index;
 	int			stride;
 	struct usb_stream_kernel sk;
 
@@ -12,8 +14,11 @@ struct us122l {
 	unsigned		second_periods_polled;
 	struct file		*master;
 	struct file		*slave;
+	struct list_head	midi_list;
 
 	atomic_t		mmap_count;
+
+	bool			is_us144;
 };
 
 
@@ -23,5 +28,7 @@ struct us122l {
 
 #define USB_ID_US122L 0x800E
 #define USB_ID_US144 0x800F
+#define USB_ID_US122MKII 0x8021
+#define USB_ID_US144MKII 0x8020
 
 #endif

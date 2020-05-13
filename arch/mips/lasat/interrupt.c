@@ -1,19 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Carsten Langgaard, carstenl@mips.com
  * Copyright (C) 1999,2000 MIPS Technologies, Inc.  All rights reserved.
- *
- *  This program is free software; you can distribute it and/or modify it
- *  under the terms of the GNU General Public License (Version 2) as
- *  published by the Free Software Foundation.
- *
- *  This program is distributed in the hope it will be useful, but WITHOUT
- *  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- *  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
- *  for more details.
- *
- *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, write to the Free Software Foundation, Inc.,
- *  59 Temple Place - Suite 330, Boston MA 02111-1307, USA.
  *
  * Routines for generic manipulation of the interrupts found on the
  * Lasat boards.
@@ -32,24 +20,24 @@ static volatile int *lasat_int_status;
 static volatile int *lasat_int_mask;
 static volatile int lasat_int_mask_shift;
 
-void disable_lasat_irq(unsigned int irq_nr)
+void disable_lasat_irq(struct irq_data *d)
 {
-	irq_nr -= LASAT_IRQ_BASE;
+	unsigned int irq_nr = d->irq - LASAT_IRQ_BASE;
+
 	*lasat_int_mask &= ~(1 << irq_nr) << lasat_int_mask_shift;
 }
 
-void enable_lasat_irq(unsigned int irq_nr)
+void enable_lasat_irq(struct irq_data *d)
 {
-	irq_nr -= LASAT_IRQ_BASE;
+	unsigned int irq_nr = d->irq - LASAT_IRQ_BASE;
+
 	*lasat_int_mask |= (1 << irq_nr) << lasat_int_mask_shift;
 }
 
 static struct irq_chip lasat_irq_type = {
 	.name = "Lasat",
-	.ack = disable_lasat_irq,
-	.mask = disable_lasat_irq,
-	.mask_ack = disable_lasat_irq,
-	.unmask = enable_lasat_irq,
+	.irq_mask = disable_lasat_irq,
+	.irq_unmask = enable_lasat_irq,
 };
 
 static inline int ls1bit32(unsigned int x)
@@ -102,13 +90,9 @@ asmlinkage void plat_irq_dispatch(void)
 	}
 }
 
-static struct irqaction cascade = {
-	.handler	= no_action,
-	.name		= "cascade",
-};
-
 void __init arch_init_irq(void)
 {
+	int irq = LASAT_CASCADE_IRQ;
 	int i;
 
 	if (IS_LASAT_200()) {
@@ -128,7 +112,8 @@ void __init arch_init_irq(void)
 	mips_cpu_irq_init();
 
 	for (i = LASAT_IRQ_BASE; i <= LASAT_IRQ_END; i++)
-		set_irq_chip_and_handler(i, &lasat_irq_type, handle_level_irq);
+		irq_set_chip_and_handler(i, &lasat_irq_type, handle_level_irq);
 
-	setup_irq(LASAT_CASCADE_IRQ, &cascade);
+	if (request_irq(irq, no_action, IRQF_NO_THREAD, "cascade", NULL))
+		pr_err("Failed to request irq %d (cascade)\n", irq);
 }

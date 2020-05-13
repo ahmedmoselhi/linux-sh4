@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/arch/arm/mach-pxa/gumstix.c
  *
@@ -6,10 +7,6 @@
  *  Original Author:	Craig Hughes
  *  Created:	Feb 14, 2008
  *  Copyright:	Craig Hughes
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2 as
- *  published by the Free Software Foundation.
  *
  *  Implemented based on lubbock.c by Nicolas Pitre and code from Craig
  *  Hughes
@@ -23,6 +20,7 @@
 #include <linux/delay.h>
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
+#include <linux/gpio/machine.h>
 #include <linux/gpio.h>
 #include <linux/err.h>
 #include <linux/clk.h>
@@ -32,17 +30,17 @@
 #include <asm/mach-types.h>
 #include <mach/hardware.h>
 #include <asm/irq.h>
-#include <asm/sizes.h>
+#include <linux/sizes.h>
 
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
 #include <asm/mach/irq.h>
 #include <asm/mach/flash.h>
 
-#include <mach/pxa25x.h>
-#include <mach/mmc.h>
-#include <mach/udc.h>
-#include <mach/gumstix.h>
+#include "pxa25x.h"
+#include <linux/platform_data/mmc-pxamci.h>
+#include "udc.h"
+#include "gumstix.h"
 
 #include "generic.h"
 
@@ -89,9 +87,6 @@ static struct platform_device *devices[] __initdata = {
 #ifdef CONFIG_MMC_PXA
 static struct pxamci_platform_data gumstix_mci_platform_data = {
 	.ocr_mask		= MMC_VDD_32_33|MMC_VDD_33_34,
-	.gpio_card_detect 	= -1,
-	.gpio_card_ro		= -1,
-	.gpio_power		= -1,
 };
 
 static void __init gumstix_mmc_init(void)
@@ -105,15 +100,27 @@ static void __init gumstix_mmc_init(void)
 }
 #endif
 
-#ifdef CONFIG_USB_GADGET_PXA25X
-static struct pxa2xx_udc_mach_info gumstix_udc_info __initdata = {
-	.gpio_vbus		= GPIO_GUMSTIX_USB_GPIOn,
-	.gpio_pullup		= GPIO_GUMSTIX_USB_GPIOx,
+#ifdef CONFIG_USB_PXA25X
+static struct gpiod_lookup_table gumstix_gpio_vbus_gpiod_table = {
+	.dev_id = "gpio-vbus",
+	.table = {
+		GPIO_LOOKUP("gpio-pxa", GPIO_GUMSTIX_USB_GPIOn,
+			    "vbus", GPIO_ACTIVE_HIGH),
+		GPIO_LOOKUP("gpio-pxa", GPIO_GUMSTIX_USB_GPIOx,
+			    "pullup", GPIO_ACTIVE_HIGH),
+		{ },
+	},
+};
+
+static struct platform_device gumstix_gpio_vbus = {
+	.name	= "gpio-vbus",
+	.id	= -1,
 };
 
 static void __init gumstix_udc_init(void)
 {
-	pxa_set_udc_info(&gumstix_udc_info);
+	gpiod_add_lookup_table(&gumstix_gpio_vbus_gpiod_table);
+	platform_device_register(&gumstix_gpio_vbus);
 }
 #else
 static void gumstix_udc_init(void)
@@ -130,15 +137,14 @@ static void gumstix_setup_bt_clock(void)
 {
 	int timeout = 500;
 
-	if (!(OSCC & OSCC_OOK))
-		pr_warning("32kHz clock was not on. Bootloader may need to "
-				"be updated\n");
+	if (!(readl(OSCC) & OSCC_OOK))
+		pr_warn("32kHz clock was not on. Bootloader may need to be updated\n");
 	else
 		return;
 
-	OSCC |= OSCC_OON;
+	writel(readl(OSCC) | OSCC_OON, OSCC);
 	do {
-		if (OSCC & OSCC_OOK)
+		if (readl(OSCC) & OSCC_OOK)
 			break;
 		udelay(1);
 	} while (--timeout);
@@ -211,6 +217,11 @@ static void __init gumstix_init(void)
 {
 	pxa2xx_mfp_config(ARRAY_AND_SIZE(gumstix_pin_config));
 
+	pxa_set_ffuart_info(NULL);
+	pxa_set_btuart_info(NULL);
+	pxa_set_stuart_info(NULL);
+	pxa_set_hwuart_info(NULL);
+
 	gumstix_bluetooth_init();
 	gumstix_udc_init();
 	gumstix_mmc_init();
@@ -219,11 +230,12 @@ static void __init gumstix_init(void)
 }
 
 MACHINE_START(GUMSTIX, "Gumstix")
-	.phys_io	= 0x40000000,
-	.boot_params	= 0xa0000100, /* match u-boot bi_boot_params */
-	.io_pg_offst	= (io_p2v(0x40000000) >> 18) & 0xfffc,
-	.map_io		= pxa_map_io,
+	.atag_offset	= 0x100, /* match u-boot bi_boot_params */
+	.map_io		= pxa25x_map_io,
+	.nr_irqs	= PXA_NR_IRQS,
 	.init_irq	= pxa25x_init_irq,
-	.timer		= &pxa_timer,
+	.handle_irq	= pxa25x_handle_irq,
+	.init_time	= pxa_timer_init,
 	.init_machine	= gumstix_init,
+	.restart	= pxa_restart,
 MACHINE_END

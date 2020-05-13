@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Freescale QUICC Engine USB Host Controller Driver
  *
@@ -8,11 +9,6 @@
  *               Peter Barada <peterb@logicpd.com>
  * Copyright (c) MontaVista Software, Inc. 2008.
  *               Anton Vorontsov <avorontsov@ru.mvista.com>
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  */
 
 #include <linux/kernel.h>
@@ -24,9 +20,9 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/usb.h>
-#include <asm/qe.h>
+#include <linux/usb/hcd.h>
+#include <soc/fsl/qe/qe.h>
 #include <asm/fsl_gtm.h>
-#include "../core/hcd.h"
 #include "fhci.h"
 
 static void recycle_frame(struct fhci_usb *usb, struct packet *pkt)
@@ -37,7 +33,7 @@ static void recycle_frame(struct fhci_usb *usb, struct packet *pkt)
 	pkt->info = 0;
 	pkt->priv_data = NULL;
 
-	cq_put(usb->ep0->empty_frame_Q, pkt);
+	cq_put(&usb->ep0->empty_frame_Q, pkt);
 }
 
 /* confirm submitted packet */
@@ -57,7 +53,7 @@ void fhci_transaction_confirm(struct fhci_usb *usb, struct packet *pkt)
 		if ((td->data + td->actual_len) && trans_len)
 			memcpy(td->data + td->actual_len, pkt->data,
 			       trans_len);
-		cq_put(usb->ep0->dummy_packets_Q, pkt->data);
+		cq_put(&usb->ep0->dummy_packets_Q, pkt->data);
 	}
 
 	recycle_frame(usb, pkt);
@@ -125,15 +121,15 @@ void fhci_transaction_confirm(struct fhci_usb *usb, struct packet *pkt)
 /*
  * Flush all transmitted packets from BDs
  * This routine is called when disabling the USB port to flush all
- * transmissions that are allready scheduled in the BDs
+ * transmissions that are already scheduled in the BDs
  */
 void fhci_flush_all_transmissions(struct fhci_usb *usb)
 {
 	u8 mode;
 	struct td *td;
 
-	mode = in_8(&usb->fhci->regs->usb_mod);
-	clrbits8(&usb->fhci->regs->usb_mod, USB_MODE_EN);
+	mode = in_8(&usb->fhci->regs->usb_usmod);
+	clrbits8(&usb->fhci->regs->usb_usmod, USB_MODE_EN);
 
 	fhci_flush_bds(usb);
 
@@ -147,9 +143,9 @@ void fhci_flush_all_transmissions(struct fhci_usb *usb)
 	usb->actual_frame->frame_status = FRAME_END_TRANSMISSION;
 
 	/* reset the event register */
-	out_be16(&usb->fhci->regs->usb_event, 0xffff);
+	out_be16(&usb->fhci->regs->usb_usber, 0xffff);
 	/* enable the USB controller */
-	out_8(&usb->fhci->regs->usb_mod, mode | USB_MODE_EN);
+	out_8(&usb->fhci->regs->usb_usmod, mode | USB_MODE_EN);
 }
 
 /*
@@ -213,7 +209,7 @@ static int add_packet(struct fhci_usb *usb, struct ed *ed, struct td *td)
 	}
 
 	/* update frame object fields before transmitting */
-	pkt = cq_get(usb->ep0->empty_frame_Q);
+	pkt = cq_get(&usb->ep0->empty_frame_Q);
 	if (!pkt) {
 		fhci_dbg(usb->fhci, "there is no empty frame\n");
 		return -1;
@@ -222,7 +218,7 @@ static int add_packet(struct fhci_usb *usb, struct ed *ed, struct td *td)
 
 	pkt->info = 0;
 	if (data == NULL) {
-		data = cq_get(usb->ep0->dummy_packets_Q);
+		data = cq_get(&usb->ep0->dummy_packets_Q);
 		BUG_ON(!data);
 		pkt->info = PKT_DUMMY_PACKET;
 	}
@@ -246,7 +242,7 @@ static int add_packet(struct fhci_usb *usb, struct ed *ed, struct td *td)
 		list_del_init(&td->frame_lh);
 		td->status = USB_TD_OK;
 		if (pkt->info & PKT_DUMMY_PACKET)
-			cq_put(usb->ep0->dummy_packets_Q, pkt->data);
+			cq_put(&usb->ep0->dummy_packets_Q, pkt->data);
 		recycle_frame(usb, pkt);
 		usb->actual_frame->total_bytes -= (len + PROTOCOL_OVERHEAD);
 		fhci_err(usb->fhci, "host transaction failed\n");
@@ -261,8 +257,7 @@ static void move_head_to_tail(struct list_head *list)
 	struct list_head *node = list->next;
 
 	if (!list_empty(list)) {
-		list_del(node);
-		list_add_tail(node, list);
+		list_move_tail(node, list);
 	}
 }
 
@@ -289,7 +284,7 @@ static int scan_ed_list(struct fhci_usb *usb,
 	list_for_each_entry(ed, list, node) {
 		td = ed->td_head;
 
-		if (!td || (td && td->status == USB_TD_INPROGRESS))
+		if (!td || td->status == USB_TD_INPROGRESS)
 			continue;
 
 		if (ed->state != FHCI_ED_OPER) {
@@ -414,7 +409,7 @@ static void sof_interrupt(struct fhci_hcd *fhci)
 			usb->port_status = FHCI_PORT_FULL;
 		/* Disable IDLE */
 		usb->saved_msk &= ~USB_E_IDLE_MASK;
-		out_be16(&usb->fhci->regs->usb_mask, usb->saved_msk);
+		out_be16(&usb->fhci->regs->usb_usbmr, usb->saved_msk);
 	}
 
 	gtm_set_exact_timer16(fhci->timer, usb->max_frame_usage, false);
@@ -433,14 +428,14 @@ void fhci_device_disconnected_interrupt(struct fhci_hcd *fhci)
 	fhci_dbg(fhci, "-> %s\n", __func__);
 
 	fhci_usb_disable_interrupt(usb);
-	clrbits8(&usb->fhci->regs->usb_mod, USB_MODE_LSS);
+	clrbits8(&usb->fhci->regs->usb_usmod, USB_MODE_LSS);
 	usb->port_status = FHCI_PORT_DISABLED;
 
 	fhci_stop_sof_timer(fhci);
 
 	/* Enable IDLE since we want to know if something comes along */
 	usb->saved_msk |= USB_E_IDLE_MASK;
-	out_be16(&usb->fhci->regs->usb_mask, usb->saved_msk);
+	out_be16(&usb->fhci->regs->usb_usbmr, usb->saved_msk);
 
 	usb->vroot_hub->port.wPortStatus &= ~USB_PORT_STAT_CONNECTION;
 	usb->vroot_hub->port.wPortChange |= USB_PORT_STAT_C_CONNECTION;
@@ -473,7 +468,7 @@ void fhci_device_connected_interrupt(struct fhci_hcd *fhci)
 		}
 
 		usb->port_status = FHCI_PORT_LOW;
-		setbits8(&usb->fhci->regs->usb_mod, USB_MODE_LSS);
+		setbits8(&usb->fhci->regs->usb_usmod, USB_MODE_LSS);
 		usb->vroot_hub->port.wPortStatus |=
 		    (USB_PORT_STAT_LOW_SPEED |
 		     USB_PORT_STAT_CONNECTION);
@@ -491,7 +486,7 @@ void fhci_device_connected_interrupt(struct fhci_hcd *fhci)
 		}
 
 		usb->port_status = FHCI_PORT_FULL;
-		clrbits8(&usb->fhci->regs->usb_mod, USB_MODE_LSS);
+		clrbits8(&usb->fhci->regs->usb_usmod, USB_MODE_LSS);
 		usb->vroot_hub->port.wPortStatus &=
 		    ~USB_PORT_STAT_LOW_SPEED;
 		usb->vroot_hub->port.wPortStatus |=
@@ -535,7 +530,7 @@ static void abort_transmission(struct fhci_usb *usb)
 	/* issue stop Tx command */
 	qe_issue_cmd(QE_USB_STOP_TX, QE_CR_SUBBLOCK_USB, EP_ZERO, 0);
 	/* flush Tx FIFOs */
-	out_8(&usb->fhci->regs->usb_comm, USB_CMD_FLUSH_FIFO | EP_ZERO);
+	out_8(&usb->fhci->regs->usb_uscom, USB_CMD_FLUSH_FIFO | EP_ZERO);
 	udelay(1000);
 	/* reset Tx BDs */
 	fhci_flush_bds(usb);
@@ -555,11 +550,11 @@ irqreturn_t fhci_irq(struct usb_hcd *hcd)
 
 	usb = fhci->usb_lld;
 
-	usb_er |= in_be16(&usb->fhci->regs->usb_event) &
-		  in_be16(&usb->fhci->regs->usb_mask);
+	usb_er |= in_be16(&usb->fhci->regs->usb_usber) &
+		  in_be16(&usb->fhci->regs->usb_usbmr);
 
 	/* clear event bits for next time */
-	out_be16(&usb->fhci->regs->usb_event, usb_er);
+	out_be16(&usb->fhci->regs->usb_usber, usb_er);
 
 	fhci_dbg_isr(fhci, usb_er);
 
@@ -573,7 +568,7 @@ irqreturn_t fhci_irq(struct usb_hcd *hcd)
 
 			/* Turn on IDLE since we want to disconnect */
 			usb->saved_msk |= USB_E_IDLE_MASK;
-			out_be16(&usb->fhci->regs->usb_event,
+			out_be16(&usb->fhci->regs->usb_usber,
 				 usb->saved_msk);
 		} else if (usb->port_status == FHCI_PORT_DISABLED) {
 			if (fhci_ioports_check_bus_state(fhci) == 1)
@@ -611,7 +606,7 @@ irqreturn_t fhci_irq(struct usb_hcd *hcd)
 			/* XXX usb->port_status = FHCI_PORT_WAITING; */
 			/* Disable IDLE */
 			usb->saved_msk &= ~USB_E_IDLE_MASK;
-			out_be16(&usb->fhci->regs->usb_mask,
+			out_be16(&usb->fhci->regs->usb_usbmr,
 				 usb->saved_msk);
 		} else {
 			fhci_dbg_isr(fhci, -1);
@@ -627,7 +622,7 @@ irqreturn_t fhci_irq(struct usb_hcd *hcd)
 
 
 /*
- * Process normal completions(error or sucess) and clean the schedule.
+ * Process normal completions(error or success) and clean the schedule.
  *
  * This is the main path for handing urbs back to drivers. The only other patth
  * is process_del_list(),which unlinks URBs by scanning EDs,instead of scanning
@@ -732,17 +727,20 @@ void fhci_queue_urb(struct fhci_hcd *fhci, struct urb *urb)
 		}
 		ed->speed = (urb->dev->speed == USB_SPEED_LOW) ?
 			FHCI_LOW_SPEED : FHCI_FULL_SPEED;
-		ed->max_pkt_size = usb_maxpacket(urb->dev,
-			urb->pipe, usb_pipeout(urb->pipe));
+		ed->max_pkt_size = usb_endpoint_maxp(&urb->ep->desc);
 		urb->ep->hcpriv = ed;
 		fhci_dbg(fhci, "new ep speed=%d max_pkt_size=%d\n",
 			 ed->speed, ed->max_pkt_size);
 	}
 
 	/* for ISO transfer calculate start frame index */
-	if (ed->mode == FHCI_TF_ISO && urb->transfer_flags & URB_ISO_ASAP)
-		urb->start_frame = ed->td_head ? ed->last_iso + 1 :
+	if (ed->mode == FHCI_TF_ISO) {
+		/* Ignore the possibility of underruns */
+		urb->start_frame = ed->td_head ? ed->next_iso :
 						 get_frame_num(fhci);
+		ed->next_iso = (urb->start_frame + urb->interval *
+				urb->number_of_packets) & 0x07ff;
+	}
 
 	/*
 	 * OHCI handles the DATA toggle itself,we just use the USB
@@ -769,8 +767,7 @@ void fhci_queue_urb(struct fhci_hcd *fhci, struct urb *urb)
 		if (urb->transfer_flags & URB_ZERO_PACKET &&
 				urb->transfer_buffer_length > 0 &&
 				((urb->transfer_buffer_length %
-				usb_maxpacket(urb->dev, urb->pipe,
-				usb_pipeout(urb->pipe))) == 0))
+				usb_endpoint_maxp(&urb->ep->desc)) == 0))
 			urb_state = US_BULK0;
 		while (data_len > 4096) {
 			td = fhci_td_fill(fhci, urb, urb_priv, ed, cnt,
@@ -808,8 +805,8 @@ void fhci_queue_urb(struct fhci_hcd *fhci, struct urb *urb)
 		break;
 	case FHCI_TF_CTRL:
 		ed->dev_addr = usb_pipedevice(urb->pipe);
-		ed->max_pkt_size = usb_maxpacket(urb->dev, urb->pipe,
-			usb_pipeout(urb->pipe));
+		ed->max_pkt_size = usb_endpoint_maxp(&urb->ep->desc);
+
 		/* setup stage */
 		td = fhci_td_fill(fhci, urb, urb_priv, ed, cnt++, FHCI_TA_SETUP,
 			USB_TD_TOGGLE_DATA0, urb->setup_packet, 8, 0, 0, true);

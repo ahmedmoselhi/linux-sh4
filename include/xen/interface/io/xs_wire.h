@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Details of the "wire" protocol between Xen Store Daemon and client
  * library or guest kernel.
@@ -26,7 +27,11 @@ enum xsd_sockmsg_type
     XS_SET_PERMS,
     XS_WATCH_EVENT,
     XS_ERROR,
-    XS_IS_DOMAIN_INTRODUCED
+    XS_IS_DOMAIN_INTRODUCED,
+    XS_RESUME,
+    XS_SET_TARGET,
+    XS_RESTRICT,
+    XS_RESET_WATCHES,
 };
 
 #define XS_WRITE_NONE "NONE"

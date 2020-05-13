@@ -1,23 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  *  pnx833x.h: Register mappings for PNX833X.
  *
  *  Copyright 2008 NXP Semiconductors
  *	  Chris Steel <chris.steel@nxp.com>
  *    Daniel Laird <daniel.j.laird@nxp.com>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 #ifndef __ASM_MIPS_MACH_PNX833X_PNX833X_H
 #define __ASM_MIPS_MACH_PNX833X_PNX833X_H
@@ -73,7 +60,7 @@
 
 
 #define PNX833X_RESET_CONTROL		PNX833X_REG(0x8004)
-#define PNX833X_RESET_CONTROL_2 	PNX833X_REG(0x8014)
+#define PNX833X_RESET_CONTROL_2		PNX833X_REG(0x8014)
 
 #define PNX833X_PIC_REG(offs)		PNX833X_REG(0x01000 + (offs))
 #define PNX833X_PIC_INT_PRIORITY	PNX833X_PIC_REG(0x0)
@@ -82,10 +69,10 @@
 #define PNX833X_PIC_INT_SRC_INT_SRC_SHIFT	3
 #define PNX833X_PIC_INT_REG(irq)	PNX833X_PIC_REG(0x10 + 4*(irq))
 
-#define PNX833X_CLOCK_CPUCP_CTL	PNX833X_REG(0x9228)
+#define PNX833X_CLOCK_CPUCP_CTL PNX833X_REG(0x9228)
 #define PNX833X_CLOCK_CPUCP_CTL_EXIT_RESET	0x00000002ul	/* bit 1 */
 #define PNX833X_CLOCK_CPUCP_CTL_DIV_CLOCK_MASK	0x00000018ul	/* bits 4:3 */
-#define PNX833X_CLOCK_CPUCP_CTL_DIV_CLOCK_SHIFT	3
+#define PNX833X_CLOCK_CPUCP_CTL_DIV_CLOCK_SHIFT 3
 
 #define PNX8335_CLOCK_PLL_CPU_CTL		PNX833X_REG(0x9020)
 #define PNX8335_CLOCK_PLL_CPU_CTL_FREQ_MASK	0x1f
@@ -149,7 +136,7 @@
 #define PNX833X_MIU_SEL0_SPI_MODE_ENABLE_MASK	(1 << 14)
 #define PNX833X_MIU_SEL0_SPI_MODE_ENABLE_SHIFT	14
 
-#define PNX833X_MIU_SEL0_BURST_MODE_ENABLE_MASK	(1 << 7)
+#define PNX833X_MIU_SEL0_BURST_MODE_ENABLE_MASK (1 << 7)
 #define PNX833X_MIU_SEL0_BURST_MODE_ENABLE_SHIFT	7
 
 #define PNX833X_MIU_SEL0_BURST_PAGE_LEN_MASK	(0xF << 9)
@@ -160,10 +147,10 @@
 #define PNX833X_MIU_CONFIG_SPI_OPCODE_MASK	(0xFF << 3)
 #define PNX833X_MIU_CONFIG_SPI_OPCODE_SHIFT	3
 
-#define PNX833X_MIU_CONFIG_SPI_DATA_ENABLE_MASK	(1 << 2)
+#define PNX833X_MIU_CONFIG_SPI_DATA_ENABLE_MASK (1 << 2)
 #define PNX833X_MIU_CONFIG_SPI_DATA_ENABLE_SHIFT	2
 
-#define PNX833X_MIU_CONFIG_SPI_ADDR_ENABLE_MASK	(1 << 1)
+#define PNX833X_MIU_CONFIG_SPI_ADDR_ENABLE_MASK (1 << 1)
 #define PNX833X_MIU_CONFIG_SPI_ADDR_ENABLE_SHIFT	1
 
 #define PNX833X_MIU_CONFIG_SPI_SYNC_MASK	(1 << 0)

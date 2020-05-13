@@ -1,23 +1,25 @@
-hostprogs-y	:= modpost mk_elfconfig
-hostprogs-$(CONFIG_LKM_ELF_HASH) += ksymhash
-always		:= $(hostprogs-y) empty.o
+# SPDX-License-Identifier: GPL-2.0
+OBJECT_FILES_NON_STANDARD := y
 
-modpost-objs	:= modpost.o file2alias.o sumversion.o elflib.o
-ksymhash-objs	:= ksymhash.o elflib.o
+hostprogs	:= modpost mk_elfconfig
+always-y	:= $(hostprogs) empty.o
 
-ifdef CONFIG_LKM_ELF_HASH
-modpost-objs += ktablehash.o
-HOSTCFLAGS_ktablehash.o += -DCONFIG_LKM_ELF_HASH
-HOSTCFLAGS_modpost.o += -DCONFIG_LKM_ELF_HASH
-endif
+modpost-objs	:= modpost.o file2alias.o sumversion.o
+
+devicetable-offsets-file := devicetable-offsets.h
+
+$(obj)/$(devicetable-offsets-file): $(obj)/devicetable-offsets.s FORCE
+	$(call filechk,offsets,__DEVICETABLE_OFFSETS_H__)
+
+targets += $(devicetable-offsets-file) devicetable-offsets.s
 
 # dependencies on generated files need to be listed explicitly
 
 $(obj)/modpost.o $(obj)/file2alias.o $(obj)/sumversion.o: $(obj)/elfconfig.h
-$(obj)/ksymhash.o $(obj)/ktablehash.o $(obj)/elflib.o: $(obj)/elfconfig.h
+$(obj)/file2alias.o: $(obj)/$(devicetable-offsets-file)
 
 quiet_cmd_elfconfig = MKELF   $@
-      cmd_elfconfig = $(obj)/mk_elfconfig $(ARCH) < $< > $@
+      cmd_elfconfig = $(obj)/mk_elfconfig < $< > $@
 
 $(obj)/elfconfig.h: $(obj)/empty.o $(obj)/mk_elfconfig FORCE
 	$(call if_changed,elfconfig)

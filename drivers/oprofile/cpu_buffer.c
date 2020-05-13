@@ -23,6 +23,8 @@
 #include <linux/oprofile.h>
 #include <linux/errno.h>
 
+#include <asm/ptrace.h>
+
 #include "event_buffer.h"
 #include "cpu_buffer.h"
 #include "buffer_sync.h"
@@ -30,8 +32,8 @@
 
 #define OP_BUFFER_FLAGS	0
 
-static struct ring_buffer *op_ring_buffer;
-DEFINE_PER_CPU(struct oprofile_cpu_buffer, cpu_buffer);
+static struct trace_buffer *op_ring_buffer;
+DEFINE_PER_CPU(struct oprofile_cpu_buffer, op_cpu_buffer);
 
 static void wq_sync_buffer(struct work_struct *work);
 
@@ -45,8 +47,7 @@ unsigned long oprofile_get_cpu_buffer_size(void)
 
 void oprofile_cpu_buffer_inc_smpl_lost(void)
 {
-	struct oprofile_cpu_buffer *cpu_buf
-		= &__get_cpu_var(cpu_buffer);
+	struct oprofile_cpu_buffer *cpu_buf = this_cpu_ptr(&op_cpu_buffer);
 
 	cpu_buf->sample_lost_overflow++;
 }
@@ -73,7 +74,7 @@ int alloc_cpu_buffers(void)
 		goto fail;
 
 	for_each_possible_cpu(i) {
-		struct oprofile_cpu_buffer *b = &per_cpu(cpu_buffer, i);
+		struct oprofile_cpu_buffer *b = &per_cpu(op_cpu_buffer, i);
 
 		b->last_task = NULL;
 		b->last_is_kernel = -1;
@@ -100,7 +101,7 @@ void start_cpu_work(void)
 	work_enabled = 1;
 
 	for_each_online_cpu(i) {
-		struct oprofile_cpu_buffer *b = &per_cpu(cpu_buffer, i);
+		struct oprofile_cpu_buffer *b = &per_cpu(op_cpu_buffer, i);
 
 		/*
 		 * Spread the work by 1 jiffy per cpu so they dont all
@@ -112,14 +113,18 @@ void start_cpu_work(void)
 
 void end_cpu_work(void)
 {
+	work_enabled = 0;
+}
+
+void flush_cpu_work(void)
+{
 	int i;
 
-	work_enabled = 0;
-
 	for_each_online_cpu(i) {
-		struct oprofile_cpu_buffer *b = &per_cpu(cpu_buffer, i);
+		struct oprofile_cpu_buffer *b = &per_cpu(op_cpu_buffer, i);
 
-		cancel_delayed_work(&b->work);
+		/* these works are per-cpu, no need for flush_sync */
+		flush_delayed_work(&b->work);
 	}
 }
 
@@ -158,7 +163,7 @@ int op_cpu_buffer_write_commit(struct op_entry *entry)
 struct op_sample *op_cpu_buffer_read_entry(struct op_entry *entry, int cpu)
 {
 	struct ring_buffer_event *e;
-	e = ring_buffer_consume(op_ring_buffer, cpu, NULL);
+	e = ring_buffer_consume(op_ring_buffer, cpu, NULL, NULL);
 	if (!e)
 		return NULL;
 
@@ -255,8 +260,10 @@ op_add_sample(struct oprofile_cpu_buffer *cpu_buf,
  */
 static int
 log_sample(struct oprofile_cpu_buffer *cpu_buf, unsigned long pc,
-	   unsigned long backtrace, int is_kernel, unsigned long event)
+	   unsigned long backtrace, int is_kernel, unsigned long event,
+	   struct task_struct *task)
 {
+	struct task_struct *tsk = task ? task : current;
 	cpu_buf->sample_received++;
 
 	if (pc == ESCAPE_CODE) {
@@ -264,7 +271,7 @@ log_sample(struct oprofile_cpu_buffer *cpu_buf, unsigned long pc,
 		return 0;
 	}
 
-	if (op_add_code(cpu_buf, backtrace, is_kernel, current))
+	if (op_add_code(cpu_buf, backtrace, is_kernel, tsk))
 		goto fail;
 
 	if (op_add_sample(cpu_buf, pc, event))
@@ -289,16 +296,17 @@ static inline void oprofile_end_trace(struct oprofile_cpu_buffer *cpu_buf)
 
 static inline void
 __oprofile_add_ext_sample(unsigned long pc, struct pt_regs * const regs,
-			  unsigned long event, int is_kernel)
+			  unsigned long event, int is_kernel,
+			  struct task_struct *task)
 {
-	struct oprofile_cpu_buffer *cpu_buf = &__get_cpu_var(cpu_buffer);
+	struct oprofile_cpu_buffer *cpu_buf = this_cpu_ptr(&op_cpu_buffer);
 	unsigned long backtrace = oprofile_backtrace_depth;
 
 	/*
 	 * if log_sample() fail we can't backtrace since we lost the
 	 * source of this event
 	 */
-	if (!log_sample(cpu_buf, pc, backtrace, is_kernel, event))
+	if (!log_sample(cpu_buf, pc, backtrace, is_kernel, event, task))
 		/* failed */
 		return;
 
@@ -310,18 +318,33 @@ __oprofile_add_ext_sample(unsigned long pc, struct pt_regs * const regs,
 	oprofile_end_trace(cpu_buf);
 }
 
+void oprofile_add_ext_hw_sample(unsigned long pc, struct pt_regs * const regs,
+				unsigned long event, int is_kernel,
+				struct task_struct *task)
+{
+	__oprofile_add_ext_sample(pc, regs, event, is_kernel, task);
+}
+
 void oprofile_add_ext_sample(unsigned long pc, struct pt_regs * const regs,
 			     unsigned long event, int is_kernel)
 {
-	__oprofile_add_ext_sample(pc, regs, event, is_kernel);
+	__oprofile_add_ext_sample(pc, regs, event, is_kernel, NULL);
 }
 
 void oprofile_add_sample(struct pt_regs * const regs, unsigned long event)
 {
-	int is_kernel = !user_mode(regs);
-	unsigned long pc = profile_pc(regs);
+	int is_kernel;
+	unsigned long pc;
 
-	__oprofile_add_ext_sample(pc, regs, event, is_kernel);
+	if (likely(regs)) {
+		is_kernel = !user_mode(regs);
+		pc = profile_pc(regs);
+	} else {
+		is_kernel = 0;    /* This value will not be used */
+		pc = ESCAPE_CODE; /* as this causes an early return. */
+	}
+
+	__oprofile_add_ext_sample(pc, regs, event, is_kernel, NULL);
 }
 
 /*
@@ -336,7 +359,7 @@ oprofile_write_reserve(struct op_entry *entry, struct pt_regs * const regs,
 {
 	struct op_sample *sample;
 	int is_kernel = !user_mode(regs);
-	struct oprofile_cpu_buffer *cpu_buf = &__get_cpu_var(cpu_buffer);
+	struct oprofile_cpu_buffer *cpu_buf = this_cpu_ptr(&op_cpu_buffer);
 
 	cpu_buf->sample_received++;
 
@@ -391,13 +414,13 @@ int oprofile_write_commit(struct op_entry *entry)
 
 void oprofile_add_pc(unsigned long pc, int is_kernel, unsigned long event)
 {
-	struct oprofile_cpu_buffer *cpu_buf = &__get_cpu_var(cpu_buffer);
-	log_sample(cpu_buf, pc, 0, is_kernel, event);
+	struct oprofile_cpu_buffer *cpu_buf = this_cpu_ptr(&op_cpu_buffer);
+	log_sample(cpu_buf, pc, 0, is_kernel, event, NULL);
 }
 
 void oprofile_add_trace(unsigned long pc)
 {
-	struct oprofile_cpu_buffer *cpu_buf = &__get_cpu_var(cpu_buffer);
+	struct oprofile_cpu_buffer *cpu_buf = this_cpu_ptr(&op_cpu_buffer);
 
 	if (!cpu_buf->tracing)
 		return;
@@ -430,14 +453,9 @@ static void wq_sync_buffer(struct work_struct *work)
 {
 	struct oprofile_cpu_buffer *b =
 		container_of(work, struct oprofile_cpu_buffer, work.work);
-	if (b->cpu != smp_processor_id()) {
-		printk(KERN_DEBUG "WQ on CPU%d, prefer CPU%d\n",
-		       smp_processor_id(), b->cpu);
-
-		if (!cpu_online(b->cpu)) {
-			cancel_delayed_work(&b->work);
-			return;
-		}
+	if (b->cpu != smp_processor_id() && !cpu_online(b->cpu)) {
+		cancel_delayed_work(&b->work);
+		return;
 	}
 	sync_buffer(b->cpu);
 

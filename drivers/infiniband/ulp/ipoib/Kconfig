@@ -1,13 +1,13 @@
+# SPDX-License-Identifier: GPL-2.0-only
 config INFINIBAND_IPOIB
 	tristate "IP-over-InfiniBand"
 	depends on NETDEVICES && INET && (IPV6 || IPV6=n)
-	select INET_LRO
 	---help---
 	  Support for the IP-over-InfiniBand protocol (IPoIB). This
 	  transports IP packets over InfiniBand so you can use your IB
 	  device as a fancy NIC.
 
-	  See Documentation/infiniband/ipoib.txt for more information
+	  See Documentation/infiniband/ipoib.rst for more information
 
 config INFINIBAND_IPOIB_CM
 	bool "IP-over-InfiniBand Connected Mode support"
@@ -25,7 +25,7 @@ config INFINIBAND_IPOIB_CM
 	  unless you limit mtu for these destinations to 2044.
 
 config INFINIBAND_IPOIB_DEBUG
-	bool "IP-over-InfiniBand debugging" if EMBEDDED
+	bool "IP-over-InfiniBand debugging" if EXPERT
 	depends on INFINIBAND_IPOIB
 	default y
 	---help---

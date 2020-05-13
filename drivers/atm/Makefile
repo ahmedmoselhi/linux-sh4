@@ -1,8 +1,9 @@
+# SPDX-License-Identifier: GPL-2.0
 #
 # Makefile for the Linux network (ATM) device drivers.
 #
 
-fore_200e-objs	:= fore200e.o
+fore_200e-y	:= fore200e.o
 
 obj-$(CONFIG_ATM_ZATM)		+= zatm.o uPD98402.o
 obj-$(CONFIG_ATM_NICSTAR)	+= nicstar.o

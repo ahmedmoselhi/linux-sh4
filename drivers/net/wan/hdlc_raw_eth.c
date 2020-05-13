@@ -1,16 +1,14 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Generic HDLC support routines for Linux
  * HDLC Ethernet emulation support
  *
  * Copyright (C) 2002-2006 Krzysztof Halasa <khc@pm.waw.pl>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of version 2 of the GNU General Public License
- * as published by the Free Software Foundation.
  */
 
 #include <linux/errno.h>
 #include <linux/etherdevice.h>
+#include <linux/gfp.h>
 #include <linux/hdlc.h>
 #include <linux/if_arp.h>
 #include <linux/inetdevice.h>
@@ -21,7 +19,6 @@
 #include <linux/poll.h>
 #include <linux/rtnetlink.h>
 #include <linux/skbuff.h>
-#include <linux/slab.h>
 
 static int raw_eth_ioctl(struct net_device *dev, struct ifreq *ifr);
 
@@ -57,7 +54,8 @@ static int raw_eth_ioctl(struct net_device *dev, struct ifreq *ifr)
 	const size_t size = sizeof(raw_hdlc_proto);
 	raw_hdlc_proto new_settings;
 	hdlc_device *hdlc = dev_to_hdlc(dev);
-	int result, old_qlen;
+	unsigned int old_qlen;
+	int result;
 
 	switch (ifr->ifr_settings.type) {
 	case IF_GET_PROTO:
@@ -101,7 +99,8 @@ static int raw_eth_ioctl(struct net_device *dev, struct ifreq *ifr)
 		old_qlen = dev->tx_queue_len;
 		ether_setup(dev);
 		dev->tx_queue_len = old_qlen;
-		random_ether_addr(dev->dev_addr);
+		eth_hw_addr_random(dev);
+		call_netdevice_notifiers(NETDEV_POST_TYPE_CHANGE, dev);
 		netif_dormant_off(dev);
 		return 0;
 	}

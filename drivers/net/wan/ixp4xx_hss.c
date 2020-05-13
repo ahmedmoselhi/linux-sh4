@@ -1,13 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Intel IXP4xx HSS (synchronous serial port) driver for Linux
  *
  * Copyright (C) 2007-2008 Krzysztof Hałasa <khc@pm.waw.pl>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of version 2 of the GNU General Public License
- * as published by the Free Software Foundation.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
+#include <linux/module.h>
 #include <linux/bitops.h>
 #include <linux/cdev.h>
 #include <linux/dma-mapping.h>
@@ -17,9 +17,11 @@
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/platform_device.h>
+#include <linux/platform_data/wan_ixp4xx_hss.h>
 #include <linux/poll.h>
-#include <mach/npe.h>
-#include <mach/qmgr.h>
+#include <linux/slab.h>
+#include <linux/soc/ixp4xx/npe.h>
+#include <linux/soc/ixp4xx/qmgr.h>
 
 #define DEBUG_DESC		0
 #define DEBUG_RX		0
@@ -177,7 +179,7 @@
  *
  * The resulting average clock frequency (assuming 33.333 MHz oscillator) is:
  * freq = 66.666 MHz / (A + (B + 1) / (C + 1))
- * minumum freq = 66.666 MHz / (A + 1)
+ * minimum freq = 66.666 MHz / (A + 1)
  * maximum freq = 66.666 MHz / A
  *
  * Example: A = 2, B = 2, C = 7, CLOCK_CR register = 2 << 22 | 2 << 12 | 7
@@ -229,7 +231,7 @@
 #define PKT_PIPE_MODE_WRITE		0x57
 
 /* HDLC packet status values - desc->status */
-#define ERR_SHUTDOWN		1 /* stop or shutdown occurrance */
+#define ERR_SHUTDOWN		1 /* stop or shutdown occurrence */
 #define ERR_HDLC_ALIGN		2 /* HDLC alignment error */
 #define ERR_HDLC_FCS		3 /* HDLC Frame Check Sum error */
 #define ERR_RXFREE_Q_EMPTY	4 /* RX-free queue became empty while receiving
@@ -242,7 +244,7 @@
 #ifdef __ARMEB__
 typedef struct sk_buff buffer_t;
 #define free_buffer dev_kfree_skb
-#define free_buffer_irq dev_kfree_skb_irq
+#define free_buffer_irq dev_consume_skb_irq
 #else
 typedef void buffer_t;
 #define free_buffer kfree
@@ -257,7 +259,7 @@ struct port {
 	struct hss_plat_info *plat;
 	buffer_t *rx_buff_tab[RX_DESCS], *tx_buff_tab[TX_DESCS];
 	struct desc *desc_tab;	/* coherent */
-	u32 desc_tab_phys;
+	dma_addr_t desc_tab_phys;
 	unsigned int id;
 	unsigned int clock_type, clock_rate, loopback;
 	unsigned int initialized, carrier;
@@ -357,9 +359,8 @@ static void hss_npe_send(struct port *port, struct msg *msg, const char* what)
 {
 	u32 *val = (u32*)msg;
 	if (npe_send_message(port->npe, msg, what)) {
-		printk(KERN_CRIT "HSS-%i: unable to send command [%08X:%08X]"
-		       " to %s\n", port->id, val[0], val[1],
-		       npe_name(port->npe));
+		pr_crit("HSS-%i: unable to send command [%08X:%08X] to %s\n",
+			port->id, val[0], val[1], npe_name(port->npe));
 		BUG();
 	}
 }
@@ -395,7 +396,7 @@ static void hss_config(struct port *port)
 	msg.cmd = PORT_CONFIG_WRITE;
 	msg.hss_port = port->id;
 	msg.index = HSS_CONFIG_TX_PCR;
-	msg.data32 = PCR_FRM_SYNC_OUTPUT_RISING | PCR_MSB_ENDIAN |
+	msg.data32 = PCR_FRM_PULSE_DISABLED | PCR_MSB_ENDIAN |
 		PCR_TX_DATA_ENABLE | PCR_SOF_NO_FBIT;
 	if (port->clock_type == CLOCK_INT)
 		msg.data32 |= PCR_SYNC_CLK_DIR_OUTPUT;
@@ -446,8 +447,7 @@ static void hss_config(struct port *port)
 	if (npe_recv_message(port->npe, &msg, "HSS_LOAD_CONFIG") ||
 	    /* HSS_LOAD_CONFIG for port #1 returns port_id = #4 */
 	    msg.cmd != PORT_CONFIG_LOAD || msg.data32) {
-		printk(KERN_CRIT "HSS-%i: HSS_LOAD_CONFIG failed\n",
-		       port->id);
+		pr_crit("HSS-%i: HSS_LOAD_CONFIG failed\n", port->id);
 		BUG();
 	}
 
@@ -476,8 +476,7 @@ static u32 hss_get_status(struct port *port)
 	msg.hss_port = port->id;
 	hss_npe_send(port, &msg, "PORT_ERROR_READ");
 	if (npe_recv_message(port->npe, &msg, "PORT_ERROR_READ")) {
-		printk(KERN_CRIT "HSS-%i: unable to read HSS status\n",
-		       port->id);
+		pr_crit("HSS-%i: unable to read HSS status\n", port->id);
 		BUG();
 	}
 
@@ -735,9 +734,8 @@ static int hss_hdlc_poll(struct napi_struct *napi, int budget)
 			dev->stats.rx_errors++;
 			break;
 		default:	/* FIXME - remove printk */
-			printk(KERN_ERR "%s: hss_hdlc_poll: status 0x%02X"
-			       " errors %u\n", dev->name, desc->status,
-			       desc->error_count);
+			netdev_err(dev, "hss_hdlc_poll: status 0x%02X errors %u\n",
+				   desc->status, desc->error_count);
 			dev->stats.rx_errors++;
 		}
 
@@ -861,7 +859,7 @@ static int hss_hdlc_xmit(struct sk_buff *skb, struct net_device *dev)
 		dev->stats.tx_dropped++;
 		return NETDEV_TX_OK;
 	}
-	memcpy_swab32(mem, (u32 *)((int)skb->data & ~3), bytes / 4);
+	memcpy_swab32(mem, (u32 *)((uintptr_t)skb->data & ~3), bytes / 4);
 	dev_kfree_skb(skb);
 #endif
 
@@ -890,7 +888,6 @@ static int hss_hdlc_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	wmb();
 	queue_put_desc(queue_ids[port->id].tx, tx_desc_phys(port, n), desc);
-	dev->trans_start = jiffies;
 
 	if (qmgr_stat_below_low_watermark(txreadyq)) { /* empty */
 #if DEBUG_TX
@@ -970,10 +967,12 @@ static int init_hdlc_queues(struct port *port)
 {
 	int i;
 
-	if (!ports_open)
-		if (!(dma_pool = dma_pool_create(DRV_NAME, NULL,
-						 POOL_ALLOC_SIZE, 32, 0)))
+	if (!ports_open) {
+		dma_pool = dma_pool_create(DRV_NAME, &port->netdev->dev,
+					   POOL_ALLOC_SIZE, 32, 0);
+		if (!dma_pool)
 			return -ENOMEM;
+	}
 
 	if (!(port->desc_tab = dma_pool_alloc(dma_pool, GFP_KERNEL,
 					      &port->desc_tab_phys)))
@@ -1127,8 +1126,8 @@ static int hss_hdlc_close(struct net_device *dev)
 		buffs--;
 
 	if (buffs)
-		printk(KERN_CRIT "%s: unable to drain RX queue, %i buffer(s)"
-		       " left in NPE\n", dev->name, buffs);
+		netdev_crit(dev, "unable to drain RX queue, %i buffer(s) left in NPE\n",
+			    buffs);
 
 	buffs = TX_DESCS;
 	while (queue_get_desc(queue_ids[port->id].tx, port, 1) >= 0)
@@ -1143,8 +1142,8 @@ static int hss_hdlc_close(struct net_device *dev)
 	} while (++i < MAX_CLOSE_WAIT);
 
 	if (buffs)
-		printk(KERN_CRIT "%s: unable to drain TX queue, %i buffer(s) "
-		       "left in NPE\n", dev->name, buffs);
+		netdev_crit(dev, "unable to drain TX queue, %i buffer(s) left in NPE\n",
+			    buffs);
 #if DEBUG_CLOSE
 	if (!buffs)
 		printk(KERN_DEBUG "Draining TX queues took %i cycles\n", i);
@@ -1184,14 +1183,14 @@ static int hss_hdlc_attach(struct net_device *dev, unsigned short encoding,
 	}
 }
 
-static u32 check_clock(u32 rate, u32 a, u32 b, u32 c,
+static u32 check_clock(u32 timer_freq, u32 rate, u32 a, u32 b, u32 c,
 		       u32 *best, u32 *best_diff, u32 *reg)
 {
 	/* a is 10-bit, b is 10-bit, c is 12-bit */
 	u64 new_rate;
 	u32 new_diff;
 
-	new_rate = ixp4xx_timer_freq * (u64)(c + 1);
+	new_rate = timer_freq * (u64)(c + 1);
 	do_div(new_rate, a * (c + 1) + b + 1);
 	new_diff = abs((u32)new_rate - rate);
 
@@ -1203,40 +1202,43 @@ static u32 check_clock(u32 rate, u32 a, u32 b, u32 c,
 	return new_diff;
 }
 
-static void find_best_clock(u32 rate, u32 *best, u32 *reg)
+static void find_best_clock(u32 timer_freq, u32 rate, u32 *best, u32 *reg)
 {
 	u32 a, b, diff = 0xFFFFFFFF;
 
-	a = ixp4xx_timer_freq / rate;
+	a = timer_freq / rate;
 
 	if (a > 0x3FF) { /* 10-bit value - we can go as slow as ca. 65 kb/s */
-		check_clock(rate, 0x3FF, 1, 1, best, &diff, reg);
+		check_clock(timer_freq, rate, 0x3FF, 1, 1, best, &diff, reg);
 		return;
 	}
 	if (a == 0) { /* > 66.666 MHz */
 		a = 1; /* minimum divider is 1 (a = 0, b = 1, c = 1) */
-		rate = ixp4xx_timer_freq;
+		rate = timer_freq;
 	}
 
-	if (rate * a == ixp4xx_timer_freq) { /* don't divide by 0 later */
-		check_clock(rate, a - 1, 1, 1, best, &diff, reg);
+	if (rate * a == timer_freq) { /* don't divide by 0 later */
+		check_clock(timer_freq, rate, a - 1, 1, 1, best, &diff, reg);
 		return;
 	}
 
 	for (b = 0; b < 0x400; b++) {
 		u64 c = (b + 1) * (u64)rate;
-		do_div(c, ixp4xx_timer_freq - rate * a);
+		do_div(c, timer_freq - rate * a);
 		c--;
 		if (c >= 0xFFF) { /* 12-bit - no need to check more 'b's */
 			if (b == 0 && /* also try a bit higher rate */
-			    !check_clock(rate, a - 1, 1, 1, best, &diff, reg))
+			    !check_clock(timer_freq, rate, a - 1, 1, 1, best,
+					 &diff, reg))
 				return;
-			check_clock(rate, a, b, 0xFFF, best, &diff, reg);
+			check_clock(timer_freq, rate, a, b, 0xFFF, best,
+				    &diff, reg);
 			return;
 		}
-		if (!check_clock(rate, a, b, c, best, &diff, reg))
+		if (!check_clock(timer_freq, rate, a, b, c, best, &diff, reg))
 			return;
-		if (!check_clock(rate, a, b, c + 1, best, &diff, reg))
+		if (!check_clock(timer_freq, rate, a, b, c + 1, best, &diff,
+				 reg))
 			return;
 	}
 }
@@ -1287,8 +1289,9 @@ static int hss_hdlc_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 
 		port->clock_type = clk; /* Update settings */
 		if (clk == CLOCK_INT)
-			find_best_clock(new_line.clock_rate, &port->clock_rate,
-					&port->clock_reg);
+			find_best_clock(port->plat->timer_freq,
+					new_line.clock_rate,
+					&port->clock_rate, &port->clock_reg);
 		else {
 			port->clock_rate = 0;
 			port->clock_reg = CLK42X_SPEED_2048KHZ;
@@ -1320,12 +1323,11 @@ static int hss_hdlc_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 static const struct net_device_ops hss_hdlc_ops = {
 	.ndo_open       = hss_hdlc_open,
 	.ndo_stop       = hss_hdlc_close,
-	.ndo_change_mtu = hdlc_change_mtu,
 	.ndo_start_xmit = hdlc_start_xmit,
 	.ndo_do_ioctl   = hss_hdlc_ioctl,
 };
 
-static int __devinit hss_init_one(struct platform_device *pdev)
+static int hss_init_one(struct platform_device *pdev)
 {
 	struct port *port;
 	struct net_device *dev;
@@ -1364,7 +1366,7 @@ static int __devinit hss_init_one(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, port);
 
-	printk(KERN_INFO "%s: HSS-%i\n", dev->name, port->id);
+	netdev_info(dev, "initialized\n");
 	return 0;
 
 err_free_netdev:
@@ -1376,14 +1378,13 @@ err_free:
 	return err;
 }
 
-static int __devexit hss_remove_one(struct platform_device *pdev)
+static int hss_remove_one(struct platform_device *pdev)
 {
 	struct port *port = platform_get_drvdata(pdev);
 
 	unregister_hdlc_device(port->netdev);
 	free_netdev(port->netdev);
 	npe_release(port->npe);
-	platform_set_drvdata(pdev, NULL);
 	kfree(port);
 	return 0;
 }

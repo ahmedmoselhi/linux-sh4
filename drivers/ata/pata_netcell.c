@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *    pata_netcell.c - Netcell PATA driver
  *
@@ -7,7 +8,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
-#include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <linux/device.h>
@@ -57,7 +57,6 @@ static struct ata_port_operations netcell_ops = {
 
 static int netcell_init_one (struct pci_dev *pdev, const struct pci_device_id *ent)
 {
-	static int printed_version;
 	static const struct ata_port_info info = {
 		.flags		= ATA_FLAG_SLAVE_POSS,
 		/* Actually we don't really care about these as the
@@ -70,9 +69,7 @@ static int netcell_init_one (struct pci_dev *pdev, const struct pci_device_id *e
 	const struct ata_port_info *port_info[] = { &info, NULL };
 	int rc;
 
-	if (!printed_version++)
-		dev_printk(KERN_DEBUG, &pdev->dev,
-			   "version " DRV_VERSION "\n");
+	ata_print_version_once(&pdev->dev, DRV_VERSION);
 
 	rc = pcim_enable_device(pdev);
 	if (rc)
@@ -82,7 +79,7 @@ static int netcell_init_one (struct pci_dev *pdev, const struct pci_device_id *e
 	ata_pci_bmdma_clear_simplex(pdev);
 
 	/* And let the library code do the work */
-	return ata_pci_sff_init_one(pdev, port_info, &netcell_sht, NULL);
+	return ata_pci_bmdma_init_one(pdev, port_info, &netcell_sht, NULL, 0);
 }
 
 static const struct pci_device_id netcell_pci_tbl[] = {
@@ -96,28 +93,16 @@ static struct pci_driver netcell_pci_driver = {
 	.id_table		= netcell_pci_tbl,
 	.probe			= netcell_init_one,
 	.remove			= ata_pci_remove_one,
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend		= ata_pci_device_suspend,
 	.resume			= ata_pci_device_resume,
 #endif
 };
 
-static int __init netcell_init(void)
-{
-	return pci_register_driver(&netcell_pci_driver);
-}
-
-static void __exit netcell_exit(void)
-{
-	pci_unregister_driver(&netcell_pci_driver);
-}
-
-module_init(netcell_init);
-module_exit(netcell_exit);
+module_pci_driver(netcell_pci_driver);
 
 MODULE_AUTHOR("Alan Cox");
 MODULE_DESCRIPTION("SCSI low-level driver for Netcell PATA RAID");
 MODULE_LICENSE("GPL");
 MODULE_DEVICE_TABLE(pci, netcell_pci_tbl);
 MODULE_VERSION(DRV_VERSION);
-

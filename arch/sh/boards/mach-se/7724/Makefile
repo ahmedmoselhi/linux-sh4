@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-2.0
 #
 # Makefile for the HITACHI UL SolutionEngine 7724 specific parts of the kernel
 #
@@ -7,4 +8,4 @@
 #
 #
 
-obj-y	 := setup.o irq.o
+obj-y	 := setup.o irq.o sdram.o

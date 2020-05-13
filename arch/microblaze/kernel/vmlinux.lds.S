@@ -8,29 +8,39 @@
  * for more details.
  */
 
-OUTPUT_FORMAT("elf32-microblaze", "elf32-microblaze", "elf32-microblaze")
 OUTPUT_ARCH(microblaze)
-ENTRY(_start)
+ENTRY(microblaze_start)
 
+#define RO_EXCEPTION_TABLE_ALIGN	16
+
+#include <asm/cache.h>
 #include <asm/page.h>
 #include <asm-generic/vmlinux.lds.h>
 #include <asm/thread_info.h>
 
+#ifdef __MICROBLAZEEL__
+jiffies = jiffies_64;
+#else
 jiffies = jiffies_64 + 4;
+#endif
 
 SECTIONS {
 	. = CONFIG_KERNEL_START;
-	_start = CONFIG_KERNEL_BASE_ADDR;
+	microblaze_start = CONFIG_KERNEL_BASE_ADDR;
 	.text : AT(ADDR(.text) - LOAD_OFFSET) {
 		_text = . ;
 		_stext = . ;
-		*(.text .text.*)
+		HEAD_TEXT
+		TEXT_TEXT
 		*(.fixup)
-               EXIT_TEXT
-               EXIT_CALL
+		EXIT_TEXT
+		EXIT_CALL
 		SCHED_TEXT
+		CPUIDLE_TEXT
 		LOCK_TEXT
 		KPROBES_TEXT
+		IRQENTRY_TEXT
+		SOFTIRQENTRY_TEXT
 		. = ALIGN (4) ;
 		_etext = . ;
 	}
@@ -39,13 +49,12 @@ SECTIONS {
 	__fdt_blob : AT(ADDR(__fdt_blob) - LOAD_OFFSET) {
 		_fdt_start = . ;		/* place for fdt blob */
 		*(__fdt_blob) ;			/* Any link-placed DTB */
-	        . = _fdt_start + 0x4000;	/* Pad up to 16kbyte */
+	        . = _fdt_start + 0x10000;	/* Pad up to 64kbyte */
 		_fdt_end = . ;
 	}
 
 	. = ALIGN(16);
-	RODATA
-	EXCEPTION_TABLE(16)
+	RO_DATA(4096)
 
 	/*
 	 * sdata2 section can go anywhere, but must be word aligned
@@ -53,7 +62,7 @@ SECTIONS {
 	 */
 	.sdata2 : AT(ADDR(.sdata2) - LOAD_OFFSET) {
 		_ssrw = .;
-		. = ALIGN(4096); /* page aligned when MMU used - origin 0x8 */
+		. = ALIGN(PAGE_SIZE); /* page aligned when MMU used */
 		*(.sdata2)
 	. = ALIGN(8);
 	_essrw = .;
@@ -62,13 +71,8 @@ SECTIONS {
 	}
 
 	_sdata = . ;
-	RW_DATA_SECTION(32, PAGE_SIZE, THREAD_SIZE)
+	RW_DATA(32, PAGE_SIZE, THREAD_SIZE)
 	_edata = . ;
-
-	/* Reserve some low RAM for r0 based memory references */
-	. = ALIGN(0x4) ;
-	r0_ram = . ;
-	. = . +  4096;	/* a page should be enough */
 
 	/* Under the microblaze ABI, .sdata and .sbss must be contiguous */
 	. = ALIGN(8);
@@ -86,6 +90,9 @@ SECTIONS {
 		_KERNEL_SDA_BASE_ = _ssro + (_ssro_size / 2) ;
 	}
 
+	PERCPU_SECTION(L1_CACHE_BYTES)
+
+	. = ALIGN(PAGE_SIZE);
 	__init_begin = .;
 
 	INIT_TEXT_SECTION(PAGE_SIZE)
@@ -113,36 +120,23 @@ SECTIONS {
 		CON_INITCALL
 	}
 
-	SECURITY_INIT
-
 	__init_end_before_initramfs = .;
 
-	.init.ramfs ALIGN(4096) : AT(ADDR(.init.ramfs) - LOAD_OFFSET) {
-		__initramfs_start = .;
-		*(.init.ramfs)
-		__initramfs_end = .;
-		. = ALIGN(4);
-		LONG(0);
-/*
- * FIXME this can break initramfs for MMU.
- * Pad init.ramfs up to page boundary,
- * so that __init_end == __bss_start. This will make image.elf
- * consistent with the image.bin
- */
-		/* . = ALIGN(4096); */
+	.init.ramfs : AT(ADDR(.init.ramfs) - LOAD_OFFSET) {
+		INIT_RAM_FS
 	}
+
 	__init_end = .;
 
-	.bss ALIGN (4096) : AT(ADDR(.bss) - LOAD_OFFSET) {
+	.bss ALIGN (PAGE_SIZE) : AT(ADDR(.bss) - LOAD_OFFSET) {
 		/* page aligned when MMU used */
 		__bss_start = . ;
 			*(.bss*)
 			*(COMMON)
 		. = ALIGN (4) ;
 		__bss_stop = . ;
-		_ebss = . ;
 	}
-	. = ALIGN(4096);
+	. = ALIGN(PAGE_SIZE);
 	_end = .;
 
 	DISCARDS

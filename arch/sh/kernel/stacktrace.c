@@ -1,30 +1,19 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * arch/sh/kernel/stacktrace.c
  *
  * Stack trace management functions
  *
  *  Copyright (C) 2006 - 2008  Paul Mundt
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 #include <linux/sched.h>
+#include <linux/sched/debug.h>
 #include <linux/stacktrace.h>
 #include <linux/thread_info.h>
 #include <linux/module.h>
 #include <asm/unwinder.h>
 #include <asm/ptrace.h>
 #include <asm/stacktrace.h>
-
-static void save_stack_warning(void *data, char *msg)
-{
-}
-
-static void
-save_stack_warning_symbol(void *data, char *msg, unsigned long symbol)
-{
-}
 
 static int save_stack_stack(void *data, char *name)
 {
@@ -51,8 +40,6 @@ static void save_stack_address(void *data, unsigned long addr, int reliable)
 }
 
 static const struct stacktrace_ops save_stack_ops = {
-	.warning = save_stack_warning,
-	.warning_symbol = save_stack_warning_symbol,
 	.stack = save_stack_stack,
 	.address = save_stack_address,
 };
@@ -60,12 +47,8 @@ static const struct stacktrace_ops save_stack_ops = {
 void save_stack_trace(struct stack_trace *trace)
 {
 	unsigned long *sp = (unsigned long *)current_stack_pointer;
-	unsigned long *fp = (unsigned long *)current_frame_pointer;
 
-	unwind_stack(current, NULL, sp,  fp, (unsigned long)save_stack_trace,
-			&save_stack_ops, trace);
-	if (trace->nr_entries < trace->max_entries)
-		trace->entries[trace->nr_entries++] = ULONG_MAX;
+	unwind_stack(current, NULL, sp,  &save_stack_ops, trace);
 }
 EXPORT_SYMBOL_GPL(save_stack_trace);
 
@@ -90,8 +73,6 @@ save_stack_address_nosched(void *data, unsigned long addr, int reliable)
 }
 
 static const struct stacktrace_ops save_stack_ops_nosched = {
-	.warning = save_stack_warning,
-	.warning_symbol = save_stack_warning_symbol,
 	.stack = save_stack_stack,
 	.address = save_stack_address_nosched,
 };
@@ -99,16 +80,7 @@ static const struct stacktrace_ops save_stack_ops_nosched = {
 void save_stack_trace_tsk(struct task_struct *tsk, struct stack_trace *trace)
 {
 	unsigned long *sp = (unsigned long *)tsk->thread.sp;
-	unsigned long *fp;
-#ifdef CONFIG_FRAME_POINTER
-	fp = (unsigned long *)sp[0];
-#else
-	fp = 0;
-#endif
 
-	unwind_stack(current, NULL, sp, fp, tsk->thread.pc,
-			&save_stack_ops_nosched, trace);
-	if (trace->nr_entries < trace->max_entries)
-		trace->entries[trace->nr_entries++] = ULONG_MAX;
+	unwind_stack(current, NULL, sp,  &save_stack_ops_nosched, trace);
 }
 EXPORT_SYMBOL_GPL(save_stack_trace_tsk);

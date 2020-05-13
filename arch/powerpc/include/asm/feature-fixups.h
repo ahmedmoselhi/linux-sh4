@@ -1,11 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 #ifndef __ASM_POWERPC_FEATURE_FIXUPS_H
 #define __ASM_POWERPC_FEATURE_FIXUPS_H
 
+#include <asm/asm-const.h>
+
 /*
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 
 /*
@@ -19,11 +18,11 @@
  */
 #if defined(CONFIG_PPC64) && !defined(__powerpc64__)
 /* 64 bits kernel, 32 bits code (ie. vdso32) */
-#define FTR_ENTRY_LONG		.llong
+#define FTR_ENTRY_LONG		.8byte
 #define FTR_ENTRY_OFFSET	.long 0xffffffff; .long
 #elif defined(CONFIG_PPC64)
-#define FTR_ENTRY_LONG		.llong
-#define FTR_ENTRY_OFFSET	.llong
+#define FTR_ENTRY_LONG		.8byte
+#define FTR_ENTRY_OFFSET	.8byte
 #else
 #define FTR_ENTRY_LONG		.long
 #define FTR_ENTRY_OFFSET	.long
@@ -37,18 +36,21 @@ label##2:						\
 	.align 2;					\
 label##3:
 
-#define MAKE_FTR_SECTION_ENTRY(msk, val, label, sect)	\
-label##4:						\
-	.popsection;					\
-	.pushsection sect,"a";				\
-	.align 3;					\
-label##5:					       	\
-	FTR_ENTRY_LONG msk;				\
-	FTR_ENTRY_LONG val;				\
-	FTR_ENTRY_OFFSET label##1b-label##5b;		\
-	FTR_ENTRY_OFFSET label##2b-label##5b;	 	\
-	FTR_ENTRY_OFFSET label##3b-label##5b;		\
-	FTR_ENTRY_OFFSET label##4b-label##5b;	 	\
+#define MAKE_FTR_SECTION_ENTRY(msk, val, label, sect)		\
+label##4:							\
+	.popsection;						\
+	.pushsection sect,"a";					\
+	.align 3;						\
+label##5:							\
+	FTR_ENTRY_LONG msk;					\
+	FTR_ENTRY_LONG val;					\
+	FTR_ENTRY_OFFSET label##1b-label##5b;			\
+	FTR_ENTRY_OFFSET label##2b-label##5b;			\
+	FTR_ENTRY_OFFSET label##3b-label##5b;			\
+	FTR_ENTRY_OFFSET label##4b-label##5b;			\
+	.ifgt (label##4b- label##3b)-(label##2b- label##1b);	\
+	.error "Feature section else case larger than body";	\
+	.endif;							\
 	.popsection;
 
 
@@ -62,6 +64,9 @@ label##5:					       	\
 
 #define END_FTR_SECTION(msk, val)		\
 	END_FTR_SECTION_NESTED(msk, val, 97)
+
+#define END_FTR_SECTION_NESTED_IFSET(msk, label)	\
+	END_FTR_SECTION_NESTED((msk), (msk), label)
 
 #define END_FTR_SECTION_IFSET(msk)	END_FTR_SECTION((msk), (msk))
 #define END_FTR_SECTION_IFCLR(msk)	END_FTR_SECTION((msk), 0)
@@ -91,6 +96,9 @@ label##5:					       	\
 
 #define END_MMU_FTR_SECTION(msk, val)		\
 	END_MMU_FTR_SECTION_NESTED(msk, val, 97)
+
+#define END_MMU_FTR_SECTION_NESTED_IFSET(msk, label)	\
+	END_MMU_FTR_SECTION_NESTED((msk), (msk), label)
 
 #define END_MMU_FTR_SECTION_IFSET(msk)	END_MMU_FTR_SECTION((msk), (msk))
 #define END_MMU_FTR_SECTION_IFCLR(msk)	END_MMU_FTR_SECTION((msk), 0)
@@ -143,6 +151,19 @@ label##5:					       	\
 
 #ifndef __ASSEMBLY__
 
+#define ASM_FTR_IF(section_if, section_else, msk, val)	\
+	stringify_in_c(BEGIN_FTR_SECTION)			\
+	section_if "; "						\
+	stringify_in_c(FTR_SECTION_ELSE)			\
+	section_else "; "					\
+	stringify_in_c(ALT_FTR_SECTION_END((msk), (val)))
+
+#define ASM_FTR_IFSET(section_if, section_else, msk)	\
+	ASM_FTR_IF(section_if, section_else, (msk), (msk))
+
+#define ASM_FTR_IFCLR(section_if, section_else, msk)	\
+	ASM_FTR_IF(section_if, section_else, (msk), 0)
+
 #define ASM_MMU_FTR_IF(section_if, section_else, msk, val)	\
 	stringify_in_c(BEGIN_MMU_FTR_SECTION)			\
 	section_if "; "						\
@@ -165,7 +186,65 @@ label##2:						\
 	.pushsection sect,"a";				\
 	.align 2;					\
 label##3:					       	\
-	.long label##1b-label##3b;			\
+	FTR_ENTRY_OFFSET label##1b-label##3b;		\
 	.popsection;
+
+#define STF_ENTRY_BARRIER_FIXUP_SECTION			\
+953:							\
+	.pushsection __stf_entry_barrier_fixup,"a";	\
+	.align 2;					\
+954:							\
+	FTR_ENTRY_OFFSET 953b-954b;			\
+	.popsection;
+
+#define STF_EXIT_BARRIER_FIXUP_SECTION			\
+955:							\
+	.pushsection __stf_exit_barrier_fixup,"a";	\
+	.align 2;					\
+956:							\
+	FTR_ENTRY_OFFSET 955b-956b;			\
+	.popsection;
+
+#define RFI_FLUSH_FIXUP_SECTION				\
+951:							\
+	.pushsection __rfi_flush_fixup,"a";		\
+	.align 2;					\
+952:							\
+	FTR_ENTRY_OFFSET 951b-952b;			\
+	.popsection;
+
+#define NOSPEC_BARRIER_FIXUP_SECTION			\
+953:							\
+	.pushsection __barrier_nospec_fixup,"a";	\
+	.align 2;					\
+954:							\
+	FTR_ENTRY_OFFSET 953b-954b;			\
+	.popsection;
+
+#define START_BTB_FLUSH_SECTION			\
+955:							\
+
+#define END_BTB_FLUSH_SECTION			\
+956:							\
+	.pushsection __btb_flush_fixup,"a";	\
+	.align 2;							\
+957:						\
+	FTR_ENTRY_OFFSET 955b-957b;			\
+	FTR_ENTRY_OFFSET 956b-957b;			\
+	.popsection;
+
+#ifndef __ASSEMBLY__
+#include <linux/types.h>
+
+extern long stf_barrier_fallback;
+extern long __start___stf_entry_barrier_fixup, __stop___stf_entry_barrier_fixup;
+extern long __start___stf_exit_barrier_fixup, __stop___stf_exit_barrier_fixup;
+extern long __start___rfi_flush_fixup, __stop___rfi_flush_fixup;
+extern long __start___barrier_nospec_fixup, __stop___barrier_nospec_fixup;
+extern long __start__btb_flush_fixup, __stop__btb_flush_fixup;
+
+void apply_feature_fixups(void);
+void setup_feature_keys(void);
+#endif
 
 #endif /* __ASM_POWERPC_FEATURE_FIXUPS_H */

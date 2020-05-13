@@ -15,7 +15,7 @@
  *
  *	WARNING: This driver has only been testen on Apple's
  *	1.25 MHz Dual G4 (March 03). It is tuned for a CPU
- *	temperatur around 57 C.
+ *	temperature around 57 C.
  *
  *   Copyright (C) 2003, 2004 Samuel Rydh (samuel@ibrium.se)
  *
@@ -34,7 +34,6 @@
 #include <linux/delay.h>
 #include <linux/sched.h>
 #include <linux/i2c.h>
-#include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/kthread.h>
 #include <linux/of_platform.h>
@@ -42,18 +41,17 @@
 #include <asm/prom.h>
 #include <asm/machdep.h>
 #include <asm/io.h>
-#include <asm/system.h>
 #include <asm/sections.h>
 #include <asm/macio.h>
 
-#define LOG_TEMP		0			/* continously log temperature */
+#define LOG_TEMP		0			/* continuously log temperature */
 
 static struct {
 	volatile int		running;
 	struct task_struct	*poll_task;
 	
 	struct mutex	 	lock;
-	struct of_device	*of_dev;
+	struct platform_device	*of_dev;
 	
 	struct i2c_client	*thermostat;
 	struct i2c_client	*fan;
@@ -302,9 +300,11 @@ static int control_loop(void *dummy)
 /*	i2c probing and setup						*/
 /************************************************************************/
 
-static int
-do_attach( struct i2c_adapter *adapter )
+static void do_attach(struct i2c_adapter *adapter)
 {
+	struct i2c_board_info info = { };
+	struct device_node *np;
+
 	/* scan 0x48-0x4f (DS1775) and 0x2c-2x2f (ADM1030) */
 	static const unsigned short scan_ds1775[] = {
 		0x48, 0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e, 0x4f,
@@ -315,25 +315,24 @@ do_attach( struct i2c_adapter *adapter )
 		I2C_CLIENT_END
 	};
 
-	if( strncmp(adapter->name, "uni-n", 5) )
-		return 0;
+	if (x.running || strncmp(adapter->name, "uni-n", 5))
+		return;
 
-	if( !x.running ) {
-		struct i2c_board_info info;
-
-		memset(&info, 0, sizeof(struct i2c_board_info));
-		strlcpy(info.type, "therm_ds1775", I2C_NAME_SIZE);
-		i2c_new_probed_device(adapter, &info, scan_ds1775);
-
-		strlcpy(info.type, "therm_adm1030", I2C_NAME_SIZE);
-		i2c_new_probed_device(adapter, &info, scan_adm1030);
-
-		if( x.thermostat && x.fan ) {
-			x.running = 1;
-			x.poll_task = kthread_run(control_loop, NULL, "g4fand");
-		}
+	np = of_find_compatible_node(adapter->dev.of_node, NULL, "MAC,ds1775");
+	if (np) {
+		of_node_put(np);
+	} else {
+		strlcpy(info.type, "MAC,ds1775", I2C_NAME_SIZE);
+		i2c_new_scanned_device(adapter, &info, scan_ds1775, NULL);
 	}
-	return 0;
+
+	np = of_find_compatible_node(adapter->dev.of_node, NULL, "MAC,adm1030");
+	if (np) {
+		of_node_put(np);
+	} else {
+		strlcpy(info.type, "MAC,adm1030", I2C_NAME_SIZE);
+		i2c_new_scanned_device(adapter, &info, scan_adm1030, NULL);
+	}
 }
 
 static int
@@ -406,15 +405,17 @@ out:
 enum chip { ds1775, adm1030 };
 
 static const struct i2c_device_id therm_windtunnel_id[] = {
-	{ "therm_ds1775", ds1775 },
-	{ "therm_adm1030", adm1030 },
+	{ "MAC,ds1775", ds1775 },
+	{ "MAC,adm1030", adm1030 },
 	{ }
 };
+MODULE_DEVICE_TABLE(i2c, therm_windtunnel_id);
 
 static int
 do_probe(struct i2c_client *cl, const struct i2c_device_id *id)
 {
 	struct i2c_adapter *adapter = cl->adapter;
+	int ret = 0;
 
 	if( !i2c_check_functionality(adapter, I2C_FUNC_SMBUS_WORD_DATA
 				     | I2C_FUNC_SMBUS_WRITE_BYTE) )
@@ -422,18 +423,25 @@ do_probe(struct i2c_client *cl, const struct i2c_device_id *id)
 
 	switch (id->driver_data) {
 	case adm1030:
-		return attach_fan( cl );
+		ret = attach_fan(cl);
+		break;
 	case ds1775:
-		return attach_thermostat(cl);
+		ret = attach_thermostat(cl);
+		break;
 	}
-	return 0;
+
+	if (!x.running && x.thermostat && x.fan) {
+		x.running = 1;
+		x.poll_task = kthread_run(control_loop, NULL, "g4fand");
+	}
+
+	return ret;
 }
 
 static struct i2c_driver g4fan_driver = {
 	.driver = {
 		.name	= "therm_windtunnel",
 	},
-	.attach_adapter = do_attach,
 	.probe		= do_probe,
 	.remove		= do_remove,
 	.id_table	= therm_windtunnel_id,
@@ -444,28 +452,52 @@ static struct i2c_driver g4fan_driver = {
 /*	initialization / cleanup					*/
 /************************************************************************/
 
-static int
-therm_of_probe( struct of_device *dev, const struct of_device_id *match )
+static int therm_of_probe(struct platform_device *dev)
 {
-	return i2c_add_driver( &g4fan_driver );
+	struct i2c_adapter *adap;
+	int ret, i = 0;
+
+	adap = i2c_get_adapter(0);
+	if (!adap)
+		return -EPROBE_DEFER;
+
+	ret = i2c_add_driver(&g4fan_driver);
+	if (ret) {
+		i2c_put_adapter(adap);
+		return ret;
+	}
+
+	/* We assume Macs have consecutive I2C bus numbers starting at 0 */
+	while (adap) {
+		do_attach(adap);
+		if (x.running)
+			return 0;
+		i2c_put_adapter(adap);
+		adap = i2c_get_adapter(++i);
+	}
+
+	return -ENODEV;
 }
 
 static int
-therm_of_remove( struct of_device *dev )
+therm_of_remove( struct platform_device *dev )
 {
 	i2c_del_driver( &g4fan_driver );
 	return 0;
 }
 
-static struct of_device_id therm_of_match[] = {{
+static const struct of_device_id therm_of_match[] = {{
 	.name		= "fan",
 	.compatible	= "adm1030"
     }, {}
 };
+MODULE_DEVICE_TABLE(of, therm_of_match);
 
-static struct of_platform_driver therm_of_driver = {
-	.name		= "temperature",
-	.match_table	= therm_of_match,
+static struct platform_driver therm_of_driver = {
+	.driver = {
+		.name = "temperature",
+		.of_match_table = therm_of_match,
+	},
 	.probe		= therm_of_probe,
 	.remove		= therm_of_remove,
 };
@@ -490,7 +522,7 @@ g4fan_init( void )
 	info = of_get_property(np, "thermal-info", NULL);
 	of_node_put(np);
 
-	if( !info || !machine_is_compatible("PowerMac3,6") )
+	if( !info || !of_machine_is_compatible("PowerMac3,6") )
 		return -ENODEV;
 
 	if( info->id != 3 ) {
@@ -507,14 +539,14 @@ g4fan_init( void )
 		return -ENODEV;
 	}
 
-	of_register_platform_driver( &therm_of_driver );
+	platform_driver_register( &therm_of_driver );
 	return 0;
 }
 
 static void __exit
 g4fan_exit( void )
 {
-	of_unregister_platform_driver( &therm_of_driver );
+	platform_driver_unregister( &therm_of_driver );
 
 	if( x.of_dev )
 		of_device_unregister( x.of_dev );

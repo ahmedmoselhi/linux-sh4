@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* ds.c: Domain Services driver for Logical Domains
  *
  * Copyright (C) 2007, 2008 David S. Miller <davem@davemloft.net>
@@ -9,24 +10,28 @@
 #include <linux/string.h>
 #include <linux/slab.h>
 #include <linux/sched.h>
+#include <linux/sched/clock.h>
 #include <linux/delay.h>
 #include <linux/mutex.h>
 #include <linux/kthread.h>
 #include <linux/reboot.h>
 #include <linux/cpu.h>
 
+#include <asm/hypervisor.h>
 #include <asm/ldc.h>
 #include <asm/vio.h>
 #include <asm/mdesc.h>
 #include <asm/head.h>
 #include <asm/irq.h>
 
+#include "kernel.h"
+
 #define DRV_MODULE_NAME		"ds"
 #define PFX DRV_MODULE_NAME	": "
 #define DRV_MODULE_VERSION	"1.0"
 #define DRV_MODULE_RELDATE	"Jul 11, 2007"
 
-static char version[] __devinitdata =
+static char version[] =
 	DRV_MODULE_NAME ".c:v" DRV_MODULE_VERSION " (" DRV_MODULE_RELDATE ")\n";
 MODULE_AUTHOR("David S. Miller (davem@davemloft.net)");
 MODULE_DESCRIPTION("Sun LDOM domain services driver");
@@ -497,7 +502,7 @@ static void dr_cpu_init_response(struct ds_data *resp, u64 req_num,
 	tag->num_records = ncpus;
 
 	i = 0;
-	for_each_cpu_mask(cpu, *mask) {
+	for_each_cpu(cpu, mask) {
 		ent[i].cpu = cpu;
 		ent[i].result = DR_CPU_RES_OK;
 		ent[i].stat = default_stat;
@@ -525,16 +530,14 @@ static void dr_cpu_mark(struct ds_data *resp, int cpu, int ncpus,
 	}
 }
 
-static int __cpuinit dr_cpu_configure(struct ds_info *dp,
-				      struct ds_cap_state *cp,
-				      u64 req_num,
-				      cpumask_t *mask)
+static int dr_cpu_configure(struct ds_info *dp, struct ds_cap_state *cp,
+			    u64 req_num, cpumask_t *mask)
 {
 	struct ds_data *resp;
 	int resp_len, ncpus, cpu;
 	unsigned long flags;
 
-	ncpus = cpus_weight(*mask);
+	ncpus = cpumask_weight(mask);
 	resp_len = dr_cpu_size_response(ncpus);
 	resp = kzalloc(resp_len, GFP_KERNEL);
 	if (!resp)
@@ -547,12 +550,12 @@ static int __cpuinit dr_cpu_configure(struct ds_info *dp,
 	mdesc_populate_present_mask(mask);
 	mdesc_fill_in_cpu_data(mask);
 
-	for_each_cpu_mask(cpu, *mask) {
+	for_each_cpu(cpu, mask) {
 		int err;
 
 		printk(KERN_INFO "ds-%llu: Starting cpu %d...\n",
 		       dp->id, cpu);
-		err = cpu_up(cpu);
+		err = add_cpu(cpu);
 		if (err) {
 			__u32 res = DR_CPU_RES_FAILURE;
 			__u32 stat = DR_CPU_STAT_UNCONFIGURED;
@@ -593,7 +596,7 @@ static int dr_cpu_unconfigure(struct ds_info *dp,
 	int resp_len, ncpus, cpu;
 	unsigned long flags;
 
-	ncpus = cpus_weight(*mask);
+	ncpus = cpumask_weight(mask);
 	resp_len = dr_cpu_size_response(ncpus);
 	resp = kzalloc(resp_len, GFP_KERNEL);
 	if (!resp)
@@ -603,12 +606,12 @@ static int dr_cpu_unconfigure(struct ds_info *dp,
 			     resp_len, ncpus, mask,
 			     DR_CPU_STAT_UNCONFIGURED);
 
-	for_each_cpu_mask(cpu, *mask) {
+	for_each_cpu(cpu, mask) {
 		int err;
 
 		printk(KERN_INFO "ds-%llu: Shutting down cpu %d...\n",
 		       dp->id, cpu);
-		err = cpu_down(cpu);
+		err = remove_cpu(cpu);
 		if (err)
 			dr_cpu_mark(resp, cpu, ncpus,
 				    DR_CPU_RES_FAILURE,
@@ -624,9 +627,8 @@ static int dr_cpu_unconfigure(struct ds_info *dp,
 	return 0;
 }
 
-static void __cpuinit dr_cpu_data(struct ds_info *dp,
-				  struct ds_cap_state *cp,
-				  void *buf, int len)
+static void dr_cpu_data(struct ds_info *dp, struct ds_cap_state *cp, void *buf,
+			int len)
 {
 	struct ds_data *data = buf;
 	struct dr_cpu_tag *tag = (struct dr_cpu_tag *) (data + 1);
@@ -649,13 +651,13 @@ static void __cpuinit dr_cpu_data(struct ds_info *dp,
 
 	purge_dups(cpu_list, tag->num_records);
 
-	cpus_clear(mask);
+	cpumask_clear(&mask);
 	for (i = 0; i < tag->num_records; i++) {
 		if (cpu_list[i] == CPU_SENTINEL)
 			continue;
 
 		if (cpu_list[i] < nr_cpu_ids)
-			cpu_set(cpu_list[i], mask);
+			cpumask_set_cpu(cpu_list[i], &mask);
 	}
 
 	if (tag->type == DR_CPU_CONFIGURE)
@@ -780,6 +782,16 @@ void ldom_set_var(const char *var, const char *value)
 		char  *base, *p;
 		int msg_len, loops;
 
+		if (strlen(var) + strlen(value) + 2 >
+		    sizeof(pkt) - sizeof(pkt.header)) {
+			printk(KERN_ERR PFX
+				"contents length: %zu, which more than max: %lu,"
+				"so could not set (%s) variable to (%s).\n",
+				strlen(var) + strlen(value) + 2,
+				sizeof(pkt) - sizeof(pkt.header), var, value);
+			return;
+		}
+
 		memset(&pkt, 0, sizeof(pkt));
 		pkt.header.data.tag.type = DS_DATA;
 		pkt.header.data.handle = cp->handle;
@@ -828,18 +840,32 @@ void ldom_set_var(const char *var, const char *value)
 	}
 }
 
+static char full_boot_str[256] __attribute__((aligned(32)));
+static int reboot_data_supported;
+
 void ldom_reboot(const char *boot_command)
 {
 	/* Don't bother with any of this if the boot_command
 	 * is empty.
 	 */
 	if (boot_command && strlen(boot_command)) {
-		char full_boot_str[256];
+		unsigned long len;
 
-		strcpy(full_boot_str, "boot ");
-		strcpy(full_boot_str + strlen("boot "), boot_command);
+		snprintf(full_boot_str, sizeof(full_boot_str), "boot %s",
+			 boot_command);
+		len = strlen(full_boot_str);
 
-		ldom_set_var("reboot-command", full_boot_str);
+		if (reboot_data_supported) {
+			unsigned long ra = kimage_addr_to_ra(full_boot_str);
+			unsigned long hv_ret;
+
+			hv_ret = sun4v_reboot_data_set(ra, len);
+			if (hv_ret != HV_EOK)
+				pr_err("SUN4V: Unable to set reboot data "
+				       "hv_ret=%lu\n", hv_ret);
+		} else {
+			ldom_set_var("reboot-command", full_boot_str);
+		}
 	}
 	sun4v_mach_sir();
 }
@@ -851,7 +877,7 @@ void ldom_power_off(void)
 
 static void ds_conn_reset(struct ds_info *dp)
 {
-	printk(KERN_ERR "ds-%llu: ds_conn_reset() from %p\n",
+	printk(KERN_ERR "ds-%llu: ds_conn_reset() from %ps\n",
 	       dp->id, __builtin_return_address(0));
 }
 
@@ -884,7 +910,7 @@ static int register_services(struct ds_info *dp)
 		pbuf.req.handle = cp->handle;
 		pbuf.req.major = 1;
 		pbuf.req.minor = 0;
-		strcpy(pbuf.req.svc_id, cp->service_id);
+		strcpy(pbuf.id_buf, cp->service_id);
 
 		err = __ds_send(lp, &pbuf, msg_len);
 		if (err > 0)
@@ -1129,8 +1155,7 @@ static void ds_event(void *arg, int event)
 	spin_unlock_irqrestore(&ds_lock, flags);
 }
 
-static int __devinit ds_probe(struct vio_dev *vdev,
-			      const struct vio_device_id *id)
+static int ds_probe(struct vio_dev *vdev, const struct vio_device_id *id)
 {
 	static int ds_version_printed;
 	struct ldc_channel_config ds_cfg = {
@@ -1164,13 +1189,11 @@ static int __devinit ds_probe(struct vio_dev *vdev,
 
 	dp->rcv_buf_len = 4096;
 
-	dp->ds_states = kzalloc(sizeof(ds_states_template),
-				GFP_KERNEL);
+	dp->ds_states = kmemdup(ds_states_template,
+				sizeof(ds_states_template), GFP_KERNEL);
 	if (!dp->ds_states)
 		goto out_free_rcv_buf;
 
-	memcpy(dp->ds_states, ds_states_template,
-	       sizeof(ds_states_template));
 	dp->num_ds_states = ARRAY_SIZE(ds_states_template);
 
 	for (i = 0; i < dp->num_ds_states; i++)
@@ -1179,14 +1202,14 @@ static int __devinit ds_probe(struct vio_dev *vdev,
 	ds_cfg.tx_irq = vdev->tx_irq;
 	ds_cfg.rx_irq = vdev->rx_irq;
 
-	lp = ldc_alloc(vdev->channel_id, &ds_cfg, dp);
+	lp = ldc_alloc(vdev->channel_id, &ds_cfg, dp, "DS");
 	if (IS_ERR(lp)) {
 		err = PTR_ERR(lp);
 		goto out_free_ds_states;
 	}
 	dp->lp = lp;
 
-	err = ldc_bind(lp, "DS");
+	err = ldc_bind(lp);
 	if (err)
 		goto out_free_ldc;
 
@@ -1218,7 +1241,7 @@ static int ds_remove(struct vio_dev *vdev)
 	return 0;
 }
 
-static struct vio_device_id __initdata ds_match[] = {
+static const struct vio_device_id ds_match[] = {
 	{
 		.type = "domain-services-port",
 	},
@@ -1229,14 +1252,21 @@ static struct vio_driver ds_driver = {
 	.id_table	= ds_match,
 	.probe		= ds_probe,
 	.remove		= ds_remove,
-	.driver		= {
-		.name	= "ds",
-		.owner	= THIS_MODULE,
-	}
+	.name		= "ds",
 };
 
 static int __init ds_init(void)
 {
+	unsigned long hv_ret, major, minor;
+
+	if (tlb_type == hypervisor) {
+		hv_ret = sun4v_get_version(HV_GRP_REBOOT_DATA, &major, &minor);
+		if (hv_ret == HV_EOK) {
+			pr_info("SUN4V: Reboot data supported (maj=%lu,min=%lu).\n",
+				major, minor);
+			reboot_data_supported = 1;
+		}
+	}
 	kthread_run(ds_thread, NULL, "kldomd");
 
 	return vio_register_driver(&ds_driver);

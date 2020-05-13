@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * MPC8360E RDK Device Tree Source
  *
@@ -5,11 +6,6 @@
  * Copyright 2007-2008 MontaVista Software, Inc.
  *
  * Author: Anton Vorontsov <avorontsov@ru.mvista.com>
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  */
 
 /dts-v1/;
@@ -71,6 +67,13 @@
 			reg = <0x200 0x100>;
 		};
 
+		pmc: power@b00 {
+			compatible = "fsl,mpc8360-pmc", "fsl,mpc8349-pmc";
+			reg = <0xb00 0x100 0xa00 0x100>;
+			interrupts = <80 0x8>;
+			interrupt-parent = <&ipic>;
+		};
+
 		i2c@3000 {
 			#address-cells = <1>;
 			#size-cells = <0>;
@@ -95,7 +98,7 @@
 
 		serial0: serial@4500 {
 			device_type = "serial";
-			compatible = "ns16550";
+			compatible = "fsl,ns16550", "ns16550";
 			reg = <0x4500 0x100>;
 			interrupts = <9 8>;
 			interrupt-parent = <&ipic>;
@@ -105,7 +108,7 @@
 
 		serial1: serial@4600 {
 			device_type = "serial";
-			compatible = "ns16550";
+			compatible = "fsl,ns16550", "ns16550";
 			reg = <0x4600 0x100>;
 			interrupts = <10 8>;
 			interrupt-parent = <&ipic>;
@@ -161,6 +164,7 @@
 			fsl,channel-fifo-len = <24>;
 			fsl,exec-units-mask = <0x7e>;
 			fsl,descriptor-types-mask = <0x01010ebf>;
+			sleep = <&pmc 0x03000000>;
 		};
 
 		ipic: interrupt-controller@700 {
@@ -324,25 +328,21 @@
 				reg = <0x2120 0x18>;
 
 				phy1: ethernet-phy@1 {
-					device_type = "ethernet-phy";
 					compatible = "national,DP83848VV";
 					reg = <1>;
 				};
 
 				phy2: ethernet-phy@2 {
-					device_type = "ethernet-phy";
 					compatible = "broadcom,BCM5481UA2KMLG";
 					reg = <2>;
 				};
 
 				phy3: ethernet-phy@3 {
-					device_type = "ethernet-phy";
 					compatible = "national,DP83848VV";
 					reg = <3>;
 				};
 
 				phy4: ethernet-phy@4 {
-					device_type = "ethernet-phy";
 					compatible = "broadcom,BCM5481UA2KMLG";
 					reg = <4>;
 				};
@@ -412,7 +412,7 @@
 			gpios = <&qe_pio_e 18 0>;
 
 			flash {
-				compatible = "stm,nand512-a";
+				compatible = "st,nand512-a";
 			};
 		};
 
@@ -455,6 +455,7 @@
 				 0xa800 0 0 2 &ipic 20 8
 				 0xa800 0 0 3 &ipic 21 8
 				 0xa800 0 0 4 &ipic 18 8>;
+		sleep = <&pmc 0x00010000>;
 		/* filled by u-boot */
 		bus-range = <0 0>;
 		clock-frequency = <0>;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * linux/arch/sh/boards/renesas/sh7763rdp/irq.c
  *
@@ -5,10 +6,6 @@
  *
  * Copyright (C) 2008 Renesas Solutions Corp.
  * Copyright (C) 2008  Nobuhiro Iwamatsu <iwamatsu.nobuhiro@renesas.com>
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 
 #include <linux/init.h>
@@ -28,18 +25,18 @@
 void __init init_sh7763rdp_IRQ(void)
 {
 	/* GPIO enabled */
-	ctrl_outl(1 << 25, INTC_INT2MSKCR);
+	__raw_writel(1 << 25, INTC_INT2MSKCR);
 
 	/* enable GPIO interrupts */
-	ctrl_outl((ctrl_inl(INTC_INT2PRI7) & 0xFF00FFFF) | 0x000F0000,
+	__raw_writel((__raw_readl(INTC_INT2PRI7) & 0xFF00FFFF) | 0x000F0000,
 		  INTC_INT2PRI7);
 
 	/* USBH enabled */
-	ctrl_outl(1 << 17, INTC_INT2MSKCR1);
+	__raw_writel(1 << 17, INTC_INT2MSKCR1);
 
 	/* GETHER enabled */
-	ctrl_outl(1 << 16, INTC_INT2MSKCR1);
+	__raw_writel(1 << 16, INTC_INT2MSKCR1);
 
 	/* DMAC enabled */
-	ctrl_outl(1 << 8, INTC_INT2MSKCR);
+	__raw_writel(1 << 8, INTC_INT2MSKCR);
 }

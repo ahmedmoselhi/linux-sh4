@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  *  Packet RX/TX history data structures and routines for TFRC-based protocols.
  *
@@ -17,20 +18,6 @@
  *  Arnaldo Carvalho de Melo <acme@conectiva.com.br>.
  *
  *  Copyright (c) 2005 Arnaldo Carvalho de Melo <acme@conectiva.com.br>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #ifndef _DCCP_PKT_HIST_
@@ -40,12 +27,28 @@
 #include <linux/slab.h>
 #include "tfrc.h"
 
-struct tfrc_tx_hist_entry;
+/**
+ *  tfrc_tx_hist_entry  -  Simple singly-linked TX history list
+ *  @next:  next oldest entry (LIFO order)
+ *  @seqno: sequence number of this entry
+ *  @stamp: send time of packet with sequence number @seqno
+ */
+struct tfrc_tx_hist_entry {
+	struct tfrc_tx_hist_entry *next;
+	u64			  seqno;
+	ktime_t			  stamp;
+};
 
-extern int  tfrc_tx_hist_add(struct tfrc_tx_hist_entry **headp, u64 seqno);
-extern void tfrc_tx_hist_purge(struct tfrc_tx_hist_entry **headp);
-extern u32  tfrc_tx_hist_rtt(struct tfrc_tx_hist_entry *head,
-			     const u64 seqno, const ktime_t now);
+static inline struct tfrc_tx_hist_entry *
+	tfrc_tx_hist_find_entry(struct tfrc_tx_hist_entry *head, u64 seqno)
+{
+	while (head != NULL && head->seqno != seqno)
+		head = head->next;
+	return head;
+}
+
+int tfrc_tx_hist_add(struct tfrc_tx_hist_entry **headp, u64 seqno);
+void tfrc_tx_hist_purge(struct tfrc_tx_hist_entry **headp);
 
 /* Subtraction a-b modulo-16, respects circular wrap-around */
 #define SUB16(a, b) (((a) + 16 - (b)) & 0xF)
@@ -123,20 +126,17 @@ static inline bool tfrc_rx_hist_loss_pending(const struct tfrc_rx_hist *h)
 	return h->loss_count > 0;
 }
 
-extern void tfrc_rx_hist_add_packet(struct tfrc_rx_hist *h,
-				    const struct sk_buff *skb, const u64 ndp);
+void tfrc_rx_hist_add_packet(struct tfrc_rx_hist *h, const struct sk_buff *skb,
+			     const u64 ndp);
 
-extern int tfrc_rx_hist_duplicate(struct tfrc_rx_hist *h, struct sk_buff *skb);
+int tfrc_rx_hist_duplicate(struct tfrc_rx_hist *h, struct sk_buff *skb);
 
 struct tfrc_loss_hist;
-extern int  tfrc_rx_handle_loss(struct tfrc_rx_hist *h,
-				struct tfrc_loss_hist *lh,
-				struct sk_buff *skb, const u64 ndp,
-				u32 (*first_li)(struct sock *sk),
-				struct sock *sk);
-extern u32 tfrc_rx_hist_sample_rtt(struct tfrc_rx_hist *h,
-				   const struct sk_buff *skb);
-extern int tfrc_rx_hist_alloc(struct tfrc_rx_hist *h);
-extern void tfrc_rx_hist_purge(struct tfrc_rx_hist *h);
+int tfrc_rx_handle_loss(struct tfrc_rx_hist *h, struct tfrc_loss_hist *lh,
+			struct sk_buff *skb, const u64 ndp,
+			u32 (*first_li)(struct sock *sk), struct sock *sk);
+u32 tfrc_rx_hist_sample_rtt(struct tfrc_rx_hist *h, const struct sk_buff *skb);
+int tfrc_rx_hist_alloc(struct tfrc_rx_hist *h);
+void tfrc_rx_hist_purge(struct tfrc_rx_hist *h);
 
 #endif /* _DCCP_PKT_HIST_ */

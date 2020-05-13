@@ -17,6 +17,7 @@ that support it.  For example, a given bus might look like this:
      |   |-- resource0
      |   |-- resource1
      |   |-- resource2
+     |   |-- revision
      |   |-- rom
      |   |-- subsystem_device
      |   |-- subsystem_vendor
@@ -39,8 +40,9 @@ files, each with their own function.
        local_cpus	   nearby CPU mask (cpumask, ro)
        remove		   remove device from kernel's list (ascii, wo)
        resource		   PCI resource host addresses (ascii, ro)
-       resource0..N	   PCI resource N, if present (binary, mmap)
+       resource0..N	   PCI resource N, if present (binary, mmap, rw[1])
        resource0_wc..N_wc  PCI WC map resource N, if prefetchable (binary, mmap)
+       revision		   PCI revision (ascii, ro)
        rom		   PCI ROM resource, if present (binary, ro)
        subsystem_device	   PCI subsystem device (ascii, ro)
        subsystem_vendor	   PCI subsystem vendor (ascii, ro)
@@ -54,13 +56,16 @@ files, each with their own function.
   binary - file contains binary data
   cpumask - file contains a cpumask type
 
+[1] rw for RESOURCE_IO (I/O port) regions only
+
 The read only files are informational, writes to them will be ignored, with
 the exception of the 'rom' file.  Writable files can be used to perform
 actions on the device (e.g. changing config space, detaching a device).
 mmapable files are available via an mmap of the file at offset 0 and can be
 used to do actual device programming from userspace.  Note that some platforms
 don't support mmapping of certain resources, so be sure to check the return
-value from any attempted mmap.
+value from any attempted mmap.  The most notable of these are I/O port
+resources, which also provide read/write access.
 
 The 'enable' file provides a counter that indicates how many times the device 
 has been enabled.  If the 'enable' file currently returns '4', and a '1' is
@@ -108,9 +113,18 @@ Supporting PCI access on new platforms
 --------------------------------------
 
 In order to support PCI resource mapping as described above, Linux platform
-code must define HAVE_PCI_MMAP and provide a pci_mmap_page_range function.
-Platforms are free to only support subsets of the mmap functionality, but
-useful return codes should be provided.
+code should ideally define ARCH_GENERIC_PCI_MMAP_RESOURCE and use the generic
+implementation of that functionality. To support the historical interface of
+mmap() through files in /proc/bus/pci, platforms may also set HAVE_PCI_MMAP.
+
+Alternatively, platforms which set HAVE_PCI_MMAP may provide their own
+implementation of pci_mmap_page_range() instead of defining
+ARCH_GENERIC_PCI_MMAP_RESOURCE.
+
+Platforms which support write-combining maps of PCI resources must define
+arch_can_pci_mmap_wc() which shall evaluate to non-zero at runtime when
+write-combining is permitted. Platforms which support maps of I/O resources
+define arch_can_pci_mmap_io() similarly.
 
 Legacy resources are protected by the HAVE_PCI_LEGACY define.  Platforms
 wishing to support legacy functionality should define it and provide

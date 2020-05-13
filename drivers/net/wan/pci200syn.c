@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Goramo PCI200SYN synchronous serial card driver for Linux
  *
  * Copyright (C) 2002-2008 Krzysztof Halasa <khc@pm.waw.pl>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of version 2 of the GNU General Public License
- * as published by the Free Software Foundation.
  *
  * For information see <http://www.kernel.org/pub/linux/utils/net/hdlc/>
  *
@@ -13,6 +10,8 @@
  *    Hitachi HD64572 SCA-II User's Manual
  *    PLX Technology Inc. PCI9052 Data Book
  */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -25,7 +24,6 @@
 #include <linux/errno.h>
 #include <linux/init.h>
 #include <linux/ioport.h>
-#include <linux/moduleparam.h>
 #include <linux/netdevice.h>
 #include <linux/hdlc.h>
 #include <linux/pci.h>
@@ -220,7 +218,7 @@ static int pci200_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 		    new_line.clock_type != CLOCK_TXFROMRX &&
 		    new_line.clock_type != CLOCK_INT &&
 		    new_line.clock_type != CLOCK_TXINT)
-		return -EINVAL;	/* No such clock setting */
+			return -EINVAL;	/* No such clock setting */
 
 		if (new_line.loopback != 0 && new_line.loopback != 1)
 			return -EINVAL;
@@ -258,7 +256,6 @@ static void pci200_pci_remove_one(struct pci_dev *pdev)
 
 	pci_release_regions(pdev);
 	pci_disable_device(pdev);
-	pci_set_drvdata(pdev, NULL);
 	if (card->ports[0].netdev)
 		free_netdev(card->ports[0].netdev);
 	if (card->ports[1].netdev)
@@ -269,13 +266,12 @@ static void pci200_pci_remove_one(struct pci_dev *pdev)
 static const struct net_device_ops pci200_ops = {
 	.ndo_open       = pci200_open,
 	.ndo_stop       = pci200_close,
-	.ndo_change_mtu = hdlc_change_mtu,
 	.ndo_start_xmit = hdlc_start_xmit,
 	.ndo_do_ioctl   = pci200_ioctl,
 };
 
-static int __devinit pci200_pci_init_one(struct pci_dev *pdev,
-					 const struct pci_device_id *ent)
+static int pci200_pci_init_one(struct pci_dev *pdev,
+			       const struct pci_device_id *ent)
 {
 	card_t *card;
 	u32 __iomem *p;
@@ -297,7 +293,6 @@ static int __devinit pci200_pci_init_one(struct pci_dev *pdev,
 
 	card = kzalloc(sizeof(card_t), GFP_KERNEL);
 	if (card == NULL) {
-		printk(KERN_ERR "pci200syn: unable to allocate memory\n");
 		pci_release_regions(pdev);
 		pci_disable_device(pdev);
 		return -ENOBUFS;
@@ -306,7 +301,7 @@ static int __devinit pci200_pci_init_one(struct pci_dev *pdev,
 	card->ports[0].netdev = alloc_hdlcdev(&card->ports[0]);
 	card->ports[1].netdev = alloc_hdlcdev(&card->ports[1]);
 	if (!card->ports[0].netdev || !card->ports[1].netdev) {
-		printk(KERN_ERR "pci200syn: unable to allocate memory\n");
+		pr_err("unable to allocate memory\n");
 		pci200_pci_remove_one(pdev);
 		return -ENOMEM;
 	}
@@ -314,7 +309,7 @@ static int __devinit pci200_pci_init_one(struct pci_dev *pdev,
 	if (pci_resource_len(pdev, 0) != PCI200SYN_PLX_SIZE ||
 	    pci_resource_len(pdev, 2) != PCI200SYN_SCA_SIZE ||
 	    pci_resource_len(pdev, 3) < 16384) {
-		printk(KERN_ERR "pci200syn: invalid card EEPROM parameters\n");
+		pr_err("invalid card EEPROM parameters\n");
 		pci200_pci_remove_one(pdev);
 		return -EFAULT;
 	}
@@ -331,7 +326,7 @@ static int __devinit pci200_pci_init_one(struct pci_dev *pdev,
 	if (card->plxbase == NULL ||
 	    card->scabase == NULL ||
 	    card->rambase == NULL) {
-		printk(KERN_ERR "pci200syn: ioremap() failed\n");
+		pr_err("ioremap() failed\n");
 		pci200_pci_remove_one(pdev);
 		return -EFAULT;
 	}
@@ -357,12 +352,12 @@ static int __devinit pci200_pci_init_one(struct pci_dev *pdev,
 	card->buff_offset = 2 * sizeof(pkt_desc) * (card->tx_ring_buffers +
 						    card->rx_ring_buffers);
 
-	printk(KERN_INFO "pci200syn: %u KB RAM at 0x%x, IRQ%u, using %u TX +"
-	       " %u RX packets rings\n", ramsize / 1024, ramphys,
-	       pdev->irq, card->tx_ring_buffers, card->rx_ring_buffers);
+	pr_info("%u KB RAM at 0x%x, IRQ%u, using %u TX + %u RX packets rings\n",
+		ramsize / 1024, ramphys,
+		pdev->irq, card->tx_ring_buffers, card->rx_ring_buffers);
 
 	if (card->tx_ring_buffers < 1) {
-		printk(KERN_ERR "pci200syn: RAM test failed\n");
+		pr_err("RAM test failed\n");
 		pci200_pci_remove_one(pdev);
 		return -EFAULT;
 	}
@@ -373,8 +368,7 @@ static int __devinit pci200_pci_init_one(struct pci_dev *pdev,
 
 	/* Allocate IRQ */
 	if (request_irq(pdev->irq, sca_intr, IRQF_SHARED, "pci200syn", card)) {
-		printk(KERN_WARNING "pci200syn: could not allocate IRQ%d.\n",
-		       pdev->irq);
+		pr_warn("could not allocate IRQ%d\n", pdev->irq);
 		pci200_pci_remove_one(pdev);
 		return -EBUSY;
 	}
@@ -400,15 +394,13 @@ static int __devinit pci200_pci_init_one(struct pci_dev *pdev,
 		port->card = card;
 		sca_init_port(port);
 		if (register_hdlc_device(dev)) {
-			printk(KERN_ERR "pci200syn: unable to register hdlc "
-			       "device\n");
+			pr_err("unable to register hdlc device\n");
 			port->card = NULL;
 			pci200_pci_remove_one(pdev);
 			return -ENOBUFS;
 		}
 
-		printk(KERN_INFO "%s: PCI200SYN channel %d\n",
-		       dev->name, port->chan);
+		netdev_info(dev, "PCI200SYN channel %d\n", port->chan);
 	}
 
 	sca_flush(card);
@@ -417,7 +409,7 @@ static int __devinit pci200_pci_init_one(struct pci_dev *pdev,
 
 
 
-static struct pci_device_id pci200_pci_tbl[] __devinitdata = {
+static const struct pci_device_id pci200_pci_tbl[] = {
 	{ PCI_VENDOR_ID_PLX, PCI_DEVICE_ID_PLX_9050, PCI_VENDOR_ID_PLX,
 	  PCI_DEVICE_ID_PLX_PCI200SYN, 0, 0, 0 },
 	{ 0, }
@@ -435,7 +427,7 @@ static struct pci_driver pci200_pci_driver = {
 static int __init pci200_init_module(void)
 {
 	if (pci_clock_freq < 1000000 || pci_clock_freq > 80000000) {
-		printk(KERN_ERR "pci200syn: Invalid PCI clock frequency\n");
+		pr_err("Invalid PCI clock frequency\n");
 		return -EINVAL;
 	}
 	return pci_register_driver(&pci200_pci_driver);

@@ -1,20 +1,27 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2007-2009 ST-Ericsson AB
- * License terms: GNU General Public License (GPL) version 2
  * AB3100 core access functions
  * Author: Linus Walleij <linus.walleij@stericsson.com>
  */
 
-#include <linux/device.h>
-#include <linux/workqueue.h>
 #include <linux/regulator/machine.h>
+
+struct device;
 
 #ifndef MFD_AB3100_H
 #define MFD_AB3100_H
 
-#define ABUNKNOWN	0
-#define	AB3000		1
-#define	AB3100		2
+
+#define AB3100_P1A	0xc0
+#define AB3100_P1B	0xc1
+#define AB3100_P1C	0xc2
+#define AB3100_P1D	0xc3
+#define AB3100_P1E	0xc4
+#define AB3100_P1F	0xc5
+#define AB3100_P1G	0xc6
+#define AB3100_R2A	0xc7
+#define AB3100_R2B	0xc8
 
 /*
  * AB3100, EVENTA1, A2 and A3 event register flags
@@ -74,7 +81,6 @@
  * @testreg_client: secondary client for test registers
  * @chip_name: name of this chip variant
  * @chip_id: 8 bit chip ID for this chip variant
- * @work: an event handling worker
  * @event_subscribers: event subscribers are listed here
  * @startup_events: a copy of the first reading of the event registers
  * @startup_events_read: whether the first events have been read
@@ -90,9 +96,8 @@ struct ab3100 {
 	struct i2c_client *testreg_client;
 	char chip_name[32];
 	u8 chip_id;
-	struct work_struct work;
 	struct blocking_notifier_head event_subscribers;
-	u32 startup_events;
+	u8 startup_events[3];
 	bool startup_events_read;
 };
 
@@ -115,18 +120,9 @@ struct ab3100_platform_data {
 	int external_voltage;
 };
 
-int ab3100_set_register_interruptible(struct ab3100 *ab3100, u8 reg, u8 regval);
-int ab3100_get_register_interruptible(struct ab3100 *ab3100, u8 reg, u8 *regval);
-int ab3100_get_register_page_interruptible(struct ab3100 *ab3100,
-			     u8 first_reg, u8 *regvals, u8 numregs);
-int ab3100_mask_and_set_register_interruptible(struct ab3100 *ab3100,
-				 u8 reg, u8 andmask, u8 ormask);
-u8 ab3100_get_chip_type(struct ab3100 *ab3100);
 int ab3100_event_register(struct ab3100 *ab3100,
 			  struct notifier_block *nb);
 int ab3100_event_unregister(struct ab3100 *ab3100,
 			    struct notifier_block *nb);
-int ab3100_event_registers_startup_state_get(struct ab3100 *ab3100,
-					     u32 *fatevent);
 
-#endif
+#endif /*  MFD_AB3100_H */

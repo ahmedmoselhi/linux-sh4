@@ -1,20 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * CS5536 PATA support
  * (C) 2007 Martin K. Petersen <mkp@mkp.net>
  * (C) 2009 Bartlomiej Zolnierkiewicz
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
  * Documentation:
  *	Available from AMD web site.
@@ -125,11 +113,11 @@ static u8 cs5536_cable_detect(ide_hwif_t *hwif)
 
 /**
  *	cs5536_set_pio_mode		-	PIO timing setup
+ *	@hwif: ATA port
  *	@drive: ATA device
- *	@pio: PIO mode number
  */
 
-static void cs5536_set_pio_mode(ide_drive_t *drive, const u8 pio)
+static void cs5536_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
 	static const u8 drv_timings[5] = {
 		0x98, 0x55, 0x32, 0x21, 0x20,
@@ -143,15 +131,16 @@ static void cs5536_set_pio_mode(ide_drive_t *drive, const u8 pio)
 		0x99, 0x92, 0x90, 0x22, 0x20,
 	};
 
-	struct pci_dev *pdev = to_pci_dev(drive->hwif->dev);
+	struct pci_dev *pdev = to_pci_dev(hwif->dev);
 	ide_drive_t *pair = ide_get_pair_dev(drive);
 	int cshift = (drive->dn & 1) ? IDE_CAST_D1_SHIFT : IDE_CAST_D0_SHIFT;
 	unsigned long timings = (unsigned long)ide_get_drivedata(drive);
 	u32 cast;
+	const u8 pio = drive->pio_mode - XFER_PIO_0;
 	u8 cmd_pio = pio;
 
 	if (pair)
-		cmd_pio = min(pio, ide_get_best_pio_mode(pair, 255, 4));
+		cmd_pio = min_t(u8, pio, pair->pio_mode - XFER_PIO_0);
 
 	timings &= (IDE_DRV_MASK << 8);
 	timings |= drv_timings[pio];
@@ -172,11 +161,11 @@ static void cs5536_set_pio_mode(ide_drive_t *drive, const u8 pio)
 
 /**
  *	cs5536_set_dma_mode		-	DMA timing setup
+ *	@hwif: ATA port
  *	@drive: ATA device
- *	@mode: DMA mode
  */
 
-static void cs5536_set_dma_mode(ide_drive_t *drive, const u8 mode)
+static void cs5536_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
 	static const u8 udma_timings[6] = {
 		0xc2, 0xc1, 0xc0, 0xc4, 0xc5, 0xc6,
@@ -186,10 +175,11 @@ static void cs5536_set_dma_mode(ide_drive_t *drive, const u8 mode)
 		0x67, 0x21, 0x20,
 	};
 
-	struct pci_dev *pdev = to_pci_dev(drive->hwif->dev);
+	struct pci_dev *pdev = to_pci_dev(hwif->dev);
 	int dshift = (drive->dn & 1) ? IDE_D1_SHIFT : IDE_D0_SHIFT;
 	unsigned long timings = (unsigned long)ide_get_drivedata(drive);
 	u32 etc;
+	const u8 mode = drive->dma_mode;
 
 	cs5536_read(pdev, ETC, &etc);
 
@@ -293,15 +283,7 @@ static struct pci_driver cs5536_pci_driver = {
 	.resume		= ide_pci_resume,
 };
 
-static int __init cs5536_init(void)
-{
-	return pci_register_driver(&cs5536_pci_driver);
-}
-
-static void __exit cs5536_exit(void)
-{
-	pci_unregister_driver(&cs5536_pci_driver);
-}
+module_pci_driver(cs5536_pci_driver);
 
 MODULE_AUTHOR("Martin K. Petersen, Bartlomiej Zolnierkiewicz");
 MODULE_DESCRIPTION("low-level driver for the CS5536 IDE controller");
@@ -310,6 +292,3 @@ MODULE_DEVICE_TABLE(pci, cs5536_pci_tbl);
 
 module_param_named(msr, use_msr, int, 0644);
 MODULE_PARM_DESC(msr, "Force using MSR to configure IDE function (Default: 0)");
-
-module_init(cs5536_init);
-module_exit(cs5536_exit);

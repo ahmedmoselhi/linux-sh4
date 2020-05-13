@@ -1,22 +1,48 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * GIT - The information manager from hell
+ * config.c
+ *
+ * Helper functions for parsing config items.
+ * Originally copied from GIT source.
  *
  * Copyright (C) Linus Torvalds, 2005
  * Copyright (C) Johannes Schindelin, 2005
  *
  */
-#include "util.h"
+#include <errno.h>
+#include <sys/param.h>
 #include "cache.h"
-#include "exec_cmd.h"
+#include "callchain.h"
+#include <subcmd/exec-cmd.h>
+#include "util/event.h"  /* proc_map_timeout */
+#include "util/hist.h"  /* perf_hist_config */
+#include "util/llvm-utils.h"   /* perf_llvm_config */
+#include "build-id.h"
+#include "debug.h"
+#include "config.h"
+#include "debug.h"
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <linux/string.h>
+#include <linux/zalloc.h>
+#include <linux/ctype.h>
 
 #define MAXNAME (256)
+
+#define DEBUG_CACHE_DIR ".debug"
+
+
+char buildid_dir[MAXPATHLEN]; /* root dir for buildid, binary cache */
 
 static FILE *config_file;
 static const char *config_file_name;
 static int config_linenr;
 static int config_file_eof;
+static struct perf_config_set *config_set;
 
-const char *config_exclusive_filename = NULL;
+const char *config_exclusive_filename;
 
 static int get_next_char(void)
 {
@@ -112,7 +138,7 @@ static char *parse_value(void)
 
 static inline int iskeychar(int c)
 {
-	return isalnum(c) || c == '-';
+	return isalnum(c) || c == '-' || c == '_';
 }
 
 static int get_value(config_fn_t fn, void *data, char *name, unsigned int len)
@@ -127,7 +153,7 @@ static int get_value(config_fn_t fn, void *data, char *name, unsigned int len)
 			break;
 		if (!iskeychar(c))
 			break;
-		name[len++] = tolower(c);
+		name[len++] = c;
 		if (len >= MAXNAME)
 			return -1;
 	}
@@ -213,7 +239,8 @@ static int perf_parse_file(config_fn_t fn, void *data)
 	const unsigned char *bomptr = utf8_bom;
 
 	for (;;) {
-		int c = get_next_char();
+		int line, c = get_next_char();
+
 		if (bomptr && *bomptr) {
 			/* We are at the file beginning; skip UTF8-encoded BOM
 			 * if present. Sane editors won't put this in on their
@@ -252,10 +279,19 @@ static int perf_parse_file(config_fn_t fn, void *data)
 		if (!isalpha(c))
 			break;
 		var[baselen] = tolower(c);
-		if (get_value(fn, data, var, baselen+1) < 0)
+
+		/*
+		 * The get_value function might or might not reach the '\n',
+		 * so saving the current line number for error reporting.
+		 */
+		line = config_linenr;
+		if (get_value(fn, data, var, baselen+1) < 0) {
+			config_linenr = line;
 			break;
+		}
 	}
-	die("bad config file line %d in %s", config_linenr, config_file_name);
+	pr_err("bad config file line %d in %s\n", config_linenr, config_file_name);
+	return -1;
 }
 
 static int parse_unit_factor(const char *end, unsigned long *val)
@@ -277,6 +313,21 @@ static int parse_unit_factor(const char *end, unsigned long *val)
 	return 0;
 }
 
+static int perf_parse_llong(const char *value, long long *ret)
+{
+	if (value && *value) {
+		char *end;
+		long long val = strtoll(value, &end, 0);
+		unsigned long factor = 1;
+
+		if (!parse_unit_factor(end, &factor))
+			return 0;
+		*ret = val * factor;
+		return 1;
+	}
+	return 0;
+}
+
 static int perf_parse_long(const char *value, long *ret)
 {
 	if (value && *value) {
@@ -291,44 +342,54 @@ static int perf_parse_long(const char *value, long *ret)
 	return 0;
 }
 
-int perf_parse_ulong(const char *value, unsigned long *ret)
+static void bad_config(const char *name)
 {
-	if (value && *value) {
-		char *end;
-		unsigned long val = strtoul(value, &end, 0);
-		if (!parse_unit_factor(end, &val))
-			return 0;
-		*ret = val;
-		return 1;
+	if (config_file_name)
+		pr_warning("bad config value for '%s' in %s, ignoring...\n", name, config_file_name);
+	else
+		pr_warning("bad config value for '%s', ignoring...\n", name);
+}
+
+int perf_config_u64(u64 *dest, const char *name, const char *value)
+{
+	long long ret = 0;
+
+	if (!perf_parse_llong(value, &ret)) {
+		bad_config(name);
+		return -1;
 	}
+
+	*dest = ret;
 	return 0;
 }
 
-static void die_bad_config(const char *name)
-{
-	if (config_file_name)
-		die("bad config value for '%s' in %s", name, config_file_name);
-	die("bad config value for '%s'", name);
-}
-
-int perf_config_int(const char *name, const char *value)
+int perf_config_int(int *dest, const char *name, const char *value)
 {
 	long ret = 0;
-	if (!perf_parse_long(value, &ret))
-		die_bad_config(name);
-	return ret;
+	if (!perf_parse_long(value, &ret)) {
+		bad_config(name);
+		return -1;
+	}
+	*dest = ret;
+	return 0;
 }
 
-unsigned long perf_config_ulong(const char *name, const char *value)
+int perf_config_u8(u8 *dest, const char *name, const char *value)
 {
-	unsigned long ret;
-	if (!perf_parse_ulong(value, &ret))
-		die_bad_config(name);
-	return ret;
+	long ret = 0;
+
+	if (!perf_parse_long(value, &ret)) {
+		bad_config(name);
+		return -1;
+	}
+	*dest = ret;
+	return 0;
 }
 
-int perf_config_bool_or_int(const char *name, const char *value, int *is_bool)
+static int perf_config_bool_or_int(const char *name, const char *value, int *is_bool)
 {
+	int ret;
+
 	*is_bool = 1;
 	if (!value)
 		return 1;
@@ -339,7 +400,7 @@ int perf_config_bool_or_int(const char *name, const char *value, int *is_bool)
 	if (!strcasecmp(value, "false") || !strcasecmp(value, "no") || !strcasecmp(value, "off"))
 		return 0;
 	*is_bool = 0;
-	return perf_config_int(name, value);
+	return perf_config_int(&ret, name, value) < 0 ? -1 : ret;
 }
 
 int perf_config_bool(const char *name, const char *value)
@@ -348,30 +409,75 @@ int perf_config_bool(const char *name, const char *value)
 	return !!perf_config_bool_or_int(name, value, &discard);
 }
 
-int perf_config_string(const char **dest, const char *var, const char *value)
+static const char *perf_config_dirname(const char *name, const char *value)
 {
-	if (!value)
-		return config_error_nonbool(var);
-	*dest = strdup(value);
+	if (!name)
+		return NULL;
+	return value;
+}
+
+static int perf_buildid_config(const char *var, const char *value)
+{
+	/* same dir for all commands */
+	if (!strcmp(var, "buildid.dir")) {
+		const char *dir = perf_config_dirname(var, value);
+
+		if (!dir) {
+			pr_err("Invalid buildid directory!\n");
+			return -1;
+		}
+		strncpy(buildid_dir, dir, MAXPATHLEN-1);
+		buildid_dir[MAXPATHLEN-1] = '\0';
+	}
+
 	return 0;
 }
 
-static int perf_default_core_config(const char *var __used, const char *value __used)
+static int perf_default_core_config(const char *var __maybe_unused,
+				    const char *value __maybe_unused)
 {
-	/* Add other config variables here and to Documentation/config.txt. */
+	if (!strcmp(var, "core.proc-map-timeout"))
+		proc_map_timeout = strtoul(value, NULL, 10);
+
+	/* Add other config variables here. */
 	return 0;
 }
 
-int perf_default_config(const char *var, const char *value, void *dummy __used)
+static int perf_ui_config(const char *var, const char *value)
 {
-	if (!prefixcmp(var, "core."))
+	/* Add other config variables here. */
+	if (!strcmp(var, "ui.show-headers"))
+		symbol_conf.show_hist_headers = perf_config_bool(var, value);
+
+	return 0;
+}
+
+int perf_default_config(const char *var, const char *value,
+			void *dummy __maybe_unused)
+{
+	if (strstarts(var, "core."))
 		return perf_default_core_config(var, value);
 
-	/* Add other config variables here and to Documentation/config.txt. */
+	if (strstarts(var, "hist."))
+		return perf_hist_config(var, value);
+
+	if (strstarts(var, "ui."))
+		return perf_ui_config(var, value);
+
+	if (strstarts(var, "call-graph."))
+		return perf_callchain_config(var, value);
+
+	if (strstarts(var, "llvm."))
+		return perf_llvm_config(var, value);
+
+	if (strstarts(var, "buildid."))
+		return perf_buildid_config(var, value);
+
+	/* Add other config variables here. */
 	return 0;
 }
 
-int perf_config_from_file(config_fn_t fn, const char *filename, void *data)
+static int perf_config_from_file(config_fn_t fn, const char *filename, void *data)
 {
 	int ret;
 	FILE *f = fopen(filename, "r");
@@ -403,463 +509,316 @@ static int perf_env_bool(const char *k, int def)
 	return v ? perf_config_bool(k, v) : def;
 }
 
-int perf_config_system(void)
+static int perf_config_system(void)
 {
 	return !perf_env_bool("PERF_CONFIG_NOSYSTEM", 0);
 }
 
-int perf_config_global(void)
+static int perf_config_global(void)
 {
 	return !perf_env_bool("PERF_CONFIG_NOGLOBAL", 0);
 }
 
-int perf_config(config_fn_t fn, void *data)
+static struct perf_config_section *find_section(struct list_head *sections,
+						const char *section_name)
 {
-	int ret = 0, found = 0;
-	const char *home = NULL;
+	struct perf_config_section *section;
 
-	/* Setting $PERF_CONFIG makes perf read _only_ the given config file. */
-	if (config_exclusive_filename)
-		return perf_config_from_file(fn, config_exclusive_filename, data);
-	if (perf_config_system() && !access(perf_etc_perfconfig(), R_OK)) {
-		ret += perf_config_from_file(fn, perf_etc_perfconfig(),
-					    data);
-		found += 1;
+	list_for_each_entry(section, sections, node)
+		if (!strcmp(section->name, section_name))
+			return section;
+
+	return NULL;
+}
+
+static struct perf_config_item *find_config_item(const char *name,
+						 struct perf_config_section *section)
+{
+	struct perf_config_item *item;
+
+	list_for_each_entry(item, &section->items, node)
+		if (!strcmp(item->name, name))
+			return item;
+
+	return NULL;
+}
+
+static struct perf_config_section *add_section(struct list_head *sections,
+					       const char *section_name)
+{
+	struct perf_config_section *section = zalloc(sizeof(*section));
+
+	if (!section)
+		return NULL;
+
+	INIT_LIST_HEAD(&section->items);
+	section->name = strdup(section_name);
+	if (!section->name) {
+		pr_debug("%s: strdup failed\n", __func__);
+		free(section);
+		return NULL;
 	}
 
-	home = getenv("HOME");
-	if (perf_config_global() && home) {
-		char *user_config = strdup(mkpath("%s/.perfconfig", home));
-		if (!access(user_config, R_OK)) {
-			ret += perf_config_from_file(fn, user_config, data);
-			found += 1;
-		}
-		free(user_config);
+	list_add_tail(&section->node, sections);
+	return section;
+}
+
+static struct perf_config_item *add_config_item(struct perf_config_section *section,
+						const char *name)
+{
+	struct perf_config_item *item = zalloc(sizeof(*item));
+
+	if (!item)
+		return NULL;
+
+	item->name = strdup(name);
+	if (!item->name) {
+		pr_debug("%s: strdup failed\n", __func__);
+		free(item);
+		return NULL;
 	}
 
-	if (found == 0)
+	list_add_tail(&item->node, &section->items);
+	return item;
+}
+
+static int set_value(struct perf_config_item *item, const char *value)
+{
+	char *val = strdup(value);
+
+	if (!val)
 		return -1;
-	return ret;
-}
 
-/*
- * Find all the stuff for perf_config_set() below.
- */
-
-#define MAX_MATCHES 512
-
-static struct {
-	int baselen;
-	char* key;
-	int do_not_match;
-	regex_t* value_regex;
-	int multi_replace;
-	size_t offset[MAX_MATCHES];
-	enum { START, SECTION_SEEN, SECTION_END_SEEN, KEY_SEEN } state;
-	int seen;
-} store;
-
-static int matches(const char* key, const char* value)
-{
-	return !strcmp(key, store.key) &&
-		(store.value_regex == NULL ||
-		 (store.do_not_match ^
-		  !regexec(store.value_regex, value, 0, NULL, 0)));
-}
-
-static int store_aux(const char* key, const char* value, void *cb __used)
-{
-	int section_len;
-	const char *ep;
-
-	switch (store.state) {
-	case KEY_SEEN:
-		if (matches(key, value)) {
-			if (store.seen == 1 && store.multi_replace == 0) {
-				warning("%s has multiple values", key);
-			} else if (store.seen >= MAX_MATCHES) {
-				error("too many matches for %s", key);
-				return 1;
-			}
-
-			store.offset[store.seen] = ftell(config_file);
-			store.seen++;
-		}
-		break;
-	case SECTION_SEEN:
-		/*
-		 * What we are looking for is in store.key (both
-		 * section and var), and its section part is baselen
-		 * long.  We found key (again, both section and var).
-		 * We would want to know if this key is in the same
-		 * section as what we are looking for.  We already
-		 * know we are in the same section as what should
-		 * hold store.key.
-		 */
-		ep = strrchr(key, '.');
-		section_len = ep - key;
-
-		if ((section_len != store.baselen) ||
-		    memcmp(key, store.key, section_len+1)) {
-			store.state = SECTION_END_SEEN;
-			break;
-		}
-
-		/*
-		 * Do not increment matches: this is no match, but we
-		 * just made sure we are in the desired section.
-		 */
-		store.offset[store.seen] = ftell(config_file);
-		/* fallthru */
-	case SECTION_END_SEEN:
-	case START:
-		if (matches(key, value)) {
-			store.offset[store.seen] = ftell(config_file);
-			store.state = KEY_SEEN;
-			store.seen++;
-		} else {
-			if (strrchr(key, '.') - key == store.baselen &&
-			      !strncmp(key, store.key, store.baselen)) {
-					store.state = SECTION_SEEN;
-					store.offset[store.seen] = ftell(config_file);
-			}
-		}
-	default:
-		break;
-	}
+	zfree(&item->value);
+	item->value = val;
 	return 0;
 }
 
-static int store_write_section(int fd, const char* key)
+static int collect_config(const char *var, const char *value,
+			  void *perf_config_set)
 {
-	const char *dot;
-	int i, success;
-	struct strbuf sb = STRBUF_INIT;
+	int ret = -1;
+	char *ptr, *key;
+	char *section_name, *name;
+	struct perf_config_section *section = NULL;
+	struct perf_config_item *item = NULL;
+	struct perf_config_set *set = perf_config_set;
+	struct list_head *sections;
 
-	dot = memchr(key, '.', store.baselen);
-	if (dot) {
-		strbuf_addf(&sb, "[%.*s \"", (int)(dot - key), key);
-		for (i = dot - key + 1; i < store.baselen; i++) {
-			if (key[i] == '"' || key[i] == '\\')
-				strbuf_addch(&sb, '\\');
-			strbuf_addch(&sb, key[i]);
-		}
-		strbuf_addstr(&sb, "\"]\n");
-	} else {
-		strbuf_addf(&sb, "[%.*s]\n", store.baselen, key);
+	if (set == NULL)
+		return -1;
+
+	sections = &set->sections;
+	key = ptr = strdup(var);
+	if (!key) {
+		pr_debug("%s: strdup failed\n", __func__);
+		return -1;
 	}
 
-	success = (write_in_full(fd, sb.buf, sb.len) == (ssize_t)sb.len);
-	strbuf_release(&sb);
-
-	return success;
-}
-
-static int store_write_pair(int fd, const char* key, const char* value)
-{
-	int i, success;
-	int length = strlen(key + store.baselen + 1);
-	const char *quote = "";
-	struct strbuf sb = STRBUF_INIT;
-
-	/*
-	 * Check to see if the value needs to be surrounded with a dq pair.
-	 * Note that problematic characters are always backslash-quoted; this
-	 * check is about not losing leading or trailing SP and strings that
-	 * follow beginning-of-comment characters (i.e. ';' and '#') by the
-	 * configuration parser.
-	 */
-	if (value[0] == ' ')
-		quote = "\"";
-	for (i = 0; value[i]; i++)
-		if (value[i] == ';' || value[i] == '#')
-			quote = "\"";
-	if (i && value[i - 1] == ' ')
-		quote = "\"";
-
-	strbuf_addf(&sb, "\t%.*s = %s",
-		    length, key + store.baselen + 1, quote);
-
-	for (i = 0; value[i]; i++)
-		switch (value[i]) {
-		case '\n':
-			strbuf_addstr(&sb, "\\n");
-			break;
-		case '\t':
-			strbuf_addstr(&sb, "\\t");
-			break;
-		case '"':
-		case '\\':
-			strbuf_addch(&sb, '\\');
-		default:
-			strbuf_addch(&sb, value[i]);
-			break;
-		}
-	strbuf_addf(&sb, "%s\n", quote);
-
-	success = (write_in_full(fd, sb.buf, sb.len) == (ssize_t)sb.len);
-	strbuf_release(&sb);
-
-	return success;
-}
-
-static ssize_t find_beginning_of_line(const char* contents, size_t size,
-	size_t offset_, int* found_bracket)
-{
-	size_t equal_offset = size, bracket_offset = size;
-	ssize_t offset;
-
-contline:
-	for (offset = offset_-2; offset > 0
-			&& contents[offset] != '\n'; offset--)
-		switch (contents[offset]) {
-			case '=': equal_offset = offset; break;
-			case ']': bracket_offset = offset; break;
-			default: break;
-		}
-	if (offset > 0 && contents[offset-1] == '\\') {
-		offset_ = offset;
-		goto contline;
-	}
-	if (bracket_offset < equal_offset) {
-		*found_bracket = 1;
-		offset = bracket_offset+1;
-	} else
-		offset++;
-
-	return offset;
-}
-
-int perf_config_set(const char* key, const char* value)
-{
-	return perf_config_set_multivar(key, value, NULL, 0);
-}
-
-/*
- * If value==NULL, unset in (remove from) config,
- * if value_regex!=NULL, disregard key/value pairs where value does not match.
- * if multi_replace==0, nothing, or only one matching key/value is replaced,
- *     else all matching key/values (regardless how many) are removed,
- *     before the new pair is written.
- *
- * Returns 0 on success.
- *
- * This function does this:
- *
- * - it locks the config file by creating ".perf/config.lock"
- *
- * - it then parses the config using store_aux() as validator to find
- *   the position on the key/value pair to replace. If it is to be unset,
- *   it must be found exactly once.
- *
- * - the config file is mmap()ed and the part before the match (if any) is
- *   written to the lock file, then the changed part and the rest.
- *
- * - the config file is removed and the lock file rename()d to it.
- *
- */
-int perf_config_set_multivar(const char* key, const char* value,
-	const char* value_regex, int multi_replace)
-{
-	int i, dot;
-	int fd = -1, in_fd;
-	int ret = 0;
-	char* config_filename;
-	const char* last_dot = strrchr(key, '.');
-
-	if (config_exclusive_filename)
-		config_filename = strdup(config_exclusive_filename);
-	else
-		config_filename = perf_pathdup("config");
-
-	/*
-	 * Since "key" actually contains the section name and the real
-	 * key name separated by a dot, we have to know where the dot is.
-	 */
-
-	if (last_dot == NULL) {
-		error("key does not contain a section: %s", key);
-		ret = 2;
+	section_name = strsep(&ptr, ".");
+	name = ptr;
+	if (name == NULL || value == NULL)
 		goto out_free;
+
+	section = find_section(sections, section_name);
+	if (!section) {
+		section = add_section(sections, section_name);
+		if (!section)
+			goto out_free;
 	}
-	store.baselen = last_dot - key;
 
-	store.multi_replace = multi_replace;
-
-	/*
-	 * Validate the key and while at it, lower case it for matching.
-	 */
-	store.key = malloc(strlen(key) + 1);
-	dot = 0;
-	for (i = 0; key[i]; i++) {
-		unsigned char c = key[i];
-		if (c == '.')
-			dot = 1;
-		/* Leave the extended basename untouched.. */
-		if (!dot || i > store.baselen) {
-			if (!iskeychar(c) || (i == store.baselen+1 && !isalpha(c))) {
-				error("invalid key: %s", key);
-				free(store.key);
-				ret = 1;
-				goto out_free;
-			}
-			c = tolower(c);
-		} else if (c == '\n') {
-			error("invalid key (newline): %s", key);
-			free(store.key);
-			ret = 1;
+	item = find_config_item(name, section);
+	if (!item) {
+		item = add_config_item(section, name);
+		if (!item)
 			goto out_free;
-		}
-		store.key[i] = c;
 	}
-	store.key[i] = 0;
 
-	/*
-	 * If .perf/config does not exist yet, write a minimal version.
+	/* perf_config_set can contain both user and system config items.
+	 * So we should know where each value is from.
+	 * The classification would be needed when a particular config file
+	 * is overwrited by setting feature i.e. set_config().
 	 */
-	in_fd = open(config_filename, O_RDONLY);
-	if ( in_fd < 0 ) {
-		free(store.key);
-
-		if ( ENOENT != errno ) {
-			error("opening %s: %s", config_filename,
-			      strerror(errno));
-			ret = 3; /* same as "invalid config file" */
-			goto out_free;
-		}
-		/* if nothing to unset, error out */
-		if (value == NULL) {
-			ret = 5;
-			goto out_free;
-		}
-
-		store.key = (char*)key;
-		if (!store_write_section(fd, key) ||
-		    !store_write_pair(fd, key, value))
-			goto write_err_out;
+	if (strcmp(config_file_name, perf_etc_perfconfig()) == 0) {
+		section->from_system_config = true;
+		item->from_system_config = true;
 	} else {
-		struct stat st;
-		char *contents;
-		ssize_t contents_sz, copy_begin, copy_end;
-		int new_line = 0;
+		section->from_system_config = false;
+		item->from_system_config = false;
+	}
 
-		if (value_regex == NULL)
-			store.value_regex = NULL;
-		else {
-			if (value_regex[0] == '!') {
-				store.do_not_match = 1;
-				value_regex++;
-			} else
-				store.do_not_match = 0;
+	ret = set_value(item, value);
 
-			store.value_regex = (regex_t*)malloc(sizeof(regex_t));
-			if (regcomp(store.value_regex, value_regex,
-					REG_EXTENDED)) {
-				error("invalid pattern: %s", value_regex);
-				free(store.value_regex);
-				ret = 6;
-				goto out_free;
-			}
-		}
+out_free:
+	free(key);
+	return ret;
+}
 
-		store.offset[0] = 0;
-		store.state = START;
-		store.seen = 0;
+int perf_config_set__collect(struct perf_config_set *set, const char *file_name,
+			     const char *var, const char *value)
+{
+	config_file_name = file_name;
+	return collect_config(var, value, set);
+}
 
-		/*
-		 * After this, store.offset will contain the *end* offset
-		 * of the last match, or remain at 0 if no match was found.
-		 * As a side effect, we make sure to transform only a valid
-		 * existing config file.
-		 */
-		if (perf_config_from_file(store_aux, config_filename, NULL)) {
-			error("invalid config file %s", config_filename);
-			free(store.key);
-			if (store.value_regex != NULL) {
-				regfree(store.value_regex);
-				free(store.value_regex);
-			}
-			ret = 3;
-			goto out_free;
-		}
+static int perf_config_set__init(struct perf_config_set *set)
+{
+	int ret = -1;
+	const char *home = NULL;
+	char *user_config;
+	struct stat st;
 
-		free(store.key);
-		if (store.value_regex != NULL) {
-			regfree(store.value_regex);
-			free(store.value_regex);
-		}
+	/* Setting $PERF_CONFIG makes perf read _only_ the given config file. */
+	if (config_exclusive_filename)
+		return perf_config_from_file(collect_config, config_exclusive_filename, set);
+	if (perf_config_system() && !access(perf_etc_perfconfig(), R_OK)) {
+		if (perf_config_from_file(collect_config, perf_etc_perfconfig(), set) < 0)
+			goto out;
+	}
 
-		/* if nothing to unset, or too many matches, error out */
-		if ((store.seen == 0 && value == NULL) ||
-				(store.seen > 1 && multi_replace == 0)) {
-			ret = 5;
-			goto out_free;
-		}
+	home = getenv("HOME");
 
-		fstat(in_fd, &st);
-		contents_sz = xsize_t(st.st_size);
-		contents = mmap(NULL, contents_sz, PROT_READ,
-			MAP_PRIVATE, in_fd, 0);
-		close(in_fd);
+	/*
+	 * Skip reading user config if:
+	 *   - there is no place to read it from (HOME)
+	 *   - we are asked not to (PERF_CONFIG_NOGLOBAL=1)
+	 */
+	if (!home || !*home || !perf_config_global())
+		return 0;
 
-		if (store.seen == 0)
-			store.seen = 1;
+	user_config = strdup(mkpath("%s/.perfconfig", home));
+	if (user_config == NULL) {
+		pr_warning("Not enough memory to process %s/.perfconfig, ignoring it.", home);
+		goto out;
+	}
 
-		for (i = 0, copy_begin = 0; i < store.seen; i++) {
-			if (store.offset[i] == 0) {
-				store.offset[i] = copy_end = contents_sz;
-			} else if (store.state != KEY_SEEN) {
-				copy_end = store.offset[i];
-			} else
-				copy_end = find_beginning_of_line(
-					contents, contents_sz,
-					store.offset[i]-2, &new_line);
-
-			if (copy_end > 0 && contents[copy_end-1] != '\n')
-				new_line = 1;
-
-			/* write the first part of the config */
-			if (copy_end > copy_begin) {
-				if (write_in_full(fd, contents + copy_begin,
-						  copy_end - copy_begin) <
-				    copy_end - copy_begin)
-					goto write_err_out;
-				if (new_line &&
-				    write_in_full(fd, "\n", 1) != 1)
-					goto write_err_out;
-			}
-			copy_begin = store.offset[i];
-		}
-
-		/* write the pair (value == NULL means unset) */
-		if (value != NULL) {
-			if (store.state == START) {
-				if (!store_write_section(fd, key))
-					goto write_err_out;
-			}
-			if (!store_write_pair(fd, key, value))
-				goto write_err_out;
-		}
-
-		/* write the rest of the config */
-		if (copy_begin < contents_sz)
-			if (write_in_full(fd, contents + copy_begin,
-					  contents_sz - copy_begin) <
-			    contents_sz - copy_begin)
-				goto write_err_out;
-
-		munmap(contents, contents_sz);
+	if (stat(user_config, &st) < 0) {
+		if (errno == ENOENT)
+			ret = 0;
+		goto out_free;
 	}
 
 	ret = 0;
 
+	if (st.st_uid && (st.st_uid != geteuid())) {
+		pr_warning("File %s not owned by current user or root, ignoring it.", user_config);
+		goto out_free;
+	}
+
+	if (st.st_size)
+		ret = perf_config_from_file(collect_config, user_config, set);
+
 out_free:
-	free(config_filename);
+	free(user_config);
+out:
 	return ret;
+}
 
-write_err_out:
-	goto out_free;
+struct perf_config_set *perf_config_set__new(void)
+{
+	struct perf_config_set *set = zalloc(sizeof(*set));
 
+	if (set) {
+		INIT_LIST_HEAD(&set->sections);
+		perf_config_set__init(set);
+	}
+
+	return set;
+}
+
+static int perf_config__init(void)
+{
+	if (config_set == NULL)
+		config_set = perf_config_set__new();
+
+	return config_set == NULL;
+}
+
+int perf_config(config_fn_t fn, void *data)
+{
+	int ret = 0;
+	char key[BUFSIZ];
+	struct perf_config_section *section;
+	struct perf_config_item *item;
+
+	if (config_set == NULL && perf_config__init())
+		return -1;
+
+	perf_config_set__for_each_entry(config_set, section, item) {
+		char *value = item->value;
+
+		if (value) {
+			scnprintf(key, sizeof(key), "%s.%s",
+				  section->name, item->name);
+			ret = fn(key, value, data);
+			if (ret < 0) {
+				pr_err("Error: wrong config key-value pair %s=%s\n",
+				       key, value);
+				/*
+				 * Can't be just a 'break', as perf_config_set__for_each_entry()
+				 * expands to two nested for() loops.
+				 */
+				goto out;
+			}
+		}
+	}
+out:
+	return ret;
+}
+
+void perf_config__exit(void)
+{
+	perf_config_set__delete(config_set);
+	config_set = NULL;
+}
+
+void perf_config__refresh(void)
+{
+	perf_config__exit();
+	perf_config__init();
+}
+
+static void perf_config_item__delete(struct perf_config_item *item)
+{
+	zfree(&item->name);
+	zfree(&item->value);
+	free(item);
+}
+
+static void perf_config_section__purge(struct perf_config_section *section)
+{
+	struct perf_config_item *item, *tmp;
+
+	list_for_each_entry_safe(item, tmp, &section->items, node) {
+		list_del_init(&item->node);
+		perf_config_item__delete(item);
+	}
+}
+
+static void perf_config_section__delete(struct perf_config_section *section)
+{
+	perf_config_section__purge(section);
+	zfree(&section->name);
+	free(section);
+}
+
+static void perf_config_set__purge(struct perf_config_set *set)
+{
+	struct perf_config_section *section, *tmp;
+
+	list_for_each_entry_safe(section, tmp, &set->sections, node) {
+		list_del_init(&section->node);
+		perf_config_section__delete(section);
+	}
+}
+
+void perf_config_set__delete(struct perf_config_set *set)
+{
+	if (set == NULL)
+		return;
+
+	perf_config_set__purge(set);
+	free(set);
 }
 
 /*
@@ -868,5 +827,27 @@ write_err_out:
  */
 int config_error_nonbool(const char *var)
 {
-	return error("Missing value for '%s'", var);
+	pr_err("Missing value for '%s'", var);
+	return -1;
+}
+
+void set_buildid_dir(const char *dir)
+{
+	if (dir)
+		scnprintf(buildid_dir, MAXPATHLEN, "%s", dir);
+
+	/* default to $HOME/.debug */
+	if (buildid_dir[0] == '\0') {
+		char *home = getenv("HOME");
+
+		if (home) {
+			snprintf(buildid_dir, MAXPATHLEN, "%s/%s",
+				 home, DEBUG_CACHE_DIR);
+		} else {
+			strncpy(buildid_dir, DEBUG_CACHE_DIR, MAXPATHLEN-1);
+		}
+		buildid_dir[MAXPATHLEN-1] = '\0';
+	}
+	/* for communicating with external commands */
+	setenv("PERF_BUILDID_DIR", buildid_dir, 1);
 }

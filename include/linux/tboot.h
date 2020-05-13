@@ -1,23 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * tboot.h: shared data structure with tboot and kernel and functions
  *          used by kernel for runtime support of Intel(R) Trusted
  *          Execution Technology
  *
  * Copyright (c) 2006-2009, Intel Corporation
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
- *
  */
 
 #ifndef _LINUX_TBOOT_H
@@ -34,7 +21,7 @@ enum {
 };
 
 #ifdef CONFIG_INTEL_TXT
-#include <acpi/acpi.h>
+#include <linux/acpi.h>
 /* used to communicate between tboot and the launched kernel */
 
 #define TB_KEY_SIZE             64   /* 512 bits */
@@ -143,7 +130,6 @@ static inline int tboot_enabled(void)
 
 extern void tboot_probe(void);
 extern void tboot_shutdown(u32 shutdown_type);
-extern void tboot_sleep(u8 sleep_state, u32 pm1a_control, u32 pm1b_control);
 extern struct acpi_table_header *tboot_get_dmar_table(
 				      struct acpi_table_header *dmar_tbl);
 extern int tboot_force_iommu(void);

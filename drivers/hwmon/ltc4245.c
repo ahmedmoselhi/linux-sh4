@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Driver for Linear Technology LTC4245 I2C Multiple Supply Hot Swap Controller
  *
  * Copyright (C) 2008 Ira W. Snyder <iws@ovro.caltech.edu>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; version 2 of the License.
  *
  * This driver is based on the ds1621 and ina209 drivers.
  *
@@ -16,11 +13,14 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/init.h>
+#include <linux/bitops.h>
 #include <linux/err.h>
 #include <linux/slab.h>
 #include <linux/i2c.h>
 #include <linux/hwmon.h>
 #include <linux/hwmon-sysfs.h>
+#include <linux/jiffies.h>
+#include <linux/platform_data/ltc4245.h>
 
 /* Here are names of the chip's registers (a.k.a. commands) */
 enum ltc4245_cmd {
@@ -49,7 +49,7 @@ enum ltc4245_cmd {
 };
 
 struct ltc4245_data {
-	struct device *hwmon_dev;
+	struct i2c_client *client;
 
 	struct mutex update_lock;
 	bool valid;
@@ -60,20 +60,81 @@ struct ltc4245_data {
 
 	/* Voltage registers */
 	u8 vregs[0x0d];
+
+	/* GPIO ADC registers */
+	bool use_extra_gpios;
+	int gpios[3];
 };
+
+/*
+ * Update the readings from the GPIO pins. If the driver has been configured to
+ * sample all GPIO's as analog voltages, a round-robin sampling method is used.
+ * Otherwise, only the configured GPIO pin is sampled.
+ *
+ * LOCKING: must hold data->update_lock
+ */
+static void ltc4245_update_gpios(struct device *dev)
+{
+	struct ltc4245_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
+	u8 gpio_curr, gpio_next, gpio_reg;
+	int i;
+
+	/* no extra gpio support, we're basically done */
+	if (!data->use_extra_gpios) {
+		data->gpios[0] = data->vregs[LTC4245_GPIOADC - 0x10];
+		return;
+	}
+
+	/*
+	 * If the last reading was too long ago, then we mark all old GPIO
+	 * readings as stale by setting them to -EAGAIN
+	 */
+	if (time_after(jiffies, data->last_updated + 5 * HZ)) {
+		for (i = 0; i < ARRAY_SIZE(data->gpios); i++)
+			data->gpios[i] = -EAGAIN;
+	}
+
+	/*
+	 * Get the current GPIO pin
+	 *
+	 * The datasheet calls these GPIO[1-3], but we'll calculate the zero
+	 * based array index instead, and call them GPIO[0-2]. This is much
+	 * easier to think about.
+	 */
+	gpio_curr = (data->cregs[LTC4245_GPIO] & 0xc0) >> 6;
+	if (gpio_curr > 0)
+		gpio_curr -= 1;
+
+	/* Read the GPIO voltage from the GPIOADC register */
+	data->gpios[gpio_curr] = data->vregs[LTC4245_GPIOADC - 0x10];
+
+	/* Find the next GPIO pin to read */
+	gpio_next = (gpio_curr + 1) % ARRAY_SIZE(data->gpios);
+
+	/*
+	 * Calculate the correct setting for the GPIO register so it will
+	 * sample the next GPIO pin
+	 */
+	gpio_reg = (data->cregs[LTC4245_GPIO] & 0x3f) | ((gpio_next + 1) << 6);
+
+	/* Update the GPIO register */
+	i2c_smbus_write_byte_data(client, LTC4245_GPIO, gpio_reg);
+
+	/* Update saved data */
+	data->cregs[LTC4245_GPIO] = gpio_reg;
+}
 
 static struct ltc4245_data *ltc4245_update_device(struct device *dev)
 {
-	struct i2c_client *client = to_i2c_client(dev);
-	struct ltc4245_data *data = i2c_get_clientdata(client);
+	struct ltc4245_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
 	s32 val;
 	int i;
 
 	mutex_lock(&data->update_lock);
 
 	if (time_after(jiffies, data->last_updated + HZ) || !data->valid) {
-
-		dev_dbg(&client->dev, "Starting ltc4245 update\n");
 
 		/* Read control registers -- 0x00 to 0x07 */
 		for (i = 0; i < ARRAY_SIZE(data->cregs); i++) {
@@ -93,8 +154,11 @@ static struct ltc4245_data *ltc4245_update_device(struct device *dev)
 				data->vregs[i] = val;
 		}
 
+		/* Update GPIO readings */
+		ltc4245_update_gpios(dev);
+
 		data->last_updated = jiffies;
-		data->valid = 1;
+		data->valid = true;
 	}
 
 	mutex_unlock(&data->update_lock);
@@ -146,7 +210,8 @@ static unsigned int ltc4245_get_current(struct device *dev, u8 reg)
 	unsigned int voltage;
 	unsigned int curr;
 
-	/* The strange looking conversions that follow are fixed-point
+	/*
+	 * The strange looking conversions that follow are fixed-point
 	 * math, since we cannot do floating point in the kernel.
 	 *
 	 * Step 1: convert sense register to microVolts
@@ -187,222 +252,221 @@ static unsigned int ltc4245_get_current(struct device *dev, u8 reg)
 	return curr;
 }
 
-static ssize_t ltc4245_show_voltage(struct device *dev,
-				    struct device_attribute *da,
-				    char *buf)
+/* Map from voltage channel index to voltage register */
+
+static const s8 ltc4245_in_regs[] = {
+	LTC4245_12VIN, LTC4245_5VIN, LTC4245_3VIN, LTC4245_VEEIN,
+	LTC4245_12VOUT, LTC4245_5VOUT, LTC4245_3VOUT, LTC4245_VEEOUT,
+};
+
+/* Map from current channel index to current register */
+
+static const s8 ltc4245_curr_regs[] = {
+	LTC4245_12VSENSE, LTC4245_5VSENSE, LTC4245_3VSENSE, LTC4245_VEESENSE,
+};
+
+static int ltc4245_read_curr(struct device *dev, u32 attr, int channel,
+			     long *val)
 {
-	struct sensor_device_attribute *attr = to_sensor_dev_attr(da);
-	const int voltage = ltc4245_get_voltage(dev, attr->index);
-
-	return snprintf(buf, PAGE_SIZE, "%d\n", voltage);
-}
-
-static ssize_t ltc4245_show_current(struct device *dev,
-				    struct device_attribute *da,
-				    char *buf)
-{
-	struct sensor_device_attribute *attr = to_sensor_dev_attr(da);
-	const unsigned int curr = ltc4245_get_current(dev, attr->index);
-
-	return snprintf(buf, PAGE_SIZE, "%u\n", curr);
-}
-
-static ssize_t ltc4245_show_power(struct device *dev,
-				  struct device_attribute *da,
-				  char *buf)
-{
-	struct sensor_device_attribute *attr = to_sensor_dev_attr(da);
-	const unsigned int curr = ltc4245_get_current(dev, attr->index);
-	const int output_voltage = ltc4245_get_voltage(dev, attr->index+1);
-
-	/* current in mA * voltage in mV == power in uW */
-	const unsigned int power = abs(output_voltage * curr);
-
-	return snprintf(buf, PAGE_SIZE, "%u\n", power);
-}
-
-static ssize_t ltc4245_show_alarm(struct device *dev,
-					  struct device_attribute *da,
-					  char *buf)
-{
-	struct sensor_device_attribute_2 *attr = to_sensor_dev_attr_2(da);
 	struct ltc4245_data *data = ltc4245_update_device(dev);
-	const u8 reg = data->cregs[attr->index];
-	const u32 mask = attr->nr;
 
-	return snprintf(buf, PAGE_SIZE, "%u\n", (reg & mask) ? 1 : 0);
+	switch (attr) {
+	case hwmon_curr_input:
+		*val = ltc4245_get_current(dev, ltc4245_curr_regs[channel]);
+		return 0;
+	case hwmon_curr_max_alarm:
+		*val = !!(data->cregs[LTC4245_FAULT1] & BIT(channel + 4));
+		return 0;
+	default:
+		return -EOPNOTSUPP;
+	}
 }
 
-/* These macros are used below in constructing device attribute objects
- * for use with sysfs_create_group() to make a sysfs device file
- * for each register.
- */
+static int ltc4245_read_in(struct device *dev, u32 attr, int channel, long *val)
+{
+	struct ltc4245_data *data = ltc4245_update_device(dev);
 
-#define LTC4245_VOLTAGE(name, ltc4245_cmd_idx) \
-	static SENSOR_DEVICE_ATTR(name, S_IRUGO, \
-	ltc4245_show_voltage, NULL, ltc4245_cmd_idx)
+	switch (attr) {
+	case hwmon_in_input:
+		if (channel < 8) {
+			*val = ltc4245_get_voltage(dev,
+						ltc4245_in_regs[channel]);
+		} else {
+			int regval = data->gpios[channel - 8];
 
-#define LTC4245_CURRENT(name, ltc4245_cmd_idx) \
-	static SENSOR_DEVICE_ATTR(name, S_IRUGO, \
-	ltc4245_show_current, NULL, ltc4245_cmd_idx)
+			if (regval < 0)
+				return regval;
+			*val = regval * 10;
+		}
+		return 0;
+	case hwmon_in_min_alarm:
+		if (channel < 4)
+			*val = !!(data->cregs[LTC4245_FAULT1] & BIT(channel));
+		else
+			*val = !!(data->cregs[LTC4245_FAULT2] &
+				  BIT(channel - 4));
+		return 0;
+	default:
+		return -EOPNOTSUPP;
+	}
+}
 
-#define LTC4245_POWER(name, ltc4245_cmd_idx) \
-	static SENSOR_DEVICE_ATTR(name, S_IRUGO, \
-	ltc4245_show_power, NULL, ltc4245_cmd_idx)
+static int ltc4245_read_power(struct device *dev, u32 attr, int channel,
+			      long *val)
+{
+	unsigned long curr;
+	long voltage;
 
-#define LTC4245_ALARM(name, mask, reg) \
-	static SENSOR_DEVICE_ATTR_2(name, S_IRUGO, \
-	ltc4245_show_alarm, NULL, (mask), reg)
+	switch (attr) {
+	case hwmon_power_input:
+		(void)ltc4245_update_device(dev);
+		curr = ltc4245_get_current(dev, ltc4245_curr_regs[channel]);
+		voltage = ltc4245_get_voltage(dev, ltc4245_in_regs[channel]);
+		*val = abs(curr * voltage);
+		return 0;
+	default:
+		return -EOPNOTSUPP;
+	}
+}
 
-/* Construct a sensor_device_attribute structure for each register */
+static int ltc4245_read(struct device *dev, enum hwmon_sensor_types type,
+			u32 attr, int channel, long *val)
+{
 
-/* Input voltages */
-LTC4245_VOLTAGE(in1_input,			LTC4245_12VIN);
-LTC4245_VOLTAGE(in2_input,			LTC4245_5VIN);
-LTC4245_VOLTAGE(in3_input,			LTC4245_3VIN);
-LTC4245_VOLTAGE(in4_input,			LTC4245_VEEIN);
+	switch (type) {
+	case hwmon_curr:
+		return ltc4245_read_curr(dev, attr, channel, val);
+	case hwmon_power:
+		return ltc4245_read_power(dev, attr, channel, val);
+	case hwmon_in:
+		return ltc4245_read_in(dev, attr, channel - 1, val);
+	default:
+		return -EOPNOTSUPP;
+	}
+}
 
-/* Input undervoltage alarms */
-LTC4245_ALARM(in1_min_alarm,	(1 << 0),	LTC4245_FAULT1);
-LTC4245_ALARM(in2_min_alarm,	(1 << 1),	LTC4245_FAULT1);
-LTC4245_ALARM(in3_min_alarm,	(1 << 2),	LTC4245_FAULT1);
-LTC4245_ALARM(in4_min_alarm,	(1 << 3),	LTC4245_FAULT1);
+static umode_t ltc4245_is_visible(const void *_data,
+				  enum hwmon_sensor_types type,
+				  u32 attr, int channel)
+{
+	const struct ltc4245_data *data = _data;
 
-/* Currents (via sense resistor) */
-LTC4245_CURRENT(curr1_input,			LTC4245_12VSENSE);
-LTC4245_CURRENT(curr2_input,			LTC4245_5VSENSE);
-LTC4245_CURRENT(curr3_input,			LTC4245_3VSENSE);
-LTC4245_CURRENT(curr4_input,			LTC4245_VEESENSE);
+	switch (type) {
+	case hwmon_in:
+		if (channel == 0)
+			return 0;
+		switch (attr) {
+		case hwmon_in_input:
+			if (channel > 9 && !data->use_extra_gpios)
+				return 0;
+			return 0444;
+		case hwmon_in_min_alarm:
+			if (channel > 8)
+				return 0;
+			return 0444;
+		default:
+			return 0;
+		}
+	case hwmon_curr:
+		switch (attr) {
+		case hwmon_curr_input:
+		case hwmon_curr_max_alarm:
+			return 0444;
+		default:
+			return 0;
+		}
+	case hwmon_power:
+		switch (attr) {
+		case hwmon_power_input:
+			return 0444;
+		default:
+			return 0;
+		}
+	default:
+		return 0;
+	}
+}
 
-/* Overcurrent alarms */
-LTC4245_ALARM(curr1_max_alarm,	(1 << 4),	LTC4245_FAULT1);
-LTC4245_ALARM(curr2_max_alarm,	(1 << 5),	LTC4245_FAULT1);
-LTC4245_ALARM(curr3_max_alarm,	(1 << 6),	LTC4245_FAULT1);
-LTC4245_ALARM(curr4_max_alarm,	(1 << 7),	LTC4245_FAULT1);
-
-/* Output voltages */
-LTC4245_VOLTAGE(in5_input,			LTC4245_12VOUT);
-LTC4245_VOLTAGE(in6_input,			LTC4245_5VOUT);
-LTC4245_VOLTAGE(in7_input,			LTC4245_3VOUT);
-LTC4245_VOLTAGE(in8_input,			LTC4245_VEEOUT);
-
-/* Power Bad alarms */
-LTC4245_ALARM(in5_min_alarm,	(1 << 0),	LTC4245_FAULT2);
-LTC4245_ALARM(in6_min_alarm,	(1 << 1),	LTC4245_FAULT2);
-LTC4245_ALARM(in7_min_alarm,	(1 << 2),	LTC4245_FAULT2);
-LTC4245_ALARM(in8_min_alarm,	(1 << 3),	LTC4245_FAULT2);
-
-/* GPIO voltages */
-LTC4245_VOLTAGE(in9_input,			LTC4245_GPIOADC);
-
-/* Power Consumption (virtual) */
-LTC4245_POWER(power1_input,			LTC4245_12VSENSE);
-LTC4245_POWER(power2_input,			LTC4245_5VSENSE);
-LTC4245_POWER(power3_input,			LTC4245_3VSENSE);
-LTC4245_POWER(power4_input,			LTC4245_VEESENSE);
-
-/* Finally, construct an array of pointers to members of the above objects,
- * as required for sysfs_create_group()
- */
-static struct attribute *ltc4245_attributes[] = {
-	&sensor_dev_attr_in1_input.dev_attr.attr,
-	&sensor_dev_attr_in2_input.dev_attr.attr,
-	&sensor_dev_attr_in3_input.dev_attr.attr,
-	&sensor_dev_attr_in4_input.dev_attr.attr,
-
-	&sensor_dev_attr_in1_min_alarm.dev_attr.attr,
-	&sensor_dev_attr_in2_min_alarm.dev_attr.attr,
-	&sensor_dev_attr_in3_min_alarm.dev_attr.attr,
-	&sensor_dev_attr_in4_min_alarm.dev_attr.attr,
-
-	&sensor_dev_attr_curr1_input.dev_attr.attr,
-	&sensor_dev_attr_curr2_input.dev_attr.attr,
-	&sensor_dev_attr_curr3_input.dev_attr.attr,
-	&sensor_dev_attr_curr4_input.dev_attr.attr,
-
-	&sensor_dev_attr_curr1_max_alarm.dev_attr.attr,
-	&sensor_dev_attr_curr2_max_alarm.dev_attr.attr,
-	&sensor_dev_attr_curr3_max_alarm.dev_attr.attr,
-	&sensor_dev_attr_curr4_max_alarm.dev_attr.attr,
-
-	&sensor_dev_attr_in5_input.dev_attr.attr,
-	&sensor_dev_attr_in6_input.dev_attr.attr,
-	&sensor_dev_attr_in7_input.dev_attr.attr,
-	&sensor_dev_attr_in8_input.dev_attr.attr,
-
-	&sensor_dev_attr_in5_min_alarm.dev_attr.attr,
-	&sensor_dev_attr_in6_min_alarm.dev_attr.attr,
-	&sensor_dev_attr_in7_min_alarm.dev_attr.attr,
-	&sensor_dev_attr_in8_min_alarm.dev_attr.attr,
-
-	&sensor_dev_attr_in9_input.dev_attr.attr,
-
-	&sensor_dev_attr_power1_input.dev_attr.attr,
-	&sensor_dev_attr_power2_input.dev_attr.attr,
-	&sensor_dev_attr_power3_input.dev_attr.attr,
-	&sensor_dev_attr_power4_input.dev_attr.attr,
-
-	NULL,
+static const struct hwmon_channel_info *ltc4245_info[] = {
+	HWMON_CHANNEL_INFO(in,
+			   HWMON_I_INPUT,
+			   HWMON_I_INPUT | HWMON_I_MIN_ALARM,
+			   HWMON_I_INPUT | HWMON_I_MIN_ALARM,
+			   HWMON_I_INPUT | HWMON_I_MIN_ALARM,
+			   HWMON_I_INPUT | HWMON_I_MIN_ALARM,
+			   HWMON_I_INPUT | HWMON_I_MIN_ALARM,
+			   HWMON_I_INPUT | HWMON_I_MIN_ALARM,
+			   HWMON_I_INPUT | HWMON_I_MIN_ALARM,
+			   HWMON_I_INPUT | HWMON_I_MIN_ALARM,
+			   HWMON_I_INPUT,
+			   HWMON_I_INPUT,
+			   HWMON_I_INPUT),
+	HWMON_CHANNEL_INFO(curr,
+			   HWMON_C_INPUT | HWMON_C_MAX_ALARM,
+			   HWMON_C_INPUT | HWMON_C_MAX_ALARM,
+			   HWMON_C_INPUT | HWMON_C_MAX_ALARM,
+			   HWMON_C_INPUT | HWMON_C_MAX_ALARM),
+	HWMON_CHANNEL_INFO(power,
+			   HWMON_P_INPUT,
+			   HWMON_P_INPUT,
+			   HWMON_P_INPUT,
+			   HWMON_P_INPUT),
+	NULL
 };
 
-static const struct attribute_group ltc4245_group = {
-	.attrs = ltc4245_attributes,
+static const struct hwmon_ops ltc4245_hwmon_ops = {
+	.is_visible = ltc4245_is_visible,
+	.read = ltc4245_read,
 };
+
+static const struct hwmon_chip_info ltc4245_chip_info = {
+	.ops = &ltc4245_hwmon_ops,
+	.info = ltc4245_info,
+};
+
+static bool ltc4245_use_extra_gpios(struct i2c_client *client)
+{
+	struct ltc4245_platform_data *pdata = dev_get_platdata(&client->dev);
+	struct device_node *np = client->dev.of_node;
+
+	/* prefer platform data */
+	if (pdata)
+		return pdata->use_extra_gpios;
+
+	/* fallback on OF */
+	if (of_find_property(np, "ltc4245,use-extra-gpios", NULL))
+		return true;
+
+	return false;
+}
 
 static int ltc4245_probe(struct i2c_client *client,
 			 const struct i2c_device_id *id)
 {
 	struct i2c_adapter *adapter = client->adapter;
 	struct ltc4245_data *data;
-	int ret;
+	struct device *hwmon_dev;
 
 	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE_DATA))
 		return -ENODEV;
 
-	data = kzalloc(sizeof(*data), GFP_KERNEL);
-	if (!data) {
-		ret = -ENOMEM;
-		goto out_kzalloc;
-	}
+	data = devm_kzalloc(&client->dev, sizeof(*data), GFP_KERNEL);
+	if (!data)
+		return -ENOMEM;
 
-	i2c_set_clientdata(client, data);
+	data->client = client;
 	mutex_init(&data->update_lock);
+	data->use_extra_gpios = ltc4245_use_extra_gpios(client);
 
 	/* Initialize the LTC4245 chip */
 	i2c_smbus_write_byte_data(client, LTC4245_FAULT1, 0x00);
 	i2c_smbus_write_byte_data(client, LTC4245_FAULT2, 0x00);
 
-	/* Register sysfs hooks */
-	ret = sysfs_create_group(&client->dev.kobj, &ltc4245_group);
-	if (ret)
-		goto out_sysfs_create_group;
-
-	data->hwmon_dev = hwmon_device_register(&client->dev);
-	if (IS_ERR(data->hwmon_dev)) {
-		ret = PTR_ERR(data->hwmon_dev);
-		goto out_hwmon_device_register;
-	}
-
-	return 0;
-
-out_hwmon_device_register:
-	sysfs_remove_group(&client->dev.kobj, &ltc4245_group);
-out_sysfs_create_group:
-	kfree(data);
-out_kzalloc:
-	return ret;
-}
-
-static int ltc4245_remove(struct i2c_client *client)
-{
-	struct ltc4245_data *data = i2c_get_clientdata(client);
-
-	hwmon_device_unregister(data->hwmon_dev);
-	sysfs_remove_group(&client->dev.kobj, &ltc4245_group);
-
-	kfree(data);
-
-	return 0;
+	hwmon_dev = devm_hwmon_device_register_with_info(&client->dev,
+							 client->name, data,
+							 &ltc4245_chip_info,
+							 NULL);
+	return PTR_ERR_OR_ZERO(hwmon_dev);
 }
 
 static const struct i2c_device_id ltc4245_id[] = {
@@ -417,23 +481,11 @@ static struct i2c_driver ltc4245_driver = {
 		.name	= "ltc4245",
 	},
 	.probe		= ltc4245_probe,
-	.remove		= ltc4245_remove,
 	.id_table	= ltc4245_id,
 };
 
-static int __init ltc4245_init(void)
-{
-	return i2c_add_driver(&ltc4245_driver);
-}
-
-static void __exit ltc4245_exit(void)
-{
-	i2c_del_driver(&ltc4245_driver);
-}
+module_i2c_driver(ltc4245_driver);
 
 MODULE_AUTHOR("Ira W. Snyder <iws@ovro.caltech.edu>");
 MODULE_DESCRIPTION("LTC4245 driver");
 MODULE_LICENSE("GPL");
-
-module_init(ltc4245_init);
-module_exit(ltc4245_exit);

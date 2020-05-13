@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * H-TCP congestion control. The algorithm is detailed in:
  * R.N.Shorten, D.J.Leith:
@@ -66,7 +67,6 @@ static inline void htcp_reset(struct htcp *ca)
 
 static u32 htcp_cwnd_undo(struct sock *sk)
 {
-	const struct tcp_sock *tp = tcp_sk(sk);
 	struct htcp *ca = inet_csk_ca(sk);
 
 	if (ca->undo_last_cong) {
@@ -76,7 +76,7 @@ static u32 htcp_cwnd_undo(struct sock *sk)
 		ca->undo_last_cong = 0;
 	}
 
-	return max(tp->snd_cwnd, (tp->snd_ssthresh << 7) / ca->beta);
+	return tcp_reno_undo_cwnd(sk);
 }
 
 static inline void measure_rtt(struct sock *sk, u32 srtt)
@@ -92,24 +92,25 @@ static inline void measure_rtt(struct sock *sk, u32 srtt)
 	if (icsk->icsk_ca_state == TCP_CA_Open) {
 		if (ca->maxRTT < ca->minRTT)
 			ca->maxRTT = ca->minRTT;
-		if (ca->maxRTT < srtt
-		    && srtt <= ca->maxRTT + msecs_to_jiffies(20))
+		if (ca->maxRTT < srtt &&
+		    srtt <= ca->maxRTT + msecs_to_jiffies(20))
 			ca->maxRTT = srtt;
 	}
 }
 
-static void measure_achieved_throughput(struct sock *sk, u32 pkts_acked, s32 rtt)
+static void measure_achieved_throughput(struct sock *sk,
+					const struct ack_sample *sample)
 {
 	const struct inet_connection_sock *icsk = inet_csk(sk);
 	const struct tcp_sock *tp = tcp_sk(sk);
 	struct htcp *ca = inet_csk_ca(sk);
-	u32 now = tcp_time_stamp;
+	u32 now = tcp_jiffies32;
 
 	if (icsk->icsk_ca_state == TCP_CA_Open)
-		ca->pkts_acked = pkts_acked;
+		ca->pkts_acked = sample->pkts_acked;
 
-	if (rtt > 0)
-		measure_rtt(sk, usecs_to_jiffies(rtt));
+	if (sample->rtt_us > 0)
+		measure_rtt(sk, usecs_to_jiffies(sample->rtt_us));
 
 	if (!use_bandwidth_switch)
 		return;
@@ -121,11 +122,11 @@ static void measure_achieved_throughput(struct sock *sk, u32 pkts_acked, s32 rtt
 		return;
 	}
 
-	ca->packetcount += pkts_acked;
+	ca->packetcount += sample->pkts_acked;
 
-	if (ca->packetcount >= tp->snd_cwnd - (ca->alpha >> 7 ? : 1)
-	    && now - ca->lasttime >= ca->minRTT
-	    && ca->minRTT > 0) {
+	if (ca->packetcount >= tp->snd_cwnd - (ca->alpha >> 7 ? : 1) &&
+	    now - ca->lasttime >= ca->minRTT &&
+	    ca->minRTT > 0) {
 		__u32 cur_Bi = ca->packetcount * HZ / (now - ca->lasttime);
 
 		if (htcp_ccount(ca) <= 3) {
@@ -148,8 +149,8 @@ static inline void htcp_beta_update(struct htcp *ca, u32 minRTT, u32 maxRTT)
 	if (use_bandwidth_switch) {
 		u32 maxB = ca->maxB;
 		u32 old_maxB = ca->old_maxB;
-		ca->old_maxB = ca->maxB;
 
+		ca->old_maxB = ca->maxB;
 		if (!between(5 * maxB, 4 * old_maxB, 6 * old_maxB)) {
 			ca->beta = BETA_MIN;
 			ca->modeswitch = 0;
@@ -227,16 +228,16 @@ static u32 htcp_recalc_ssthresh(struct sock *sk)
 	return max((tp->snd_cwnd * ca->beta) >> 7, 2U);
 }
 
-static void htcp_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
+static void htcp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct htcp *ca = inet_csk_ca(sk);
 
-	if (!tcp_is_cwnd_limited(sk, in_flight))
+	if (!tcp_is_cwnd_limited(sk))
 		return;
 
-	if (tp->snd_cwnd <= tp->snd_ssthresh)
-		tcp_slow_start(tp);
+	if (tcp_in_slow_start(tp))
+		tcp_slow_start(tp, acked);
 	else {
 		/* In dangerous area, increase slowly.
 		 * In theory this is tp->snd_cwnd += alpha / tp->snd_cwnd
@@ -270,6 +271,7 @@ static void htcp_state(struct sock *sk, u8 new_state)
 	case TCP_CA_Open:
 		{
 			struct htcp *ca = inet_csk_ca(sk);
+
 			if (ca->undo_last_cong) {
 				ca->last_cong = jiffies;
 				ca->undo_last_cong = 0;
@@ -284,7 +286,7 @@ static void htcp_state(struct sock *sk, u8 new_state)
 	}
 }
 
-static struct tcp_congestion_ops htcp = {
+static struct tcp_congestion_ops htcp __read_mostly = {
 	.init		= htcp_init,
 	.ssthresh	= htcp_recalc_ssthresh,
 	.cong_avoid	= htcp_cong_avoid,

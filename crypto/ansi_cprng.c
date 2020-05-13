@@ -1,16 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * PRNG: Pseudo Random Number Generator
  *       Based on NIST Recommended PRNG From ANSI X9.31 Appendix A.2.4 using
  *       AES 128 cipher
  *
  *  (C) Neil Horman <nhorman@tuxdriver.com>
- *
- *  This program is free software; you can redistribute it and/or modify it
- *  under the terms of the GNU General Public License as published by the
- *  Free Software Foundation; either version 2 of the License, or (at your
- *  any later version.
- *
- *
  */
 
 #include <crypto/internal/rng.h>
@@ -19,8 +13,6 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/string.h>
-
-#include "internal.h"
 
 #define DEFAULT_PRNG_KEY "0123456789abcdef"
 #define DEFAULT_PRNG_KSZ 16
@@ -83,9 +75,9 @@ static void xor_vectors(unsigned char *in1, unsigned char *in2,
 }
 /*
  * Returns DEFAULT_BLK_SZ bytes of random data per call
- * returns 0 if generation succeded, <0 if something went wrong
+ * returns 0 if generation succeeded, <0 if something went wrong
  */
-static int _get_more_prng_bytes(struct prng_context *ctx)
+static int _get_more_prng_bytes(struct prng_context *ctx, int cont_test)
 {
 	int i;
 	unsigned char tmp[DEFAULT_BLK_SZ];
@@ -132,7 +124,7 @@ static int _get_more_prng_bytes(struct prng_context *ctx)
 			 */
 			if (!memcmp(ctx->rand_data, ctx->last_rand_data,
 					DEFAULT_BLK_SZ)) {
-				if (fips_enabled) {
+				if (cont_test) {
 					panic("cprng %p Failed repetition check!\n",
 						ctx);
 				}
@@ -185,15 +177,13 @@ static int _get_more_prng_bytes(struct prng_context *ctx)
 }
 
 /* Our exported functions */
-static int get_prng_bytes(char *buf, size_t nbytes, struct prng_context *ctx)
+static int get_prng_bytes(char *buf, size_t nbytes, struct prng_context *ctx,
+				int do_cont_test)
 {
 	unsigned char *ptr = buf;
 	unsigned int byte_count = (unsigned int)nbytes;
 	int err;
 
-
-	if (nbytes < 0)
-		return -EINVAL;
 
 	spin_lock_bh(&ctx->prng_lock);
 
@@ -212,7 +202,11 @@ static int get_prng_bytes(char *buf, size_t nbytes, struct prng_context *ctx)
 		byte_count = DEFAULT_BLK_SZ;
 	}
 
-	err = byte_count;
+	/*
+	 * Return 0 in case of success as mandated by the kernel
+	 * crypto API interface definition.
+	 */
+	err = 0;
 
 	dbgprint(KERN_CRIT "getting %d random bytes for context %p\n",
 		byte_count, ctx);
@@ -220,7 +214,7 @@ static int get_prng_bytes(char *buf, size_t nbytes, struct prng_context *ctx)
 
 remainder:
 	if (ctx->rand_data_valid == DEFAULT_BLK_SZ) {
-		if (_get_more_prng_bytes(ctx) < 0) {
+		if (_get_more_prng_bytes(ctx, do_cont_test) < 0) {
 			memset(buf, 0, nbytes);
 			err = -EINVAL;
 			goto done;
@@ -247,7 +241,7 @@ empty_rbuf:
 	 */
 	for (; byte_count >= DEFAULT_BLK_SZ; byte_count -= DEFAULT_BLK_SZ) {
 		if (ctx->rand_data_valid == DEFAULT_BLK_SZ) {
-			if (_get_more_prng_bytes(ctx) < 0) {
+			if (_get_more_prng_bytes(ctx, do_cont_test) < 0) {
 				memset(buf, 0, nbytes);
 				err = -EINVAL;
 				goto done;
@@ -279,11 +273,11 @@ static void free_prng_context(struct prng_context *ctx)
 }
 
 static int reset_prng_context(struct prng_context *ctx,
-			      unsigned char *key, size_t klen,
-			      unsigned char *V, unsigned char *DT)
+			      const unsigned char *key, size_t klen,
+			      const unsigned char *V, const unsigned char *DT)
 {
 	int ret;
-	unsigned char *prng_key;
+	const unsigned char *prng_key;
 
 	spin_lock_bh(&ctx->prng_lock);
 	ctx->flags |= PRNG_NEED_RESET;
@@ -351,12 +345,13 @@ static void cprng_exit(struct crypto_tfm *tfm)
 	free_prng_context(crypto_tfm_ctx(tfm));
 }
 
-static int cprng_get_random(struct crypto_rng *tfm, u8 *rdata,
-			    unsigned int dlen)
+static int cprng_get_random(struct crypto_rng *tfm,
+			    const u8 *src, unsigned int slen,
+			    u8 *rdata, unsigned int dlen)
 {
 	struct prng_context *prng = crypto_rng_ctx(tfm);
 
-	return get_prng_bytes(rdata, dlen, prng);
+	return get_prng_bytes(rdata, dlen, prng, 0);
 }
 
 /*
@@ -365,11 +360,12 @@ static int cprng_get_random(struct crypto_rng *tfm, u8 *rdata,
  *  V and KEY are required during reset, and DT is optional, detected
  *  as being present by testing the length of the seed
  */
-static int cprng_reset(struct crypto_rng *tfm, u8 *seed, unsigned int slen)
+static int cprng_reset(struct crypto_rng *tfm,
+		       const u8 *seed, unsigned int slen)
 {
 	struct prng_context *prng = crypto_rng_ctx(tfm);
-	u8 *key = seed + DEFAULT_BLK_SZ;
-	u8 *dt = NULL;
+	const u8 *key = seed + DEFAULT_BLK_SZ;
+	const u8 *dt = NULL;
 
 	if (slen < DEFAULT_PRNG_KSZ + DEFAULT_BLK_SZ)
 		return -EINVAL;
@@ -384,40 +380,85 @@ static int cprng_reset(struct crypto_rng *tfm, u8 *seed, unsigned int slen)
 	return 0;
 }
 
-static struct crypto_alg rng_alg = {
-	.cra_name		= "stdrng",
-	.cra_driver_name	= "ansi_cprng",
-	.cra_priority		= 100,
-	.cra_flags		= CRYPTO_ALG_TYPE_RNG,
-	.cra_ctxsize		= sizeof(struct prng_context),
-	.cra_type		= &crypto_rng_type,
-	.cra_module		= THIS_MODULE,
-	.cra_list		= LIST_HEAD_INIT(rng_alg.cra_list),
-	.cra_init		= cprng_init,
-	.cra_exit		= cprng_exit,
-	.cra_u			= {
-		.rng = {
-			.rng_make_random	= cprng_get_random,
-			.rng_reset		= cprng_reset,
-			.seedsize = DEFAULT_PRNG_KSZ + 2*DEFAULT_BLK_SZ,
-		}
-	}
-};
+#ifdef CONFIG_CRYPTO_FIPS
+static int fips_cprng_get_random(struct crypto_rng *tfm,
+				 const u8 *src, unsigned int slen,
+				 u8 *rdata, unsigned int dlen)
+{
+	struct prng_context *prng = crypto_rng_ctx(tfm);
 
+	return get_prng_bytes(rdata, dlen, prng, 1);
+}
+
+static int fips_cprng_reset(struct crypto_rng *tfm,
+			    const u8 *seed, unsigned int slen)
+{
+	u8 rdata[DEFAULT_BLK_SZ];
+	const u8 *key = seed + DEFAULT_BLK_SZ;
+	int rc;
+
+	struct prng_context *prng = crypto_rng_ctx(tfm);
+
+	if (slen < DEFAULT_PRNG_KSZ + DEFAULT_BLK_SZ)
+		return -EINVAL;
+
+	/* fips strictly requires seed != key */
+	if (!memcmp(seed, key, DEFAULT_PRNG_KSZ))
+		return -EINVAL;
+
+	rc = cprng_reset(tfm, seed, slen);
+
+	if (!rc)
+		goto out;
+
+	/* this primes our continuity test */
+	rc = get_prng_bytes(rdata, DEFAULT_BLK_SZ, prng, 0);
+	prng->rand_data_valid = DEFAULT_BLK_SZ;
+
+out:
+	return rc;
+}
+#endif
+
+static struct rng_alg rng_algs[] = { {
+	.generate		= cprng_get_random,
+	.seed			= cprng_reset,
+	.seedsize		= DEFAULT_PRNG_KSZ + 2 * DEFAULT_BLK_SZ,
+	.base			=	{
+		.cra_name		= "stdrng",
+		.cra_driver_name	= "ansi_cprng",
+		.cra_priority		= 100,
+		.cra_ctxsize		= sizeof(struct prng_context),
+		.cra_module		= THIS_MODULE,
+		.cra_init		= cprng_init,
+		.cra_exit		= cprng_exit,
+	}
+#ifdef CONFIG_CRYPTO_FIPS
+}, {
+	.generate		= fips_cprng_get_random,
+	.seed			= fips_cprng_reset,
+	.seedsize		= DEFAULT_PRNG_KSZ + 2 * DEFAULT_BLK_SZ,
+	.base			=	{
+		.cra_name		= "fips(ansi_cprng)",
+		.cra_driver_name	= "fips_ansi_cprng",
+		.cra_priority		= 300,
+		.cra_ctxsize		= sizeof(struct prng_context),
+		.cra_module		= THIS_MODULE,
+		.cra_init		= cprng_init,
+		.cra_exit		= cprng_exit,
+	}
+#endif
+} };
 
 /* Module initalization */
 static int __init prng_mod_init(void)
 {
-	if (fips_enabled)
-		rng_alg.cra_priority += 200;
-
-	return crypto_register_alg(&rng_alg);
+	return crypto_register_rngs(rng_algs, ARRAY_SIZE(rng_algs));
 }
 
 static void __exit prng_mod_fini(void)
 {
-	crypto_unregister_alg(&rng_alg);
-	return;
+	crypto_unregister_rngs(rng_algs, ARRAY_SIZE(rng_algs));
 }
 
 MODULE_LICENSE("GPL");
@@ -425,6 +466,7 @@ MODULE_DESCRIPTION("Software Pseudo Random Number Generator");
 MODULE_AUTHOR("Neil Horman <nhorman@tuxdriver.com>");
 module_param(dbg, int, 0);
 MODULE_PARM_DESC(dbg, "Boolean to enable debugging (0/1 == off/on)");
-module_init(prng_mod_init);
+subsys_initcall(prng_mod_init);
 module_exit(prng_mod_fini);
-MODULE_ALIAS("stdrng");
+MODULE_ALIAS_CRYPTO("stdrng");
+MODULE_ALIAS_CRYPTO("ansi_cprng");

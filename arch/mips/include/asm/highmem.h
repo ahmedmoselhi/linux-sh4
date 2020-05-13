@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * highmem.h: virtual kernel memory mappings for high memory
  *
@@ -19,13 +20,11 @@
 
 #ifdef __KERNEL__
 
-#include <linux/init.h>
+#include <linux/bug.h>
 #include <linux/interrupt.h>
 #include <linux/uaccess.h>
+#include <asm/cpu-features.h>
 #include <asm/kmap_types.h>
-
-/* undef for production */
-#define HIGHMEM_DEBUG 1
 
 /* declarations for highmem.c */
 extern unsigned long highstart_pfn, highend_pfn;
@@ -37,28 +36,26 @@ extern pte_t *pkmap_page_table;
  * easily, subsequent pte tables have to be allocated in one physical
  * chunk of RAM.
  */
+#ifdef CONFIG_PHYS_ADDR_T_64BIT
+#define LAST_PKMAP 512
+#else
 #define LAST_PKMAP 1024
+#endif
+
 #define LAST_PKMAP_MASK (LAST_PKMAP-1)
-#define PKMAP_NR(virt)  ((virt-PKMAP_BASE) >> PAGE_SHIFT)
-#define PKMAP_ADDR(nr)  (PKMAP_BASE + ((nr) << PAGE_SHIFT))
+#define PKMAP_NR(virt)	((virt-PKMAP_BASE) >> PAGE_SHIFT)
+#define PKMAP_ADDR(nr)	(PKMAP_BASE + ((nr) << PAGE_SHIFT))
 
 extern void * kmap_high(struct page *page);
 extern void kunmap_high(struct page *page);
 
-extern void *__kmap(struct page *page);
-extern void __kunmap(struct page *page);
-extern void *__kmap_atomic(struct page *page, enum km_type type);
-extern void __kunmap_atomic(void *kvaddr, enum km_type type);
-extern void *kmap_atomic_pfn(unsigned long pfn, enum km_type type);
-extern struct page *__kmap_atomic_to_page(void *ptr);
+extern void *kmap(struct page *page);
+extern void kunmap(struct page *page);
+extern void *kmap_atomic(struct page *page);
+extern void __kunmap_atomic(void *kvaddr);
+extern void *kmap_atomic_pfn(unsigned long pfn);
 
-#define kmap			__kmap
-#define kunmap			__kunmap
-#define kmap_atomic		__kmap_atomic
-#define kunmap_atomic		__kunmap_atomic
-#define kmap_atomic_to_page	__kmap_atomic_to_page
-
-#define flush_cache_kmaps()	flush_cache_all()
+#define flush_cache_kmaps()	BUG_ON(cpu_has_dc_aliases)
 
 extern void kmap_init(void);
 

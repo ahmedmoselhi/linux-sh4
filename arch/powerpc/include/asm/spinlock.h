@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 #ifndef __ASM_SPINLOCK_H
 #define __ASM_SPINLOCK_H
 #ifdef __KERNEL__
@@ -12,71 +13,79 @@
  *
  * Type of int is used as a full 64b word is not necessary.
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
- *
  * (the type definitions are in asm/spinlock_types.h)
  */
+#include <linux/jump_label.h>
 #include <linux/irqflags.h>
 #ifdef CONFIG_PPC64
 #include <asm/paca.h>
 #include <asm/hvcall.h>
-#include <asm/iseries/hv_call.h>
 #endif
-#include <asm/asm-compat.h>
 #include <asm/synch.h>
-
-#define __raw_spin_is_locked(x)		((x)->slock != 0)
+#include <asm/ppc-opcode.h>
+#include <asm/asm-405.h>
 
 #ifdef CONFIG_PPC64
 /* use 0x800000yy when locked, where yy == CPU number */
+#ifdef __BIG_ENDIAN__
 #define LOCK_TOKEN	(*(u32 *)(&get_paca()->lock_token))
+#else
+#define LOCK_TOKEN	(*(u32 *)(&get_paca()->paca_index))
+#endif
 #else
 #define LOCK_TOKEN	1
 #endif
 
-#if defined(CONFIG_PPC64) && defined(CONFIG_SMP)
-#define CLEAR_IO_SYNC	(get_paca()->io_sync = 0)
-#define SYNC_IO		do {						\
-				if (unlikely(get_paca()->io_sync)) {	\
-					mb();				\
-					get_paca()->io_sync = 0;	\
-				}					\
-			} while (0)
-#else
-#define CLEAR_IO_SYNC
-#define SYNC_IO
+#ifdef CONFIG_PPC_PSERIES
+DECLARE_STATIC_KEY_FALSE(shared_processor);
+
+#define vcpu_is_preempted vcpu_is_preempted
+static inline bool vcpu_is_preempted(int cpu)
+{
+	if (!static_branch_unlikely(&shared_processor))
+		return false;
+	return !!(be32_to_cpu(lppaca_of(cpu).yield_count) & 1);
+}
 #endif
+
+static __always_inline int arch_spin_value_unlocked(arch_spinlock_t lock)
+{
+	return lock.slock == 0;
+}
+
+static inline int arch_spin_is_locked(arch_spinlock_t *lock)
+{
+	smp_mb();
+	return !arch_spin_value_unlocked(*lock);
+}
 
 /*
  * This returns the old value in the lock, so we succeeded
  * in getting the lock if the return value is 0.
  */
-static inline unsigned long arch_spin_trylock(raw_spinlock_t *lock)
+static inline unsigned long __arch_spin_trylock(arch_spinlock_t *lock)
 {
 	unsigned long tmp, token;
 
 	token = LOCK_TOKEN;
 	__asm__ __volatile__(
-"1:	lwarx		%0,0,%2\n\
+"1:	" PPC_LWARX(%0,0,%2,1) "\n\
 	cmpwi		0,%0,0\n\
 	bne-		2f\n\
 	stwcx.		%1,0,%2\n\
-	bne-		1b\n\
-	isync\n\
-2:"	: "=&r" (tmp)
+	bne-		1b\n"
+	PPC_ACQUIRE_BARRIER
+"2:"
+	: "=&r" (tmp)
 	: "r" (token), "r" (&lock->slock)
 	: "cr0", "memory");
 
 	return tmp;
 }
 
-static inline int __raw_spin_trylock(raw_spinlock_t *lock)
+static inline int arch_spin_trylock(arch_spinlock_t *lock)
 {
-	CLEAR_IO_SYNC;
-	return arch_spin_trylock(lock) == 0;
+	return __arch_spin_trylock(lock) == 0;
 }
 
 /*
@@ -93,67 +102,81 @@ static inline int __raw_spin_trylock(raw_spinlock_t *lock)
  * value.
  */
 
-#if defined(CONFIG_PPC_SPLPAR) || defined(CONFIG_PPC_ISERIES)
+#if defined(CONFIG_PPC_SPLPAR)
 /* We only yield to the hypervisor if we are in shared processor mode */
-#define SHARED_PROCESSOR (get_lppaca()->shared_proc)
-extern void __spin_yield(raw_spinlock_t *lock);
-extern void __rw_yield(raw_rwlock_t *lock);
-#else /* SPLPAR || ISERIES */
-#define __spin_yield(x)	barrier()
-#define __rw_yield(x)	barrier()
-#define SHARED_PROCESSOR	0
+void splpar_spin_yield(arch_spinlock_t *lock);
+void splpar_rw_yield(arch_rwlock_t *lock);
+#else /* SPLPAR */
+static inline void splpar_spin_yield(arch_spinlock_t *lock) {};
+static inline void splpar_rw_yield(arch_rwlock_t *lock) {};
 #endif
 
-static inline void __raw_spin_lock(raw_spinlock_t *lock)
+static inline bool is_shared_processor(void)
 {
-	CLEAR_IO_SYNC;
+#ifdef CONFIG_PPC_SPLPAR
+	return static_branch_unlikely(&shared_processor);
+#else
+	return false;
+#endif
+}
+
+static inline void spin_yield(arch_spinlock_t *lock)
+{
+	if (is_shared_processor())
+		splpar_spin_yield(lock);
+	else
+		barrier();
+}
+
+static inline void rw_yield(arch_rwlock_t *lock)
+{
+	if (is_shared_processor())
+		splpar_rw_yield(lock);
+	else
+		barrier();
+}
+
+static inline void arch_spin_lock(arch_spinlock_t *lock)
+{
 	while (1) {
-		if (likely(arch_spin_trylock(lock) == 0))
+		if (likely(__arch_spin_trylock(lock) == 0))
 			break;
 		do {
 			HMT_low();
-			if (SHARED_PROCESSOR)
-				__spin_yield(lock);
+			if (is_shared_processor())
+				splpar_spin_yield(lock);
 		} while (unlikely(lock->slock != 0));
 		HMT_medium();
 	}
 }
 
 static inline
-void __raw_spin_lock_flags(raw_spinlock_t *lock, unsigned long flags)
+void arch_spin_lock_flags(arch_spinlock_t *lock, unsigned long flags)
 {
 	unsigned long flags_dis;
 
-	CLEAR_IO_SYNC;
 	while (1) {
-		if (likely(arch_spin_trylock(lock) == 0))
+		if (likely(__arch_spin_trylock(lock) == 0))
 			break;
 		local_save_flags(flags_dis);
 		local_irq_restore(flags);
 		do {
 			HMT_low();
-			if (SHARED_PROCESSOR)
-				__spin_yield(lock);
+			if (is_shared_processor())
+				splpar_spin_yield(lock);
 		} while (unlikely(lock->slock != 0));
 		HMT_medium();
 		local_irq_restore(flags_dis);
 	}
 }
+#define arch_spin_lock_flags arch_spin_lock_flags
 
-static inline void __raw_spin_unlock(raw_spinlock_t *lock)
+static inline void arch_spin_unlock(arch_spinlock_t *lock)
 {
-	SYNC_IO;
-	__asm__ __volatile__("# __raw_spin_unlock\n\t"
-				LWSYNC_ON_SMP: : :"memory");
+	__asm__ __volatile__("# arch_spin_unlock\n\t"
+				PPC_RELEASE_BARRIER: : :"memory");
 	lock->slock = 0;
 }
-
-#ifdef CONFIG_PPC64
-extern void __raw_spin_unlock_wait(raw_spinlock_t *lock);
-#else
-#define __raw_spin_unlock_wait(lock) \
-	do { while (__raw_spin_is_locked(lock)) cpu_relax(); } while (0)
-#endif
 
 /*
  * Read-write spinlocks, allowing multiple readers
@@ -165,9 +188,6 @@ extern void __raw_spin_unlock_wait(raw_spinlock_t *lock);
  * irq-safe write-lock, but readers can get non-irqsafe
  * read-locks.
  */
-
-#define __raw_read_can_lock(rw)		((rw)->lock >= 0)
-#define __raw_write_can_lock(rw)	(!(rw)->lock)
 
 #ifdef CONFIG_PPC64
 #define __DO_SIGN_EXTEND	"extsw	%0,%0\n"
@@ -181,20 +201,20 @@ extern void __raw_spin_unlock_wait(raw_spinlock_t *lock);
  * This returns the old value in the lock + 1,
  * so we got a read lock if the return value is > 0.
  */
-static inline long arch_read_trylock(raw_rwlock_t *rw)
+static inline long __arch_read_trylock(arch_rwlock_t *rw)
 {
 	long tmp;
 
 	__asm__ __volatile__(
-"1:	lwarx		%0,0,%1\n"
+"1:	" PPC_LWARX(%0,0,%1,1) "\n"
 	__DO_SIGN_EXTEND
 "	addic.		%0,%0,1\n\
 	ble-		2f\n"
 	PPC405_ERR77(0,%1)
 "	stwcx.		%0,0,%1\n\
-	bne-		1b\n\
-	isync\n\
-2:"	: "=&r" (tmp)
+	bne-		1b\n"
+	PPC_ACQUIRE_BARRIER
+"2:"	: "=&r" (tmp)
 	: "r" (&rw->lock)
 	: "cr0", "xer", "memory");
 
@@ -205,71 +225,71 @@ static inline long arch_read_trylock(raw_rwlock_t *rw)
  * This returns the old value in the lock,
  * so we got the write lock if the return value is 0.
  */
-static inline long arch_write_trylock(raw_rwlock_t *rw)
+static inline long __arch_write_trylock(arch_rwlock_t *rw)
 {
 	long tmp, token;
 
 	token = WRLOCK_TOKEN;
 	__asm__ __volatile__(
-"1:	lwarx		%0,0,%2\n\
+"1:	" PPC_LWARX(%0,0,%2,1) "\n\
 	cmpwi		0,%0,0\n\
 	bne-		2f\n"
 	PPC405_ERR77(0,%1)
 "	stwcx.		%1,0,%2\n\
-	bne-		1b\n\
-	isync\n\
-2:"	: "=&r" (tmp)
+	bne-		1b\n"
+	PPC_ACQUIRE_BARRIER
+"2:"	: "=&r" (tmp)
 	: "r" (token), "r" (&rw->lock)
 	: "cr0", "memory");
 
 	return tmp;
 }
 
-static inline void __raw_read_lock(raw_rwlock_t *rw)
+static inline void arch_read_lock(arch_rwlock_t *rw)
 {
 	while (1) {
-		if (likely(arch_read_trylock(rw) > 0))
+		if (likely(__arch_read_trylock(rw) > 0))
 			break;
 		do {
 			HMT_low();
-			if (SHARED_PROCESSOR)
-				__rw_yield(rw);
+			if (is_shared_processor())
+				splpar_rw_yield(rw);
 		} while (unlikely(rw->lock < 0));
 		HMT_medium();
 	}
 }
 
-static inline void __raw_write_lock(raw_rwlock_t *rw)
+static inline void arch_write_lock(arch_rwlock_t *rw)
 {
 	while (1) {
-		if (likely(arch_write_trylock(rw) == 0))
+		if (likely(__arch_write_trylock(rw) == 0))
 			break;
 		do {
 			HMT_low();
-			if (SHARED_PROCESSOR)
-				__rw_yield(rw);
+			if (is_shared_processor())
+				splpar_rw_yield(rw);
 		} while (unlikely(rw->lock != 0));
 		HMT_medium();
 	}
 }
 
-static inline int __raw_read_trylock(raw_rwlock_t *rw)
+static inline int arch_read_trylock(arch_rwlock_t *rw)
 {
-	return arch_read_trylock(rw) > 0;
+	return __arch_read_trylock(rw) > 0;
 }
 
-static inline int __raw_write_trylock(raw_rwlock_t *rw)
+static inline int arch_write_trylock(arch_rwlock_t *rw)
 {
-	return arch_write_trylock(rw) == 0;
+	return __arch_write_trylock(rw) == 0;
 }
 
-static inline void __raw_read_unlock(raw_rwlock_t *rw)
+static inline void arch_read_unlock(arch_rwlock_t *rw)
 {
 	long tmp;
 
 	__asm__ __volatile__(
 	"# read_unlock\n\t"
-	LWSYNC_ON_SMP
+	PPC_RELEASE_BARRIER
 "1:	lwarx		%0,0,%1\n\
 	addic		%0,%0,-1\n"
 	PPC405_ERR77(0,%1)
@@ -280,19 +300,19 @@ static inline void __raw_read_unlock(raw_rwlock_t *rw)
 	: "cr0", "xer", "memory");
 }
 
-static inline void __raw_write_unlock(raw_rwlock_t *rw)
+static inline void arch_write_unlock(arch_rwlock_t *rw)
 {
 	__asm__ __volatile__("# write_unlock\n\t"
-				LWSYNC_ON_SMP: : :"memory");
+				PPC_RELEASE_BARRIER: : :"memory");
 	rw->lock = 0;
 }
 
-#define __raw_read_lock_flags(lock, flags) __raw_read_lock(lock)
-#define __raw_write_lock_flags(lock, flags) __raw_write_lock(lock)
+#define arch_spin_relax(lock)	spin_yield(lock)
+#define arch_read_relax(lock)	rw_yield(lock)
+#define arch_write_relax(lock)	rw_yield(lock)
 
-#define _raw_spin_relax(lock)	__spin_yield(lock)
-#define _raw_read_relax(lock)	__rw_yield(lock)
-#define _raw_write_relax(lock)	__rw_yield(lock)
+/* See include/linux/spinlock.h */
+#define smp_mb__after_spinlock()   smp_mb()
 
 #endif /* __KERNEL__ */
 #endif /* __ASM_SPINLOCK_H */

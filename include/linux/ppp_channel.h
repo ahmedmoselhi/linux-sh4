@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 #ifndef _PPP_CHANNEL_H_
 #define _PPP_CHANNEL_H_
 /*
@@ -10,11 +11,6 @@
  * number at the start, but not the address and control bytes.
  *
  * Copyright 1999 Paul Mackerras.
- *
- *  This program is free software; you can redistribute it and/or
- *  modify it under the terms of the GNU General Public License
- *  as published by the Free Software Foundation; either version
- *  2 of the License, or (at your option) any later version.
  *
  * ==FILEVERSION 20000322==
  */
@@ -36,7 +32,7 @@ struct ppp_channel_ops {
 
 struct ppp_channel {
 	void		*private;	/* channel private data */
-	struct ppp_channel_ops *ops;	/* operations for this channel */
+	const struct ppp_channel_ops *ops; /* operations for this channel */
 	int		mtu;		/* max transmit packet size */
 	int		hdrlen;		/* amount of headroom channel needs */
 	void		*ppp;		/* opaque to channel */
@@ -71,6 +67,9 @@ extern int ppp_channel_index(struct ppp_channel *);
 
 /* Get the unit number associated with a channel, or -1 if none */
 extern int ppp_unit_number(struct ppp_channel *);
+
+/* Get the device name associated with a channel, or NULL if none */
+extern char *ppp_dev_name(struct ppp_channel *);
 
 /*
  * SMP locking notes:

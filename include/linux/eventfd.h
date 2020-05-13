@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *  include/linux/eventfd.h
  *
@@ -9,10 +10,13 @@
 #define _LINUX_EVENTFD_H
 
 #include <linux/fcntl.h>
-#include <linux/file.h>
+#include <linux/wait.h>
+#include <linux/err.h>
+#include <linux/percpu-defs.h>
+#include <linux/percpu.h>
 
 /*
- * CAREFUL: Check include/asm-generic/fcntl.h when defining
+ * CAREFUL: Check include/uapi/asm-generic/fcntl.h when defining
  * new flags, since they might collide with O_* ones. We want
  * to re-use O_* flags that couldn't possibly have a meaning
  * from eventfd, in order to leave a free define-space for
@@ -25,15 +29,25 @@
 #define EFD_SHARED_FCNTL_FLAGS (O_CLOEXEC | O_NONBLOCK)
 #define EFD_FLAGS_SET (EFD_SHARED_FCNTL_FLAGS | EFD_SEMAPHORE)
 
+struct eventfd_ctx;
+struct file;
+
 #ifdef CONFIG_EVENTFD
 
-struct file *eventfd_file_create(unsigned int count, int flags);
-struct eventfd_ctx *eventfd_ctx_get(struct eventfd_ctx *ctx);
 void eventfd_ctx_put(struct eventfd_ctx *ctx);
 struct file *eventfd_fget(int fd);
 struct eventfd_ctx *eventfd_ctx_fdget(int fd);
 struct eventfd_ctx *eventfd_ctx_fileget(struct file *file);
-int eventfd_signal(struct eventfd_ctx *ctx, int n);
+__u64 eventfd_signal(struct eventfd_ctx *ctx, __u64 n);
+int eventfd_ctx_remove_wait_queue(struct eventfd_ctx *ctx, wait_queue_entry_t *wait,
+				  __u64 *cnt);
+
+DECLARE_PER_CPU(int, eventfd_wake_count);
+
+static inline bool eventfd_signal_count(void)
+{
+	return this_cpu_read(eventfd_wake_count);
+}
 
 #else /* CONFIG_EVENTFD */
 
@@ -41,10 +55,6 @@ int eventfd_signal(struct eventfd_ctx *ctx, int n);
  * Ugly ugly ugly error layer to support modules that uses eventfd but
  * pretend to work in !CONFIG_EVENTFD configurations. Namely, AIO.
  */
-static inline struct file *eventfd_file_create(unsigned int count, int flags)
-{
-	return ERR_PTR(-ENOSYS);
-}
 
 static inline struct eventfd_ctx *eventfd_ctx_fdget(int fd)
 {
@@ -59,6 +69,17 @@ static inline int eventfd_signal(struct eventfd_ctx *ctx, int n)
 static inline void eventfd_ctx_put(struct eventfd_ctx *ctx)
 {
 
+}
+
+static inline int eventfd_ctx_remove_wait_queue(struct eventfd_ctx *ctx,
+						wait_queue_entry_t *wait, __u64 *cnt)
+{
+	return -ENOSYS;
+}
+
+static inline bool eventfd_signal_count(void)
+{
+	return false;
 }
 
 #endif

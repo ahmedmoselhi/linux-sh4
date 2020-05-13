@@ -59,7 +59,7 @@
 #define KMSG_COMPONENT "SFI"
 #define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
-#include <linux/bootmem.h>
+#include <linux/memblock.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/errno.h>
@@ -67,6 +67,8 @@
 #include <linux/acpi.h>
 #include <linux/init.h>
 #include <linux/sfi.h>
+#include <linux/slab.h>
+#include <linux/io.h>
 
 #include "sfi_core.h"
 
@@ -85,13 +87,13 @@ static struct sfi_table_simple *syst_va __read_mostly;
 /*
  * FW creates and saves the SFI tables in memory. When these tables get
  * used, they may need to be mapped to virtual address space, and the mapping
- * can happen before or after the ioremap() is ready, so a flag is needed
+ * can happen before or after the memremap() is ready, so a flag is needed
  * to indicating this
  */
-static u32 sfi_use_ioremap __read_mostly;
+static u32 sfi_use_memremap __read_mostly;
 
 /*
- * sfi_un/map_memory calls early_ioremap/iounmap which is a __init function
+ * sfi_un/map_memory calls early_memremap/memunmap which is a __init function
  * and introduces section mismatch. So use __ref to make it calm.
  */
 static void __iomem * __ref sfi_map_memory(u64 phys, u32 size)
@@ -99,10 +101,10 @@ static void __iomem * __ref sfi_map_memory(u64 phys, u32 size)
 	if (!phys || !size)
 		return NULL;
 
-	if (sfi_use_ioremap)
-		return ioremap(phys, size);
+	if (sfi_use_memremap)
+		return memremap(phys, size, MEMREMAP_WB);
 	else
-		return early_ioremap(phys, size);
+		return early_memremap(phys, size);
 }
 
 static void __ref sfi_unmap_memory(void __iomem *virt, u32 size)
@@ -110,10 +112,10 @@ static void __ref sfi_unmap_memory(void __iomem *virt, u32 size)
 	if (!virt || !size)
 		return;
 
-	if (sfi_use_ioremap)
-		iounmap(virt);
+	if (sfi_use_memremap)
+		memunmap(virt);
 	else
-		early_iounmap(virt, size);
+		early_memunmap(virt, size);
 }
 
 static void sfi_print_table_header(unsigned long long pa,
@@ -160,7 +162,7 @@ static int sfi_verify_table(struct sfi_table_header *table)
  * Check for common case that we can re-use mapping to SYST,
  * which requires syst_pa, syst_va to be initialized.
  */
-struct sfi_table_header *sfi_map_table(u64 pa)
+static struct sfi_table_header *sfi_map_table(u64 pa)
 {
 	struct sfi_table_header *th;
 	u32 length;
@@ -188,7 +190,7 @@ struct sfi_table_header *sfi_map_table(u64 pa)
  * Undoes effect of sfi_map_table() by unmapping table
  * if it did not completely fit on same page as SYST.
  */
-void sfi_unmap_table(struct sfi_table_header *th)
+static void sfi_unmap_table(struct sfi_table_header *th)
 {
 	if (!TABLE_ON_PAGE(syst_va, th, th->len))
 		sfi_unmap_memory(th, TABLE_ON_PAGE(th, th, th->len) ?
@@ -382,6 +384,104 @@ static __init int sfi_find_syst(void)
 	return -1;
 }
 
+static struct kobject *sfi_kobj;
+static struct kobject *tables_kobj;
+
+static ssize_t sfi_table_show(struct file *filp, struct kobject *kobj,
+			       struct bin_attribute *bin_attr, char *buf,
+			       loff_t offset, size_t count)
+{
+	struct sfi_table_attr *tbl_attr =
+	    container_of(bin_attr, struct sfi_table_attr, attr);
+	struct sfi_table_header *th = NULL;
+	struct sfi_table_key key;
+	ssize_t cnt;
+
+	key.sig = tbl_attr->name;
+	key.oem_id = NULL;
+	key.oem_table_id = NULL;
+
+	if (strncmp(SFI_SIG_SYST, tbl_attr->name, SFI_SIGNATURE_SIZE)) {
+		th = sfi_get_table(&key);
+		if (!th)
+			return 0;
+
+		cnt =  memory_read_from_buffer(buf, count, &offset,
+						th, th->len);
+		sfi_put_table(th);
+	} else
+		cnt =  memory_read_from_buffer(buf, count, &offset,
+					syst_va, syst_va->header.len);
+
+	return cnt;
+}
+
+struct sfi_table_attr __init *sfi_sysfs_install_table(u64 pa)
+{
+	struct sfi_table_attr *tbl_attr;
+	struct sfi_table_header *th;
+	int ret;
+
+	tbl_attr = kzalloc(sizeof(struct sfi_table_attr), GFP_KERNEL);
+	if (!tbl_attr)
+		return NULL;
+
+	th = sfi_map_table(pa);
+	if (!th || !th->sig[0]) {
+		kfree(tbl_attr);
+		return NULL;
+	}
+
+	sysfs_attr_init(&tbl_attr->attr.attr);
+	memcpy(tbl_attr->name, th->sig, SFI_SIGNATURE_SIZE);
+
+	tbl_attr->attr.size = 0;
+	tbl_attr->attr.read = sfi_table_show;
+	tbl_attr->attr.attr.name = tbl_attr->name;
+	tbl_attr->attr.attr.mode = 0400;
+
+	ret = sysfs_create_bin_file(tables_kobj,
+				  &tbl_attr->attr);
+	if (ret) {
+		kfree(tbl_attr);
+		tbl_attr = NULL;
+	}
+
+	sfi_unmap_table(th);
+	return tbl_attr;
+}
+
+static int __init sfi_sysfs_init(void)
+{
+	int tbl_cnt, i;
+
+	if (sfi_disabled)
+		return 0;
+
+	sfi_kobj = kobject_create_and_add("sfi", firmware_kobj);
+	if (!sfi_kobj)
+		return 0;
+
+	tables_kobj = kobject_create_and_add("tables", sfi_kobj);
+	if (!tables_kobj) {
+		kobject_put(sfi_kobj);
+		return 0;
+	}
+
+	sfi_sysfs_install_table(syst_pa);
+
+	tbl_cnt = SFI_GET_NUM_ENTRIES(syst_va, u64);
+
+	for (i = 0; i < tbl_cnt; i++)
+		sfi_sysfs_install_table(syst_va->pentry[i]);
+
+	sfi_acpi_sysfs_init();
+	kobject_uevent(sfi_kobj, KOBJ_ADD);
+	kobject_uevent(tables_kobj, KOBJ_ADD);
+	pr_info("SFI sysfs interfaces init success\n");
+	return 0;
+}
+
 void __init sfi_init(void)
 {
 	if (!acpi_disabled)
@@ -390,7 +490,7 @@ void __init sfi_init(void)
 	if (sfi_disabled)
 		return;
 
-	pr_info("Simple Firmware Interface v0.7 http://simplefirmware.org\n");
+	pr_info("Simple Firmware Interface v0.81 http://simplefirmware.org\n");
 
 	if (sfi_find_syst() || sfi_parse_syst() || sfi_platform_init())
 		disable_sfi();
@@ -408,9 +508,15 @@ void __init sfi_init_late(void)
 	length = syst_va->header.len;
 	sfi_unmap_memory(syst_va, sizeof(struct sfi_table_simple));
 
-	/* Use ioremap now after it is ready */
-	sfi_use_ioremap = 1;
+	/* Use memremap now after it is ready */
+	sfi_use_memremap = 1;
 	syst_va = sfi_map_memory(syst_pa, length);
 
 	sfi_acpi_init();
 }
+
+/*
+ * The reason we put it here because we need wait till the /sys/firmware
+ * is setup, then our interface can be registered in /sys/firmware/sfi
+ */
+core_initcall(sfi_sysfs_init);

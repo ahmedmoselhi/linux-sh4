@@ -1,9 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/arch/arm/mach-mmp/clock.c
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2 as
- *  published by the Free Software Foundation.
  */
 
 #include <linux/module.h>
@@ -13,7 +10,7 @@
 #include <linux/clk.h>
 #include <linux/io.h>
 
-#include <mach/regs-apbc.h>
+#include "regs-apbc.h"
 #include "clock.h"
 
 static void apbc_clk_enable(struct clk *clk)
@@ -34,6 +31,21 @@ struct clkops apbc_clk_ops = {
 	.disable	= apbc_clk_disable,
 };
 
+static void apmu_clk_enable(struct clk *clk)
+{
+	__raw_writel(clk->enable_val, clk->clk_rst);
+}
+
+static void apmu_clk_disable(struct clk *clk)
+{
+	__raw_writel(0, clk->clk_rst);
+}
+
+struct clkops apmu_clk_ops = {
+	.enable		= apmu_clk_enable,
+	.disable	= apmu_clk_disable,
+};
+
 static DEFINE_SPINLOCK(clocks_lock);
 
 int clk_enable(struct clk *clk)
@@ -51,6 +63,9 @@ EXPORT_SYMBOL(clk_enable);
 void clk_disable(struct clk *clk)
 {
 	unsigned long flags;
+
+	if (!clk)
+		return;
 
 	WARN_ON(clk->enabled == 0);
 
@@ -74,10 +89,17 @@ unsigned long clk_get_rate(struct clk *clk)
 }
 EXPORT_SYMBOL(clk_get_rate);
 
-void clks_register(struct clk_lookup *clks, size_t num)
+int clk_set_rate(struct clk *clk, unsigned long rate)
 {
-	int i;
+	unsigned long flags;
+	int ret = -EINVAL;
 
-	for (i = 0; i < num; i++)
-		clkdev_add(&clks[i]);
+	if (clk->ops->setrate) {
+		spin_lock_irqsave(&clocks_lock, flags);
+		ret = clk->ops->setrate(clk, rate);
+		spin_unlock_irqrestore(&clocks_lock, flags);
+	}
+
+	return ret;
 }
+EXPORT_SYMBOL(clk_set_rate);

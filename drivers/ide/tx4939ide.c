@@ -104,17 +104,17 @@ static void tx4939ide_writeb(u8 val, void __iomem *base, u32 reg)
 
 #define TX4939IDE_BASE(hwif)	((void __iomem *)(hwif)->extra_base)
 
-static void tx4939ide_set_pio_mode(ide_drive_t *drive, const u8 pio)
+static void tx4939ide_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
-	ide_hwif_t *hwif = drive->hwif;
 	int is_slave = drive->dn;
 	u32 mask, val;
+	const u8 pio = drive->pio_mode - XFER_PIO_0;
 	u8 safe = pio;
 	ide_drive_t *pair;
 
 	pair = ide_get_pair_dev(drive);
 	if (pair)
-		safe = min(safe, ide_get_best_pio_mode(pair, 255, 4));
+		safe = min_t(u8, safe, pair->pio_mode - XFER_PIO_0);
 	/*
 	 * Update Command Transfer Mode for master/slave and Data
 	 * Transfer Mode for this drive.
@@ -125,10 +125,10 @@ static void tx4939ide_set_pio_mode(ide_drive_t *drive, const u8 pio)
 	/* tx4939ide_tf_load_fixup() will set the Sys_Ctl register */
 }
 
-static void tx4939ide_set_dma_mode(ide_drive_t *drive, const u8 mode)
+static void tx4939ide_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
-	ide_hwif_t *hwif = drive->hwif;
 	u32 mask, val;
+	const u8 mode = drive->dma_mode;
 
 	/* Update Data Transfer Mode for this drive. */
 	if (mode >= XFER_UDMA_0)
@@ -156,7 +156,6 @@ static u16 tx4939ide_check_error_ints(ide_hwif_t *hwif)
 		u16 sysctl = tx4939ide_readw(base, TX4939IDE_Sys_Ctl);
 
 		tx4939ide_writew(sysctl | 0x4000, base, TX4939IDE_Sys_Ctl);
-		mmiowb();
 		/* wait 12GBUSCLK (typ. 60ns @ GBUS200MHz, max 270ns) */
 		ndelay(270);
 		tx4939ide_writew(sysctl, base, TX4939IDE_Sys_Ctl);
@@ -364,9 +363,9 @@ static int tx4939ide_dma_test_irq(ide_drive_t *drive)
 	case TX4939IDE_INT_HOST | TX4939IDE_INT_XFEREND:
 		dma_stat = tx4939ide_readb(base, TX4939IDE_DMA_Stat);
 		if (!(dma_stat & ATA_DMA_INTR))
-			pr_warning("%s: weird interrupt status. "
-				   "DMA_Stat %#02x int_ctl %#04x\n",
-				   hwif->name, dma_stat, ctl);
+			pr_warn("%s: weird interrupt status. "
+				"DMA_Stat %#02x int_ctl %#04x\n",
+				hwif->name, dma_stat, ctl);
 		found = 1;
 		break;
 	}
@@ -396,7 +395,6 @@ static void tx4939ide_init_hwif(ide_hwif_t *hwif)
 
 	/* Soft Reset */
 	tx4939ide_writew(0x8000, base, TX4939IDE_Sys_Ctl);
-	mmiowb();
 	/* at least 20 GBUSCLK (typ. 100ns @ GBUS200MHz, max 450ns) */
 	ndelay(450);
 	tx4939ide_writew(0x0000, base, TX4939IDE_Sys_Ctl);
@@ -522,7 +520,7 @@ static const struct ide_dma_ops tx4939ide_dma_ops = {
 	.dma_sff_read_status	= tx4939ide_dma_sff_read_status,
 };
 
-static const struct ide_port_info tx4939ide_port_info __initdata = {
+static const struct ide_port_info tx4939ide_port_info __initconst = {
 	.init_hwif		= tx4939ide_init_hwif,
 	.init_dma		= tx4939ide_init_dma,
 	.port_ops		= &tx4939ide_port_ops,
@@ -551,10 +549,10 @@ static int __init tx4939ide_probe(struct platform_device *pdev)
 		return -ENODEV;
 
 	if (!devm_request_mem_region(&pdev->dev, res->start,
-				     res->end - res->start + 1, "tx4938ide"))
+				     resource_size(res), MODNAME))
 		return -EBUSY;
 	mapbase = (unsigned long)devm_ioremap(&pdev->dev, res->start,
-					      res->end - res->start + 1);
+					      resource_size(res));
 	if (!mapbase)
 		return -EBUSY;
 	memset(&hw, 0, sizeof(hw));
@@ -618,24 +616,12 @@ static int tx4939ide_resume(struct platform_device *dev)
 static struct platform_driver tx4939ide_driver = {
 	.driver = {
 		.name = MODNAME,
-		.owner = THIS_MODULE,
 	},
 	.remove = __exit_p(tx4939ide_remove),
 	.resume = tx4939ide_resume,
 };
 
-static int __init tx4939ide_init(void)
-{
-	return platform_driver_probe(&tx4939ide_driver, tx4939ide_probe);
-}
-
-static void __exit tx4939ide_exit(void)
-{
-	platform_driver_unregister(&tx4939ide_driver);
-}
-
-module_init(tx4939ide_init);
-module_exit(tx4939ide_exit);
+module_platform_driver_probe(tx4939ide_driver, tx4939ide_probe);
 
 MODULE_DESCRIPTION("TX4939 internal IDE driver");
 MODULE_LICENSE("GPL");

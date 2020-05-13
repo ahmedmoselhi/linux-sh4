@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*                                              -*- linux-c -*-
  * dtlk.c - DoubleTalk PC driver for Linux
  *
@@ -57,12 +58,12 @@
 #include <linux/ioport.h>	/* for request_region */
 #include <linux/delay.h>	/* for loops_per_jiffy */
 #include <linux/sched.h>
-#include <linux/smp_lock.h>	/* cycle_kernel_lock() */
+#include <linux/mutex.h>
 #include <asm/io.h>		/* for inb_p, outb_p, inb, outb, etc. */
-#include <asm/uaccess.h>	/* for get_user, etc. */
+#include <linux/uaccess.h>	/* for get_user, etc. */
 #include <linux/wait.h>		/* for wait_queue */
 #include <linux/init.h>		/* for __init, module_{init,exit} */
-#include <linux/poll.h>		/* for POLLIN, etc. */
+#include <linux/poll.h>		/* for EPOLLIN, etc. */
 #include <linux/dtlk.h>		/* local header file for DoubleTalk values */
 
 #ifdef TRACING
@@ -73,7 +74,8 @@
 #define TRACE_RET ((void) 0)
 #endif				/* TRACING */
 
-static void dtlk_timer_tick(unsigned long data);
+static DEFINE_MUTEX(dtlk_mutex);
+static void dtlk_timer_tick(struct timer_list *unused);
 
 static int dtlk_major;
 static int dtlk_port_lpc;
@@ -83,18 +85,18 @@ static int dtlk_has_indexing;
 static unsigned int dtlk_portlist[] =
 {0x25e, 0x29e, 0x2de, 0x31e, 0x35e, 0x39e, 0};
 static wait_queue_head_t dtlk_process_list;
-static DEFINE_TIMER(dtlk_timer, dtlk_timer_tick, 0, 0);
+static DEFINE_TIMER(dtlk_timer, dtlk_timer_tick);
 
 /* prototypes for file_operations struct */
 static ssize_t dtlk_read(struct file *, char __user *,
 			 size_t nbytes, loff_t * ppos);
 static ssize_t dtlk_write(struct file *, const char __user *,
 			  size_t nbytes, loff_t * ppos);
-static unsigned int dtlk_poll(struct file *, poll_table *);
+static __poll_t dtlk_poll(struct file *, poll_table *);
 static int dtlk_open(struct inode *, struct file *);
 static int dtlk_release(struct inode *, struct file *);
-static int dtlk_ioctl(struct inode *inode, struct file *file,
-		      unsigned int cmd, unsigned long arg);
+static long dtlk_ioctl(struct file *file,
+		       unsigned int cmd, unsigned long arg);
 
 static const struct file_operations dtlk_fops =
 {
@@ -102,9 +104,10 @@ static const struct file_operations dtlk_fops =
 	.read		= dtlk_read,
 	.write		= dtlk_write,
 	.poll		= dtlk_poll,
-	.ioctl		= dtlk_ioctl,
+	.unlocked_ioctl	= dtlk_ioctl,
 	.open		= dtlk_open,
 	.release	= dtlk_release,
+	.llseek		= no_llseek,
 };
 
 /* local prototypes */
@@ -123,7 +126,7 @@ static char dtlk_write_tts(char);
 static ssize_t dtlk_read(struct file *file, char __user *buf,
 			 size_t count, loff_t * ppos)
 {
-	unsigned int minor = iminor(file->f_path.dentry->d_inode);
+	unsigned int minor = iminor(file_inode(file));
 	char ch;
 	int i = 0, retries;
 
@@ -175,7 +178,7 @@ static ssize_t dtlk_write(struct file *file, const char __user *buf,
 	}
 #endif
 
-	if (iminor(file->f_path.dentry->d_inode) != DTLK_MINOR)
+	if (iminor(file_inode(file)) != DTLK_MINOR)
 		return -EINVAL;
 
 	while (1) {
@@ -226,9 +229,9 @@ static ssize_t dtlk_write(struct file *file, const char __user *buf,
 	return -EAGAIN;
 }
 
-static unsigned int dtlk_poll(struct file *file, poll_table * wait)
+static __poll_t dtlk_poll(struct file *file, poll_table * wait)
 {
-	int mask = 0;
+	__poll_t mask = 0;
 	unsigned long expires;
 
 	TRACE_TEXT(" dtlk_poll");
@@ -242,11 +245,11 @@ static unsigned int dtlk_poll(struct file *file, poll_table * wait)
 
 	if (dtlk_has_indexing && dtlk_readable()) {
 	        del_timer(&dtlk_timer);
-		mask = POLLIN | POLLRDNORM;
+		mask = EPOLLIN | EPOLLRDNORM;
 	}
 	if (dtlk_writeable()) {
 	        del_timer(&dtlk_timer);
-		mask |= POLLOUT | POLLWRNORM;
+		mask |= EPOLLOUT | EPOLLWRNORM;
 	}
 	/* there are no exception conditions */
 
@@ -257,16 +260,15 @@ static unsigned int dtlk_poll(struct file *file, poll_table * wait)
 	return mask;
 }
 
-static void dtlk_timer_tick(unsigned long data)
+static void dtlk_timer_tick(struct timer_list *unused)
 {
 	TRACE_TEXT(" dtlk_timer_tick");
 	wake_up_interruptible(&dtlk_process_list);
 }
 
-static int dtlk_ioctl(struct inode *inode,
-		      struct file *file,
-		      unsigned int cmd,
-		      unsigned long arg)
+static long dtlk_ioctl(struct file *file,
+		       unsigned int cmd,
+		       unsigned long arg)
 {
 	char __user *argp = (char __user *)arg;
 	struct dtlk_settings *sp;
@@ -276,7 +278,9 @@ static int dtlk_ioctl(struct inode *inode,
 	switch (cmd) {
 
 	case DTLK_INTERROGATE:
+		mutex_lock(&dtlk_mutex);
 		sp = dtlk_interrogate();
+		mutex_unlock(&dtlk_mutex);
 		if (copy_to_user(argp, sp, sizeof(struct dtlk_settings)))
 			return -EINVAL;
 		return 0;
@@ -295,13 +299,11 @@ static int dtlk_open(struct inode *inode, struct file *file)
 {
 	TRACE_TEXT("(dtlk_open");
 
-	cycle_kernel_lock();
-	nonseekable_open(inode, file);
 	switch (iminor(inode)) {
 	case DTLK_MINOR:
 		if (dtlk_busy)
 			return -EBUSY;
-		return nonseekable_open(inode, file);
+		return stream_open(inode, file);
 
 	default:
 		return -ENXIO;

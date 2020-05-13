@@ -1,25 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Marvell 88SE94xx hardware specific head file
  *
  * Copyright 2007 Red Hat, Inc.
  * Copyright 2008 Marvell. <kewei@marvell.com>
- *
- * This file is licensed under GPLv2.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation; version 2 of the
- * License.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307
- * USA
+ * Copyright 2009-2011 Marvell. <yuxiangl@marvell.com>
 */
 
 #ifndef _MVS94XX_REG_H_
@@ -28,6 +13,18 @@
 #include <linux/types.h>
 
 #define MAX_LINK_RATE		SAS_LINK_RATE_6_0_GBPS
+
+enum VANIR_REVISION_ID {
+	VANIR_A0_REV		= 0xA0,
+	VANIR_B0_REV		= 0x01,
+	VANIR_C0_REV		= 0x02,
+	VANIR_C1_REV		= 0x03,
+	VANIR_C2_REV		= 0xC2,
+};
+
+enum host_registers {
+	MVS_HST_CHIP_CONFIG	= 0x10104,	/* chip configuration */
+};
 
 enum hw_registers {
 	MVS_GBL_CTL		= 0x04,  /* global control */
@@ -100,6 +97,7 @@ enum hw_registers {
 	MVS_P4_VSR_DATA 	= 0x254, /* phy4 VSR data */
 	MVS_PA_VSR_ADDR		= 0x290, /* All port VSR addr */
 	MVS_PA_VSR_PORT		= 0x294, /* All port VSR data */
+	MVS_COMMAND_ACTIVE	= 0x300,
 };
 
 enum pci_cfg_registers {
@@ -111,78 +109,201 @@ enum pci_cfg_registers {
 
 /*  SAS/SATA Vendor Specific Port Registers */
 enum sas_sata_vsp_regs {
-	VSR_PHY_STAT		= 0x00 * 4, /* Phy Status */
-	VSR_PHY_MODE1		= 0x01 * 4, /* phy tx */
-	VSR_PHY_MODE2		= 0x02 * 4, /* tx scc */
-	VSR_PHY_MODE3		= 0x03 * 4, /* pll */
-	VSR_PHY_MODE4		= 0x04 * 4, /* VCO */
-	VSR_PHY_MODE5		= 0x05 * 4, /* Rx */
-	VSR_PHY_MODE6		= 0x06 * 4, /* CDR */
-	VSR_PHY_MODE7		= 0x07 * 4, /* Impedance */
-	VSR_PHY_MODE8		= 0x08 * 4, /* Voltage */
-	VSR_PHY_MODE9		= 0x09 * 4, /* Test */
-	VSR_PHY_MODE10		= 0x0A * 4, /* Power */
-	VSR_PHY_MODE11		= 0x0B * 4, /* Phy Mode */
-	VSR_PHY_VS0		= 0x0C * 4, /* Vednor Specific 0 */
-	VSR_PHY_VS1		= 0x0D * 4, /* Vednor Specific 1 */
+	VSR_PHY_STAT		= 0x00 * 4, /* Phy Interrupt Status */
+	VSR_PHY_MODE1		= 0x01 * 4, /* phy Interrupt Enable */
+	VSR_PHY_MODE2		= 0x02 * 4, /* Phy Configuration */
+	VSR_PHY_MODE3		= 0x03 * 4, /* Phy Status */
+	VSR_PHY_MODE4		= 0x04 * 4, /* Phy Counter 0 */
+	VSR_PHY_MODE5		= 0x05 * 4, /* Phy Counter 1 */
+	VSR_PHY_MODE6		= 0x06 * 4, /* Event Counter Control */
+	VSR_PHY_MODE7		= 0x07 * 4, /* Event Counter Select */
+	VSR_PHY_MODE8		= 0x08 * 4, /* Event Counter 0 */
+	VSR_PHY_MODE9		= 0x09 * 4, /* Event Counter 1 */
+	VSR_PHY_MODE10		= 0x0A * 4, /* Event Counter 2 */
+	VSR_PHY_MODE11		= 0x0B * 4, /* Event Counter 3 */
+	VSR_PHY_ACT_LED		= 0x0C * 4, /* Activity LED control */
+
+	VSR_PHY_FFE_CONTROL	= 0x10C,
+	VSR_PHY_DFE_UPDATE_CRTL	= 0x110,
+	VSR_REF_CLOCK_CRTL	= 0x1A0,
 };
 
 enum chip_register_bits {
 	PHY_MIN_SPP_PHYS_LINK_RATE_MASK = (0x7 << 8),
-	PHY_MAX_SPP_PHYS_LINK_RATE_MASK = (0x7 << 8),
-	PHY_NEG_SPP_PHYS_LINK_RATE_MASK_OFFSET = (12),
+	PHY_MAX_SPP_PHYS_LINK_RATE_MASK = (0x7 << 12),
+	PHY_NEG_SPP_PHYS_LINK_RATE_MASK_OFFSET = (16),
 	PHY_NEG_SPP_PHYS_LINK_RATE_MASK =
 			(0x3 << PHY_NEG_SPP_PHYS_LINK_RATE_MASK_OFFSET),
 };
 
 enum pci_interrupt_cause {
 	/*  MAIN_IRQ_CAUSE (R10200) Bits*/
-	IRQ_COM_IN_I2O_IOP0            = (1 << 0),
-	IRQ_COM_IN_I2O_IOP1            = (1 << 1),
-	IRQ_COM_IN_I2O_IOP2            = (1 << 2),
-	IRQ_COM_IN_I2O_IOP3            = (1 << 3),
-	IRQ_COM_OUT_I2O_HOS0           = (1 << 4),
-	IRQ_COM_OUT_I2O_HOS1           = (1 << 5),
-	IRQ_COM_OUT_I2O_HOS2           = (1 << 6),
-	IRQ_COM_OUT_I2O_HOS3           = (1 << 7),
-	IRQ_PCIF_TO_CPU_DRBL0          = (1 << 8),
-	IRQ_PCIF_TO_CPU_DRBL1          = (1 << 9),
-	IRQ_PCIF_TO_CPU_DRBL2          = (1 << 10),
-	IRQ_PCIF_TO_CPU_DRBL3          = (1 << 11),
-	IRQ_PCIF_DRBL0                 = (1 << 12),
-	IRQ_PCIF_DRBL1                 = (1 << 13),
-	IRQ_PCIF_DRBL2                 = (1 << 14),
-	IRQ_PCIF_DRBL3                 = (1 << 15),
-	IRQ_XOR_A                      = (1 << 16),
-	IRQ_XOR_B                      = (1 << 17),
-	IRQ_SAS_A                      = (1 << 18),
-	IRQ_SAS_B                      = (1 << 19),
-	IRQ_CPU_CNTRL                  = (1 << 20),
-	IRQ_GPIO                       = (1 << 21),
-	IRQ_UART                       = (1 << 22),
-	IRQ_SPI                        = (1 << 23),
-	IRQ_I2C                        = (1 << 24),
-	IRQ_SGPIO                      = (1 << 25),
-	IRQ_COM_ERR                    = (1 << 29),
-	IRQ_I2O_ERR                    = (1 << 30),
-	IRQ_PCIE_ERR                   = (1 << 31),
+	MVS_IRQ_COM_IN_I2O_IOP0        = (1 << 0),
+	MVS_IRQ_COM_IN_I2O_IOP1        = (1 << 1),
+	MVS_IRQ_COM_IN_I2O_IOP2        = (1 << 2),
+	MVS_IRQ_COM_IN_I2O_IOP3        = (1 << 3),
+	MVS_IRQ_COM_OUT_I2O_HOS0       = (1 << 4),
+	MVS_IRQ_COM_OUT_I2O_HOS1       = (1 << 5),
+	MVS_IRQ_COM_OUT_I2O_HOS2       = (1 << 6),
+	MVS_IRQ_COM_OUT_I2O_HOS3       = (1 << 7),
+	MVS_IRQ_PCIF_TO_CPU_DRBL0      = (1 << 8),
+	MVS_IRQ_PCIF_TO_CPU_DRBL1      = (1 << 9),
+	MVS_IRQ_PCIF_TO_CPU_DRBL2      = (1 << 10),
+	MVS_IRQ_PCIF_TO_CPU_DRBL3      = (1 << 11),
+	MVS_IRQ_PCIF_DRBL0             = (1 << 12),
+	MVS_IRQ_PCIF_DRBL1             = (1 << 13),
+	MVS_IRQ_PCIF_DRBL2             = (1 << 14),
+	MVS_IRQ_PCIF_DRBL3             = (1 << 15),
+	MVS_IRQ_XOR_A                  = (1 << 16),
+	MVS_IRQ_XOR_B                  = (1 << 17),
+	MVS_IRQ_SAS_A                  = (1 << 18),
+	MVS_IRQ_SAS_B                  = (1 << 19),
+	MVS_IRQ_CPU_CNTRL              = (1 << 20),
+	MVS_IRQ_GPIO                   = (1 << 21),
+	MVS_IRQ_UART                   = (1 << 22),
+	MVS_IRQ_SPI                    = (1 << 23),
+	MVS_IRQ_I2C                    = (1 << 24),
+	MVS_IRQ_SGPIO                  = (1 << 25),
+	MVS_IRQ_COM_ERR                = (1 << 29),
+	MVS_IRQ_I2O_ERR                = (1 << 30),
+	MVS_IRQ_PCIE_ERR               = (1 << 31),
+};
+
+union reg_phy_cfg {
+	u32 v;
+	struct {
+		u32 phy_reset:1;
+		u32 sas_support:1;
+		u32 sata_support:1;
+		u32 sata_host_mode:1;
+		/*
+		 * bit 2: 6Gbps support
+		 * bit 1: 3Gbps support
+		 * bit 0: 1.5Gbps support
+		 */
+		u32 speed_support:3;
+		u32 snw_3_support:1;
+		u32 tx_lnk_parity:1;
+		/*
+		 * bit 5: G1 (1.5Gbps) Without SSC
+		 * bit 4: G1 (1.5Gbps) with SSC
+		 * bit 3: G2 (3.0Gbps) Without SSC
+		 * bit 2: G2 (3.0Gbps) with SSC
+		 * bit 1: G3 (6.0Gbps) without SSC
+		 * bit 0: G3 (6.0Gbps) with SSC
+		 */
+		u32 tx_spt_phs_lnk_rate:6;
+		/* 8h: 1.5Gbps 9h: 3Gbps Ah: 6Gbps */
+		u32 tx_lgcl_lnk_rate:4;
+		u32 tx_ssc_type:1;
+		u32 sata_spin_up_spt:1;
+		u32 sata_spin_up_en:1;
+		u32 bypass_oob:1;
+		u32 disable_phy:1;
+		u32 rsvd:8;
+	} u;
 };
 
 #define MAX_SG_ENTRY		255
 
 struct mvs_prd_imt {
+#ifndef __BIG_ENDIAN
 	__le32			len:22;
 	u8			_r_a:2;
 	u8			misc_ctl:4;
 	u8			inter_sel:4;
+#else
+	u32			inter_sel:4;
+	u32			misc_ctl:4;
+	u32			_r_a:2;
+	u32			len:22;
+#endif
 };
 
 struct mvs_prd {
 	/* 64-bit buffer address */
 	__le64			addr;
 	/* 22-bit length */
-	struct mvs_prd_imt	im_len;
+	__le32			im_len;
 } __attribute__ ((packed));
+
+enum sgpio_registers {
+	MVS_SGPIO_HOST_OFFSET	= 0x100,	/* offset between hosts */
+
+	MVS_SGPIO_CFG0	= 0xc200,
+	MVS_SGPIO_CFG0_ENABLE	= (1 << 0),	/* enable pins */
+	MVS_SGPIO_CFG0_BLINKB	= (1 << 1),	/* blink generators */
+	MVS_SGPIO_CFG0_BLINKA	= (1 << 2),
+	MVS_SGPIO_CFG0_INVSCLK	= (1 << 3),	/* invert signal? */
+	MVS_SGPIO_CFG0_INVSLOAD	= (1 << 4),
+	MVS_SGPIO_CFG0_INVSDOUT	= (1 << 5),
+	MVS_SGPIO_CFG0_SLOAD_FALLEDGE = (1 << 6),	/* rise/fall edge? */
+	MVS_SGPIO_CFG0_SDOUT_FALLEDGE = (1 << 7),
+	MVS_SGPIO_CFG0_SDIN_RISEEDGE = (1 << 8),
+	MVS_SGPIO_CFG0_MAN_BITLEN_SHIFT = 18,	/* bits/frame manual mode */
+	MVS_SGPIO_CFG0_AUT_BITLEN_SHIFT = 24,	/* bits/frame auto mode */
+
+	MVS_SGPIO_CFG1	= 0xc204,	/* blink timing register */
+	MVS_SGPIO_CFG1_LOWA_SHIFT	= 0,	/* A off time */
+	MVS_SGPIO_CFG1_HIA_SHIFT	= 4,	/* A on time */
+	MVS_SGPIO_CFG1_LOWB_SHIFT	= 8,	/* B off time */
+	MVS_SGPIO_CFG1_HIB_SHIFT	= 12,	/* B on time */
+	MVS_SGPIO_CFG1_MAXACTON_SHIFT	= 16,	/* max activity on time */
+
+		/* force activity off time */
+	MVS_SGPIO_CFG1_FORCEACTOFF_SHIFT	= 20,
+		/* stretch activity on time */
+	MVS_SGPIO_CFG1_STRCHACTON_SHIFT	= 24,
+		/* stretch activiity off time */
+	MVS_SGPIO_CFG1_STRCHACTOFF_SHIFT	= 28,
+
+
+	MVS_SGPIO_CFG2	= 0xc208,	/* clock speed register */
+	MVS_SGPIO_CFG2_CLK_SHIFT	= 0,
+	MVS_SGPIO_CFG2_BLINK_SHIFT	= 20,
+
+	MVS_SGPIO_CTRL	= 0xc20c,	/* SDOUT/SDIN mode control */
+	MVS_SGPIO_CTRL_SDOUT_AUTO	= 2,
+	MVS_SGPIO_CTRL_SDOUT_SHIFT	= 2,
+
+	MVS_SGPIO_DSRC	= 0xc220,	/* map ODn bits to drives */
+
+	MVS_SGPIO_DCTRL	= 0xc238,
+	MVS_SGPIO_DCTRL_ERR_SHIFT	= 0,
+	MVS_SGPIO_DCTRL_LOC_SHIFT	= 3,
+	MVS_SGPIO_DCTRL_ACT_SHIFT	= 5,
+};
+
+enum sgpio_led_status {
+	LED_OFF	= 0,
+	LED_ON	= 1,
+	LED_BLINKA	= 2,
+	LED_BLINKA_INV	= 3,
+	LED_BLINKA_SOF	= 4,
+	LED_BLINKA_EOF	= 5,
+	LED_BLINKB	= 6,
+	LED_BLINKB_INV	= 7,
+};
+
+#define DEFAULT_SGPIO_BITS ((LED_BLINKA_SOF << \
+				MVS_SGPIO_DCTRL_ACT_SHIFT) << (8 * 3) | \
+			(LED_BLINKA_SOF << \
+				MVS_SGPIO_DCTRL_ACT_SHIFT) << (8 * 2) | \
+			(LED_BLINKA_SOF << \
+				MVS_SGPIO_DCTRL_ACT_SHIFT) << (8 * 1) | \
+			(LED_BLINKA_SOF << \
+				MVS_SGPIO_DCTRL_ACT_SHIFT) << (8 * 0))
+
+/*
+ * these registers are accessed through port vendor
+ * specific address/data registers
+ */
+enum sas_sata_phy_regs {
+	GENERATION_1_SETTING		= 0x118,
+	GENERATION_1_2_SETTING		= 0x11C,
+	GENERATION_2_3_SETTING		= 0x120,
+	GENERATION_3_4_SETTING		= 0x124,
+};
 
 #define SPI_CTRL_REG_94XX           	0xc800
 #define SPI_ADDR_REG_94XX            	0xc804
@@ -192,21 +313,11 @@ struct mvs_prd {
 #define SPI_ADDR_VLD_94XX         	(1U << 1)
 #define SPI_CTRL_SpiStart_94XX     	(1U << 0)
 
-#define mv_ffc(x)   ffz(x)
-
 static inline int
 mv_ffc64(u64 v)
 {
-	int i;
-	i = mv_ffc((u32)v);
-	if (i >= 0)
-		return i;
-	i = mv_ffc((u32)(v>>32));
-
-	if (i != 0)
-		return 32 + i;
-
-	return -1;
+	u64 x = ~v;
+	return x ? __ffs64(x) : -1;
 }
 
 #define r_reg_set_enable(i) \

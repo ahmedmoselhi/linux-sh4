@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_X86_PROTO_H
 #define _ASM_X86_PROTO_H
 
@@ -5,31 +6,36 @@
 
 /* misc architecture specific prototypes */
 
-extern void early_idt_handler(void);
+void syscall_init(void);
 
-extern void system_call(void);
-extern void syscall_init(void);
+#ifdef CONFIG_X86_64
+void entry_SYSCALL_64(void);
+long do_arch_prctl_64(struct task_struct *task, int option, unsigned long arg2);
+#endif
 
-extern void ia32_syscall(void);
-extern void ia32_cstar_target(void);
-extern void ia32_sysenter_target(void);
+#ifdef CONFIG_X86_32
+void entry_INT80_32(void);
+void entry_SYSENTER_32(void);
+void __begin_SYSENTER_singlestep_region(void);
+void __end_SYSENTER_singlestep_region(void);
+#endif
 
-extern void syscall32_cpu_init(void);
+#ifdef CONFIG_IA32_EMULATION
+void entry_SYSENTER_compat(void);
+void __end_entry_SYSENTER_compat(void);
+void entry_SYSCALL_compat(void);
+void entry_INT80_compat(void);
+#if defined(CONFIG_X86_64) && defined(CONFIG_XEN_PV)
+void xen_entry_INT80_compat(void);
+#endif
+#endif
 
-extern void check_efer(void);
+void x86_configure_nx(void);
+void x86_report_nx(void);
 
 extern int reboot_force;
 
-long do_arch_prctl(struct task_struct *task, int code, unsigned long addr);
-
-/*
- * This looks more complex than it should be. But we need to
- * get the type for the ~ right in round_down (it needs to be
- * as wide as the result!), and we want to evaluate the macro
- * arguments just once each.
- */
-#define __round_mask(x,y) ((__typeof__(x))((y)-1))
-#define round_up(x,y) ((((x)-1) | __round_mask(x,y))+1)
-#define round_down(x,y) ((x) & ~__round_mask(x,y))
+long do_arch_prctl_common(struct task_struct *task, int option,
+			  unsigned long cpuid_enabled);
 
 #endif /* _ASM_X86_PROTO_H */

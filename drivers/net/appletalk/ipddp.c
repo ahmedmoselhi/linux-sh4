@@ -31,8 +31,9 @@
 #include <linux/ip.h>
 #include <linux/atalk.h>
 #include <linux/if_arp.h>
+#include <linux/slab.h>
 #include <net/route.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #include "ipddp.h"		/* Our stuff */
 
@@ -58,7 +59,6 @@ static int ipddp_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd);
 static const struct net_device_ops ipddp_netdev_ops = {
 	.ndo_start_xmit		= ipddp_xmit,
 	.ndo_do_ioctl   	= ipddp_ioctl,
-	.ndo_change_mtu		= eth_change_mtu,
 	.ndo_set_mac_address 	= eth_mac_addr,
 	.ndo_validate_addr	= eth_validate_addr,
 };
@@ -73,13 +73,13 @@ static struct net_device * __init ipddp_init(void)
 	if (!dev)
 		return ERR_PTR(-ENOMEM);
 
-	dev->priv_flags &= ~IFF_XMIT_DST_RELEASE;
+	netif_keep_dst(dev);
 	strcpy(dev->name, "ipddp%d");
 
 	if (version_printed++ == 0)
                 printk(version);
 
-	/* Initalize the device structure. */
+	/* Initialize the device structure. */
 	dev->netdev_ops = &ipddp_netdev_ops;
 
         dev->type = ARPHRD_IPDDP;       	/* IP over DDP tunnel */
@@ -116,10 +116,14 @@ static struct net_device * __init ipddp_init(void)
  */
 static netdev_tx_t ipddp_xmit(struct sk_buff *skb, struct net_device *dev)
 {
-	__be32 paddr = skb_rtable(skb)->rt_gateway;
+        struct rtable *rtable = skb_rtable(skb);
+        __be32 paddr = 0;
         struct ddpehdr *ddp;
         struct ipddp_route *rt;
         struct atalk_addr *our_addr;
+
+	if (rtable->rt_gw_family == AF_INET)
+		paddr = rtable->rt_gw4;
 
 	spin_lock(&ipddp_route_lock);
 
@@ -190,7 +194,7 @@ static netdev_tx_t ipddp_xmit(struct sk_buff *skb, struct net_device *dev)
  */
 static int ipddp_create(struct ipddp_route *new_rt)
 {
-        struct ipddp_route *rt = kmalloc(sizeof(*rt), GFP_KERNEL);
+        struct ipddp_route *rt = kzalloc(sizeof(*rt), GFP_KERNEL);
 
         if (rt == NULL)
                 return -ENOMEM;
@@ -230,9 +234,9 @@ static int ipddp_delete(struct ipddp_route *rt)
 	spin_lock_bh(&ipddp_route_lock);
         while((tmp = *r) != NULL)
         {
-                if(tmp->ip == rt->ip
-                        && tmp->at.s_net == rt->at.s_net
-                        && tmp->at.s_node == rt->at.s_node)
+                if(tmp->ip == rt->ip &&
+		   tmp->at.s_net == rt->at.s_net &&
+		   tmp->at.s_node == rt->at.s_node)
                 {
                         *r = tmp->next;
 			spin_unlock_bh(&ipddp_route_lock);
@@ -243,7 +247,7 @@ static int ipddp_delete(struct ipddp_route *rt)
         }
 
 	spin_unlock_bh(&ipddp_route_lock);
-        return (-ENOENT);
+        return -ENOENT;
 }
 
 /*
@@ -255,13 +259,13 @@ static struct ipddp_route* __ipddp_find_route(struct ipddp_route *rt)
 
         for(f = ipddp_route_list; f != NULL; f = f->next)
         {
-                if(f->ip == rt->ip
-                        && f->at.s_net == rt->at.s_net
-                        && f->at.s_node == rt->at.s_node)
-                        return (f);
+                if(f->ip == rt->ip &&
+		   f->at.s_net == rt->at.s_net &&
+		   f->at.s_node == rt->at.s_node)
+                        return f;
         }
 
-        return (NULL);
+        return NULL;
 }
 
 static int ipddp_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
@@ -278,13 +282,17 @@ static int ipddp_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
         switch(cmd)
         {
 		case SIOCADDIPDDPRT:
-                        return (ipddp_create(&rcp));
+                        return ipddp_create(&rcp);
 
                 case SIOCFINDIPDDPRT:
 			spin_lock_bh(&ipddp_route_lock);
 			rp = __ipddp_find_route(&rcp);
-			if (rp)
-				memcpy(&rcp2, rp, sizeof(rcp2));
+			if (rp) {
+				memset(&rcp2, 0, sizeof(rcp2));
+				rcp2.ip    = rp->ip;
+				rcp2.at    = rp->at;
+				rcp2.flags = rp->flags;
+			}
 			spin_unlock_bh(&ipddp_route_lock);
 
 			if (rp) {
@@ -296,7 +304,7 @@ static int ipddp_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 				return -ENOENT;
 
                 case SIOCDELIPDDPRT:
-                        return (ipddp_delete(&rcp));
+                        return ipddp_delete(&rcp);
 
                 default:
                         return -EINVAL;
@@ -311,9 +319,7 @@ module_param(ipddp_mode, int, 0);
 static int __init ipddp_init_module(void)
 {
 	dev_ipddp = ipddp_init();
-        if (IS_ERR(dev_ipddp))
-                return PTR_ERR(dev_ipddp);
-	return 0;
+	return PTR_ERR_OR_ZERO(dev_ipddp);
 }
 
 static void __exit ipddp_cleanup_module(void)

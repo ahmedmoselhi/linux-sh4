@@ -1,31 +1,38 @@
+# SPDX-License-Identifier: GPL-2.0
 #
 # linux/arch/arm/boot/compressed/Makefile
 #
 # create a compressed vmlinuz image from the original vmlinux
 #
 
+OBJS		=
+
+AFLAGS_head.o += -DTEXT_OFFSET=$(TEXT_OFFSET)
 HEAD	= head.o
-OBJS	= misc.o
-FONTC	= $(srctree)/drivers/video/console/font_acorn_8x8.c
+OBJS	+= misc.o decompress.o
+ifeq ($(CONFIG_DEBUG_UNCOMPRESS),y)
+OBJS	+= debug.o
+endif
+FONTC	= $(srctree)/lib/fonts/font_acorn_8x8.c
+
+# string library code (-Os is enforced to keep it much smaller)
+OBJS		+= string.o
+CFLAGS_string.o	:= -Os
+
+ifeq ($(CONFIG_ARM_VIRT_EXT),y)
+OBJS		+= hyp-stub.o
+endif
+
+GCOV_PROFILE		:= n
+
+# Prevents link failures: __sanitizer_cov_trace_pc() is not linked in.
+KCOV_INSTRUMENT		:= n
 
 #
 # Architecture dependencies
 #
 ifeq ($(CONFIG_ARCH_ACORN),y)
 OBJS		+= ll_char_wr.o font.o
-endif
-
-ifeq ($(CONFIG_ARCH_SHARK),y)
-OBJS		+= head-shark.o ofw-shark.o
-endif
-
-ifeq ($(CONFIG_ARCH_L7200),y)
-OBJS		+= head-l7200.o
-endif
-
-ifeq ($(CONFIG_ARCH_P720T),y)
-# Borrow this code from SA1100
-OBJS		+= head-sa1100.o
 endif
 
 ifeq ($(CONFIG_ARCH_SA1100),y)
@@ -36,7 +43,7 @@ ifeq ($(CONFIG_CPU_XSCALE),y)
 OBJS		+= head-xscale.o
 endif
 
-ifeq ($(CONFIG_PXA_SHARPSL),y)
+ifeq ($(CONFIG_PXA_SHARPSL_DETECT_MACH_ID),y)
 OBJS		+= head-sharpsl.o
 endif
 
@@ -58,56 +65,138 @@ ZTEXTADDR	:= $(CONFIG_ZBOOT_ROM_TEXT)
 ZBSSADDR	:= $(CONFIG_ZBOOT_ROM_BSS)
 else
 ZTEXTADDR	:= 0
-ZBSSADDR	:= ALIGN(4)
+ZBSSADDR	:= ALIGN(8)
 endif
 
-SEDFLAGS	= s/TEXT_START/$(ZTEXTADDR)/;s/BSS_START/$(ZBSSADDR)/
+CPPFLAGS_vmlinux.lds := -DTEXT_START="$(ZTEXTADDR)" -DBSS_START="$(ZBSSADDR)"
 
-targets       := vmlinux vmlinux.lds piggy.gz piggy.o font.o font.c \
-		 head.o misc.o $(OBJS)
+compress-$(CONFIG_KERNEL_GZIP) = gzip
+compress-$(CONFIG_KERNEL_LZO)  = lzo
+compress-$(CONFIG_KERNEL_LZMA) = lzma
+compress-$(CONFIG_KERNEL_XZ)   = xzkern
+compress-$(CONFIG_KERNEL_LZ4)  = lz4
+
+# Borrowed libfdt files for the ATAG compatibility mode
+
+libfdt		:= fdt_rw.c fdt_ro.c fdt_wip.c fdt.c
+libfdt_hdrs	:= fdt.h libfdt.h libfdt_internal.h
+
+libfdt_objs	:= $(addsuffix .o, $(basename $(libfdt)))
+
+$(addprefix $(obj)/,$(libfdt) $(libfdt_hdrs)): $(obj)/%: $(srctree)/scripts/dtc/libfdt/%
+	$(call cmd,shipped)
+
+$(addprefix $(obj)/,$(libfdt_objs) atags_to_fdt.o): \
+	$(addprefix $(obj)/,$(libfdt_hdrs))
+
+ifeq ($(CONFIG_ARM_ATAG_DTB_COMPAT),y)
+OBJS	+= $(libfdt_objs) atags_to_fdt.o
+endif
+
+targets       := vmlinux vmlinux.lds piggy_data piggy.o \
+		 lib1funcs.o ashldi3.o bswapsdi2.o \
+		 head.o $(OBJS)
+
+clean-files += piggy_data lib1funcs.S ashldi3.S bswapsdi2.S \
+		$(libfdt) $(libfdt_hdrs) hyp-stub.S
+
+KBUILD_CFLAGS += -DDISABLE_BRANCH_PROFILING
 
 ifeq ($(CONFIG_FUNCTION_TRACER),y)
 ORIG_CFLAGS := $(KBUILD_CFLAGS)
 KBUILD_CFLAGS = $(subst -pg, , $(ORIG_CFLAGS))
 endif
 
-EXTRA_CFLAGS  := -fpic -fno-builtin
-EXTRA_AFLAGS  := -Wa,-march=all
+# -fstack-protector-strong triggers protection checks in this code,
+# but it is being used too early to link to meaningful stack_chk logic.
+nossp-flags-$(CONFIG_CC_HAS_STACKPROTECTOR_NONE) := -fno-stack-protector
+CFLAGS_atags_to_fdt.o := $(nossp-flags-y)
+CFLAGS_fdt.o := $(nossp-flags-y)
+CFLAGS_fdt_ro.o := $(nossp-flags-y)
+CFLAGS_fdt_rw.o := $(nossp-flags-y)
+CFLAGS_fdt_wip.o := $(nossp-flags-y)
 
-# Supply ZRELADDR, INITRD_PHYS and PARAMS_PHYS to the decompressor via
-# linker symbols.  We only define initrd_phys and params_phys if the
-# machine class defined the corresponding makefile variable.
-LDFLAGS_vmlinux := --defsym zreladdr=$(ZRELADDR)
+ccflags-y := -fpic $(call cc-option,-mno-single-pic-base,) -fno-builtin \
+	     -I$(obj) $(DISABLE_ARM_SSP_PER_TASK_PLUGIN)
+asflags-y := -DZIMAGE
+
+# Supply kernel BSS size to the decompressor via a linker symbol.
+KBSS_SZ = $(shell echo $$(($$($(NM) $(obj)/../../../../vmlinux | \
+		sed -n -e 's/^\([^ ]*\) [AB] __bss_start$$/-0x\1/p' \
+		       -e 's/^\([^ ]*\) [AB] __bss_stop$$/+0x\1/p') )) )
+LDFLAGS_vmlinux = --defsym _kernel_bss_size=$(KBSS_SZ)
+# Supply ZRELADDR to the decompressor via a linker symbol.
+ifneq ($(CONFIG_AUTO_ZRELADDR),y)
+LDFLAGS_vmlinux += --defsym zreladdr=$(ZRELADDR)
+endif
 ifeq ($(CONFIG_CPU_ENDIAN_BE8),y)
 LDFLAGS_vmlinux += --be8
 endif
-ifneq ($(INITRD_PHYS),)
-LDFLAGS_vmlinux += --defsym initrd_phys=$(INITRD_PHYS)
-endif
-ifneq ($(PARAMS_PHYS),)
-LDFLAGS_vmlinux += --defsym params_phys=$(PARAMS_PHYS)
-endif
-LDFLAGS_vmlinux += -p --no-undefined -X \
-	$(shell $(CC) $(KBUILD_CFLAGS) --print-libgcc-file-name) -T
+# Report unresolved symbol references
+LDFLAGS_vmlinux += --no-undefined
+# Delete all temporary local symbols
+LDFLAGS_vmlinux += -X
+# Next argument is a linker script
+LDFLAGS_vmlinux += -T
 
-# Don't allow any static data in misc.o, which
-# would otherwise mess up our GOT table
-CFLAGS_misc.o := -Dstatic=
+# For __aeabi_uidivmod
+lib1funcs = $(obj)/lib1funcs.o
+
+$(obj)/lib1funcs.S: $(srctree)/arch/$(SRCARCH)/lib/lib1funcs.S
+	$(call cmd,shipped)
+
+# For __aeabi_llsl
+ashldi3 = $(obj)/ashldi3.o
+
+$(obj)/ashldi3.S: $(srctree)/arch/$(SRCARCH)/lib/ashldi3.S
+	$(call cmd,shipped)
+
+# For __bswapsi2, __bswapdi2
+bswapsdi2 = $(obj)/bswapsdi2.o
+
+$(obj)/bswapsdi2.S: $(srctree)/arch/$(SRCARCH)/lib/bswapsdi2.S
+	$(call cmd,shipped)
+
+# We need to prevent any GOTOFF relocs being used with references
+# to symbols in the .bss section since we cannot relocate them
+# independently from the rest at run time.  This can be achieved by
+# ensuring that no private .bss symbols exist, as global symbols
+# always have a GOT entry which is what we need.
+# The .data section is already discarded by the linker script so no need
+# to bother about it here.
+check_for_bad_syms = \
+bad_syms=$$($(NM) $@ | sed -n 's/^.\{8\} [bc] \(.*\)/\1/p') && \
+[ -z "$$bad_syms" ] || \
+  ( echo "following symbols must have non local/private scope:" >&2; \
+    echo "$$bad_syms" >&2; false )
+
+check_for_multiple_zreladdr = \
+if [ $(words $(ZRELADDR)) -gt 1 -a "$(CONFIG_AUTO_ZRELADDR)" = "" ]; then \
+	echo 'multiple zreladdrs: $(ZRELADDR)'; \
+	echo 'This needs CONFIG_AUTO_ZRELADDR to be set'; \
+	false; \
+fi
+
+efi-obj-$(CONFIG_EFI_STUB) := $(objtree)/drivers/firmware/efi/libstub/lib.a
 
 $(obj)/vmlinux: $(obj)/vmlinux.lds $(obj)/$(HEAD) $(obj)/piggy.o \
-	 	$(addprefix $(obj)/, $(OBJS)) FORCE
+		$(addprefix $(obj)/, $(OBJS)) $(lib1funcs) $(ashldi3) \
+		$(bswapsdi2) $(efi-obj-y) FORCE
+	@$(check_for_multiple_zreladdr)
 	$(call if_changed,ld)
-	@:
+	@$(check_for_bad_syms)
 
-$(obj)/piggy.gz: $(obj)/../Image FORCE
-	$(call if_changed,gzip)
+$(obj)/piggy_data: $(obj)/../Image FORCE
+	$(call if_changed,$(compress-y))
 
-$(obj)/piggy.o:  $(obj)/piggy.gz FORCE
+$(obj)/piggy.o: $(obj)/piggy_data
 
 CFLAGS_font.o := -Dstatic=
 
 $(obj)/font.c: $(FONTC)
 	$(call cmd,shipped)
 
-$(obj)/vmlinux.lds: $(obj)/vmlinux.lds.in arch/arm/boot/Makefile .config
-	@sed "$(SEDFLAGS)" < $< > $@
+AFLAGS_hyp-stub.o := -Wa,-march=armv7-a
+
+$(obj)/hyp-stub.S: $(srctree)/arch/$(SRCARCH)/kernel/hyp-stub.S
+	$(call cmd,shipped)

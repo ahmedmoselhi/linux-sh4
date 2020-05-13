@@ -1,20 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * This file is part of UBIFS.
  *
  * Copyright (C) 2006-2008 Nokia Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc., 51
- * Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
  *
  * Authors: Adrian Hunter
  *          Artem Bityutskiy (Битюцкий Артём)
@@ -49,11 +37,13 @@
  * maximum size. So dark watermark is the amount of free + dirty space in LEB
  * which are guaranteed to be reclaimable. If LEB has less space, the GC might
  * be unable to reclaim it. So, LEBs with free + dirty greater than dark
- * watermark are "good" LEBs from GC's point of few. The other LEBs are not so
+ * watermark are "good" LEBs from GC's point of view. The other LEBs are not so
  * good, and GC takes extra care when moving them.
  */
 
+#include <linux/slab.h>
 #include <linux/pagemap.h>
+#include <linux/list_sort.h>
 #include "ubifs.h"
 
 /*
@@ -81,7 +71,7 @@ static int switch_gc_head(struct ubifs_info *c)
 	int err, gc_lnum = c->gc_lnum;
 	struct ubifs_wbuf *wbuf = &c->jheads[GCHD].wbuf;
 
-	ubifs_assert(gc_lnum != -1);
+	ubifs_assert(c, gc_lnum != -1);
 	dbg_gc("switch GC head from LEB %d:%d to LEB %d (waste %d bytes)",
 	       wbuf->lnum, wbuf->offs + wbuf->used, gc_lnum,
 	       c->leb_size - wbuf->offs - wbuf->used);
@@ -103,125 +93,36 @@ static int switch_gc_head(struct ubifs_info *c)
 		return err;
 
 	c->gc_lnum = -1;
-	err = ubifs_wbuf_seek_nolock(wbuf, gc_lnum, 0, UBI_LONGTERM);
+	err = ubifs_wbuf_seek_nolock(wbuf, gc_lnum, 0);
 	return err;
-}
-
-/**
- * list_sort - sort a list.
- * @priv: private data, passed to @cmp
- * @head: the list to sort
- * @cmp: the elements comparison function
- *
- * This function has been implemented by Mark J Roberts <mjr@znex.org>. It
- * implements "merge sort" which has O(nlog(n)) complexity. The list is sorted
- * in ascending order.
- *
- * The comparison function @cmp is supposed to return a negative value if @a is
- * than @b, and a positive value if @a is greater than @b. If @a and @b are
- * equivalent, then it does not matter what this function returns.
- */
-static void list_sort(void *priv, struct list_head *head,
-		      int (*cmp)(void *priv, struct list_head *a,
-				 struct list_head *b))
-{
-	struct list_head *p, *q, *e, *list, *tail, *oldhead;
-	int insize, nmerges, psize, qsize, i;
-
-	if (list_empty(head))
-		return;
-
-	list = head->next;
-	list_del(head);
-	insize = 1;
-	for (;;) {
-		p = oldhead = list;
-		list = tail = NULL;
-		nmerges = 0;
-
-		while (p) {
-			nmerges++;
-			q = p;
-			psize = 0;
-			for (i = 0; i < insize; i++) {
-				psize++;
-				q = q->next == oldhead ? NULL : q->next;
-				if (!q)
-					break;
-			}
-
-			qsize = insize;
-			while (psize > 0 || (qsize > 0 && q)) {
-				if (!psize) {
-					e = q;
-					q = q->next;
-					qsize--;
-					if (q == oldhead)
-						q = NULL;
-				} else if (!qsize || !q) {
-					e = p;
-					p = p->next;
-					psize--;
-					if (p == oldhead)
-						p = NULL;
-				} else if (cmp(priv, p, q) <= 0) {
-					e = p;
-					p = p->next;
-					psize--;
-					if (p == oldhead)
-						p = NULL;
-				} else {
-					e = q;
-					q = q->next;
-					qsize--;
-					if (q == oldhead)
-						q = NULL;
-				}
-				if (tail)
-					tail->next = e;
-				else
-					list = e;
-				e->prev = tail;
-				tail = e;
-			}
-			p = q;
-		}
-
-		tail->next = list;
-		list->prev = tail;
-
-		if (nmerges <= 1)
-			break;
-
-		insize *= 2;
-	}
-
-	head->next = list;
-	head->prev = list->prev;
-	list->prev->next = head;
-	list->prev = head;
 }
 
 /**
  * data_nodes_cmp - compare 2 data nodes.
  * @priv: UBIFS file-system description object
  * @a: first data node
- * @a: second data node
+ * @b: second data node
  *
  * This function compares data nodes @a and @b. Returns %1 if @a has greater
  * inode or block number, and %-1 otherwise.
  */
-int data_nodes_cmp(void *priv, struct list_head *a, struct list_head *b)
+static int data_nodes_cmp(void *priv, struct list_head *a, struct list_head *b)
 {
 	ino_t inuma, inumb;
 	struct ubifs_info *c = priv;
 	struct ubifs_scan_node *sa, *sb;
 
 	cond_resched();
+	if (a == b)
+		return 0;
+
 	sa = list_entry(a, struct ubifs_scan_node, list);
 	sb = list_entry(b, struct ubifs_scan_node, list);
-	ubifs_assert(key_type(c, &sa->key) == UBIFS_DATA_KEY);
-	ubifs_assert(key_type(c, &sb->key) == UBIFS_DATA_KEY);
+
+	ubifs_assert(c, key_type(c, &sa->key) == UBIFS_DATA_KEY);
+	ubifs_assert(c, key_type(c, &sb->key) == UBIFS_DATA_KEY);
+	ubifs_assert(c, sa->type == UBIFS_DATA_NODE);
+	ubifs_assert(c, sb->type == UBIFS_DATA_NODE);
 
 	inuma = key_inum(c, &sa->key);
 	inumb = key_inum(c, &sb->key);
@@ -248,30 +149,43 @@ int data_nodes_cmp(void *priv, struct list_head *a, struct list_head *b)
  * first and sorted by length in descending order. Directory entry nodes go
  * after inode nodes and are sorted in ascending hash valuer order.
  */
-int nondata_nodes_cmp(void *priv, struct list_head *a, struct list_head *b)
+static int nondata_nodes_cmp(void *priv, struct list_head *a,
+			     struct list_head *b)
 {
-	int typea, typeb;
 	ino_t inuma, inumb;
 	struct ubifs_info *c = priv;
 	struct ubifs_scan_node *sa, *sb;
 
 	cond_resched();
+	if (a == b)
+		return 0;
+
 	sa = list_entry(a, struct ubifs_scan_node, list);
 	sb = list_entry(b, struct ubifs_scan_node, list);
-	typea = key_type(c, &sa->key);
-	typeb = key_type(c, &sb->key);
-	ubifs_assert(typea != UBIFS_DATA_KEY && typeb != UBIFS_DATA_KEY);
+
+	ubifs_assert(c, key_type(c, &sa->key) != UBIFS_DATA_KEY &&
+		     key_type(c, &sb->key) != UBIFS_DATA_KEY);
+	ubifs_assert(c, sa->type != UBIFS_DATA_NODE &&
+		     sb->type != UBIFS_DATA_NODE);
 
 	/* Inodes go before directory entries */
-	if (typea == UBIFS_INO_KEY) {
-		if (typeb == UBIFS_INO_KEY)
+	if (sa->type == UBIFS_INO_NODE) {
+		if (sb->type == UBIFS_INO_NODE)
 			return sb->len - sa->len;
 		return -1;
 	}
-	if (typeb == UBIFS_INO_KEY)
+	if (sb->type == UBIFS_INO_NODE)
 		return 1;
 
-	ubifs_assert(typea == UBIFS_DENT_KEY && typeb == UBIFS_DENT_KEY);
+	ubifs_assert(c, key_type(c, &sa->key) == UBIFS_DENT_KEY ||
+		     key_type(c, &sa->key) == UBIFS_XENT_KEY);
+	ubifs_assert(c, key_type(c, &sb->key) == UBIFS_DENT_KEY ||
+		     key_type(c, &sb->key) == UBIFS_XENT_KEY);
+	ubifs_assert(c, sa->type == UBIFS_DENT_NODE ||
+		     sa->type == UBIFS_XENT_NODE);
+	ubifs_assert(c, sb->type == UBIFS_DENT_NODE ||
+		     sb->type == UBIFS_XENT_NODE);
+
 	inuma = key_inum(c, &sa->key);
 	inumb = key_inum(c, &sb->key);
 
@@ -317,17 +231,34 @@ int nondata_nodes_cmp(void *priv, struct list_head *a, struct list_head *b)
 static int sort_nodes(struct ubifs_info *c, struct ubifs_scan_leb *sleb,
 		      struct list_head *nondata, int *min)
 {
+	int err;
 	struct ubifs_scan_node *snod, *tmp;
 
 	*min = INT_MAX;
 
 	/* Separate data nodes and non-data nodes */
 	list_for_each_entry_safe(snod, tmp, &sleb->nodes, list) {
-		int err;
+		ubifs_assert(c, snod->type == UBIFS_INO_NODE  ||
+			     snod->type == UBIFS_DATA_NODE ||
+			     snod->type == UBIFS_DENT_NODE ||
+			     snod->type == UBIFS_XENT_NODE ||
+			     snod->type == UBIFS_TRUN_NODE ||
+			     snod->type == UBIFS_AUTH_NODE);
 
-		ubifs_assert(snod->type != UBIFS_IDX_NODE);
-		ubifs_assert(snod->type != UBIFS_REF_NODE);
-		ubifs_assert(snod->type != UBIFS_CS_NODE);
+		if (snod->type != UBIFS_INO_NODE  &&
+		    snod->type != UBIFS_DATA_NODE &&
+		    snod->type != UBIFS_DENT_NODE &&
+		    snod->type != UBIFS_XENT_NODE) {
+			/* Probably truncation node, zap it */
+			list_del(&snod->list);
+			kfree(snod);
+			continue;
+		}
+
+		ubifs_assert(c, key_type(c, &snod->key) == UBIFS_DATA_KEY ||
+			     key_type(c, &snod->key) == UBIFS_INO_KEY  ||
+			     key_type(c, &snod->key) == UBIFS_DENT_KEY ||
+			     key_type(c, &snod->key) == UBIFS_XENT_KEY);
 
 		err = ubifs_tnc_has_node(c, &snod->key, 0, sleb->lnum,
 					 snod->offs, 0);
@@ -351,6 +282,13 @@ static int sort_nodes(struct ubifs_info *c, struct ubifs_scan_leb *sleb,
 	/* Sort data and non-data nodes */
 	list_sort(c, &sleb->nodes, &data_nodes_cmp);
 	list_sort(c, nondata, &nondata_nodes_cmp);
+
+	err = dbg_check_data_nodes_order(c, &sleb->nodes);
+	if (err)
+		return err;
+	err = dbg_check_nondata_nodes_order(c, nondata);
+	if (err)
+		return err;
 	return 0;
 }
 
@@ -415,12 +353,13 @@ static int move_nodes(struct ubifs_info *c, struct ubifs_scan_leb *sleb)
 
 	/* Write nodes to their new location. Use the first-fit strategy */
 	while (1) {
-		int avail;
+		int avail, moved = 0;
 		struct ubifs_scan_node *snod, *tmp;
 
 		/* Move data nodes */
 		list_for_each_entry_safe(snod, tmp, &sleb->nodes, list) {
-			avail = c->leb_size - wbuf->offs - wbuf->used;
+			avail = c->leb_size - wbuf->offs - wbuf->used -
+					ubifs_auth_node_sz(c);
 			if  (snod->len > avail)
 				/*
 				 * Do not skip data nodes in order to optimize
@@ -428,14 +367,21 @@ static int move_nodes(struct ubifs_info *c, struct ubifs_scan_leb *sleb)
 				 */
 				break;
 
+			err = ubifs_shash_update(c, c->jheads[GCHD].log_hash,
+						 snod->node, snod->len);
+			if (err)
+				goto out;
+
 			err = move_node(c, sleb, snod, wbuf);
 			if (err)
 				goto out;
+			moved = 1;
 		}
 
 		/* Move non-data nodes */
 		list_for_each_entry_safe(snod, tmp, &nondata, list) {
-			avail = c->leb_size - wbuf->offs - wbuf->used;
+			avail = c->leb_size - wbuf->offs - wbuf->used -
+					ubifs_auth_node_sz(c);
 			if (avail < min)
 				break;
 
@@ -453,9 +399,41 @@ static int move_nodes(struct ubifs_info *c, struct ubifs_scan_leb *sleb)
 				continue;
 			}
 
+			err = ubifs_shash_update(c, c->jheads[GCHD].log_hash,
+						 snod->node, snod->len);
+			if (err)
+				goto out;
+
 			err = move_node(c, sleb, snod, wbuf);
 			if (err)
 				goto out;
+			moved = 1;
+		}
+
+		if (ubifs_authenticated(c) && moved) {
+			struct ubifs_auth_node *auth;
+
+			auth = kmalloc(ubifs_auth_node_sz(c), GFP_NOFS);
+			if (!auth) {
+				err = -ENOMEM;
+				goto out;
+			}
+
+			err = ubifs_prepare_auth_node(c, auth,
+						c->jheads[GCHD].log_hash);
+			if (err) {
+				kfree(auth);
+				goto out;
+			}
+
+			err = ubifs_wbuf_write_nolock(wbuf, auth,
+						      ubifs_auth_node_sz(c));
+			if (err) {
+				kfree(auth);
+				goto out;
+			}
+
+			ubifs_add_dirt(c, wbuf->lnum, ubifs_auth_node_sz(c));
 		}
 
 		if (list_empty(&sleb->nodes) && list_empty(&nondata))
@@ -520,10 +498,41 @@ int ubifs_garbage_collect_leb(struct ubifs_info *c, struct ubifs_lprops *lp)
 	struct ubifs_wbuf *wbuf = &c->jheads[GCHD].wbuf;
 	int err = 0, lnum = lp->lnum;
 
-	ubifs_assert(c->gc_lnum != -1 || wbuf->offs + wbuf->used == 0 ||
+	ubifs_assert(c, c->gc_lnum != -1 || wbuf->offs + wbuf->used == 0 ||
 		     c->need_recovery);
-	ubifs_assert(c->gc_lnum != lnum);
-	ubifs_assert(wbuf->lnum != lnum);
+	ubifs_assert(c, c->gc_lnum != lnum);
+	ubifs_assert(c, wbuf->lnum != lnum);
+
+	if (lp->free + lp->dirty == c->leb_size) {
+		/* Special case - a free LEB  */
+		dbg_gc("LEB %d is free, return it", lp->lnum);
+		ubifs_assert(c, !(lp->flags & LPROPS_INDEX));
+
+		if (lp->free != c->leb_size) {
+			/*
+			 * Write buffers must be sync'd before unmapping
+			 * freeable LEBs, because one of them may contain data
+			 * which obsoletes something in 'lp->lnum'.
+			 */
+			err = gc_sync_wbufs(c);
+			if (err)
+				return err;
+			err = ubifs_change_one_lp(c, lp->lnum, c->leb_size,
+						  0, 0, 0, 0);
+			if (err)
+				return err;
+		}
+		err = ubifs_leb_unmap(c, lp->lnum);
+		if (err)
+			return err;
+
+		if (c->gc_lnum == -1) {
+			c->gc_lnum = lnum;
+			return LEB_RETAINED;
+		}
+
+		return LEB_FREED;
+	}
 
 	/*
 	 * We scan the entire LEB even though we only really need to scan up to
@@ -533,7 +542,7 @@ int ubifs_garbage_collect_leb(struct ubifs_info *c, struct ubifs_lprops *lp)
 	if (IS_ERR(sleb))
 		return PTR_ERR(sleb);
 
-	ubifs_assert(!list_empty(&sleb->nodes));
+	ubifs_assert(c, !list_empty(&sleb->nodes));
 	snod = list_entry(sleb->nodes.next, struct ubifs_scan_node, list);
 
 	if (snod->type == UBIFS_IDX_NODE) {
@@ -545,7 +554,7 @@ int ubifs_garbage_collect_leb(struct ubifs_info *c, struct ubifs_lprops *lp)
 			struct ubifs_idx_node *idx = snod->node;
 			int level = le16_to_cpu(idx->level);
 
-			ubifs_assert(snod->type == UBIFS_IDX_NODE);
+			ubifs_assert(c, snod->type == UBIFS_IDX_NODE);
 			key_read(c, ubifs_idx_key(c, idx), &snod->key);
 			err = ubifs_dirty_idx_node(c, &snod->key, level, lnum,
 						   snod->offs);
@@ -668,23 +677,23 @@ int ubifs_garbage_collect(struct ubifs_info *c, int anyway)
 	struct ubifs_wbuf *wbuf = &c->jheads[GCHD].wbuf;
 
 	ubifs_assert_cmt_locked(c);
+	ubifs_assert(c, !c->ro_media && !c->ro_mount);
 
 	if (ubifs_gc_should_commit(c))
 		return -EAGAIN;
 
 	mutex_lock_nested(&wbuf->io_mutex, wbuf->jhead);
 
-	if (c->ro_media) {
+	if (c->ro_error) {
 		ret = -EROFS;
 		goto out_unlock;
 	}
 
 	/* We expect the write-buffer to be empty on entry */
-	ubifs_assert(!wbuf->used);
+	ubifs_assert(c, !wbuf->used);
 
 	for (i = 0; ; i++) {
-		int space_before = c->leb_size - wbuf->offs - wbuf->used;
-		int space_after;
+		int space_before, space_after;
 
 		cond_resched();
 
@@ -729,40 +738,9 @@ int ubifs_garbage_collect(struct ubifs_info *c, int anyway)
 			break;
 		}
 
-		dbg_gc("found LEB %d: free %d, dirty %d, sum %d "
-		       "(min. space %d)", lp.lnum, lp.free, lp.dirty,
-		       lp.free + lp.dirty, min_space);
-
-		if (lp.free + lp.dirty == c->leb_size) {
-			/* An empty LEB was returned */
-			dbg_gc("LEB %d is free, return it", lp.lnum);
-			/*
-			 * ubifs_find_dirty_leb() doesn't return freeable index
-			 * LEBs.
-			 */
-			ubifs_assert(!(lp.flags & LPROPS_INDEX));
-			if (lp.free != c->leb_size) {
-				/*
-				 * Write buffers must be sync'd before
-				 * unmapping freeable LEBs, because one of them
-				 * may contain data which obsoletes something
-				 * in 'lp.pnum'.
-				 */
-				ret = gc_sync_wbufs(c);
-				if (ret)
-					goto out;
-				ret = ubifs_change_one_lp(c, lp.lnum,
-							  c->leb_size, 0, 0, 0,
-							  0);
-				if (ret)
-					goto out;
-			}
-			ret = ubifs_leb_unmap(c, lp.lnum);
-			if (ret)
-				goto out;
-			ret = lp.lnum;
-			break;
-		}
+		dbg_gc("found LEB %d: free %d, dirty %d, sum %d (min. space %d)",
+		       lp.lnum, lp.free, lp.dirty, lp.free + lp.dirty,
+		       min_space);
 
 		space_before = c->leb_size - wbuf->offs - wbuf->used;
 		if (wbuf->lnum == -1)
@@ -770,14 +748,12 @@ int ubifs_garbage_collect(struct ubifs_info *c, int anyway)
 
 		ret = ubifs_garbage_collect_leb(c, &lp);
 		if (ret < 0) {
-			if (ret == -EAGAIN || ret == -ENOSPC) {
+			if (ret == -EAGAIN) {
 				/*
-				 * These codes are not errors, so we have to
-				 * return the LEB to lprops. But if the
-				 * 'ubifs_return_leb()' function fails, its
-				 * failure code is propagated to the caller
-				 * instead of the original '-EAGAIN' or
-				 * '-ENOSPC'.
+				 * This is not error, so we have to return the
+				 * LEB to lprops. But if 'ubifs_return_leb()'
+				 * fails, its failure code is propagated to the
+				 * caller instead of the original '-EAGAIN'.
 				 */
 				err = ubifs_return_leb(c, lp.lnum);
 				if (err)
@@ -805,7 +781,7 @@ int ubifs_garbage_collect(struct ubifs_info *c, int anyway)
 			continue;
 		}
 
-		ubifs_assert(ret == LEB_RETAINED);
+		ubifs_assert(c, ret == LEB_RETAINED);
 		space_after = c->leb_size - wbuf->offs - wbuf->used;
 		dbg_gc("LEB %d retained, freed %d bytes", lp.lnum,
 		       space_after - space_before);
@@ -865,10 +841,10 @@ out_unlock:
 	return ret;
 
 out:
-	ubifs_assert(ret < 0);
-	ubifs_assert(ret != -ENOSPC && ret != -EAGAIN);
-	ubifs_ro_mode(c, ret);
+	ubifs_assert(c, ret < 0);
+	ubifs_assert(c, ret != -ENOSPC && ret != -EAGAIN);
 	ubifs_wbuf_sync_nolock(wbuf);
+	ubifs_ro_mode(c, ret);
 	mutex_unlock(&wbuf->io_mutex);
 	ubifs_return_leb(c, lp.lnum);
 	return ret;
@@ -899,14 +875,10 @@ int ubifs_gc_start_commit(struct ubifs_info *c)
 	 */
 	while (1) {
 		lp = ubifs_fast_find_freeable(c);
-		if (IS_ERR(lp)) {
-			err = PTR_ERR(lp);
-			goto out;
-		}
 		if (!lp)
 			break;
-		ubifs_assert(!(lp->flags & LPROPS_TAKEN));
-		ubifs_assert(!(lp->flags & LPROPS_INDEX));
+		ubifs_assert(c, !(lp->flags & LPROPS_TAKEN));
+		ubifs_assert(c, !(lp->flags & LPROPS_INDEX));
 		err = ubifs_leb_unmap(c, lp->lnum);
 		if (err)
 			goto out;
@@ -915,8 +887,8 @@ int ubifs_gc_start_commit(struct ubifs_info *c)
 			err = PTR_ERR(lp);
 			goto out;
 		}
-		ubifs_assert(!(lp->flags & LPROPS_TAKEN));
-		ubifs_assert(!(lp->flags & LPROPS_INDEX));
+		ubifs_assert(c, !(lp->flags & LPROPS_TAKEN));
+		ubifs_assert(c, !(lp->flags & LPROPS_INDEX));
 	}
 
 	/* Mark GC'd index LEBs OK to unmap after this commit finishes */
@@ -937,8 +909,8 @@ int ubifs_gc_start_commit(struct ubifs_info *c)
 			err = -ENOMEM;
 			goto out;
 		}
-		ubifs_assert(!(lp->flags & LPROPS_TAKEN));
-		ubifs_assert(lp->flags & LPROPS_INDEX);
+		ubifs_assert(c, !(lp->flags & LPROPS_TAKEN));
+		ubifs_assert(c, lp->flags & LPROPS_INDEX);
 		/* Don't release the LEB until after the next commit */
 		flags = (lp->flags | LPROPS_TAKEN) ^ LPROPS_INDEX;
 		lp = ubifs_change_lp(c, lp, c->leb_size, 0, flags, 1);
@@ -947,8 +919,8 @@ int ubifs_gc_start_commit(struct ubifs_info *c)
 			kfree(idx_gc);
 			goto out;
 		}
-		ubifs_assert(lp->flags & LPROPS_TAKEN);
-		ubifs_assert(!(lp->flags & LPROPS_INDEX));
+		ubifs_assert(c, lp->flags & LPROPS_TAKEN);
+		ubifs_assert(c, !(lp->flags & LPROPS_INDEX));
 		idx_gc->lnum = lp->lnum;
 		idx_gc->unmap = 1;
 		list_add(&idx_gc->list, &c->idx_gc);

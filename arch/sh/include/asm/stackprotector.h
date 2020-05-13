@@ -1,10 +1,29 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+#ifndef __ASM_SH_STACKPROTECTOR_H
+#define __ASM_SH_STACKPROTECTOR_H
+
+#include <linux/random.h>
+#include <linux/version.h>
+
+extern unsigned long __stack_chk_guard;
+
 /*
- * SH specific GCC stack protector support.
+ * Initialize the stackprotector canary value.
+ *
+ * NOTE: this must only be called from functions that never return,
+ * and it must always be inlined.
  */
+static __always_inline void boot_init_stack_canary(void)
+{
+	unsigned long canary;
 
-#ifndef _ASM_STACKPROTECTOR_H
-#define _ASM_STACKPROTECTOR_H 1
+	/* Try to get a semi random initial value. */
+	get_random_bytes(&canary, sizeof(canary));
+	canary ^= LINUX_VERSION_CODE;
+	canary &= CANARY_MASK;
 
-#include <asm-generic/stackprotector.h>
+	current->stack_canary = canary;
+	__stack_chk_guard = current->stack_canary;
+}
 
-#endif	/* _ASM_STACKPROTECTOR_H */
+#endif /* __ASM_SH_STACKPROTECTOR_H */

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* sun_uflash.c - Driver for user-programmable flash on
  *                Sun Microsystems SME boardsets.
  *
@@ -11,12 +12,12 @@
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/errno.h>
-#include <linux/init.h>
 #include <linux/ioport.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
+#include <linux/slab.h>
 #include <asm/prom.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/io.h>
 
 #include <linux/mtd/mtd.h>
@@ -47,7 +48,7 @@ struct map_info uflash_map_templ = {
 	.bankwidth =	UFLASH_BUSWIDTH,
 };
 
-int uflash_devinit(struct of_device *op, struct device_node *dp)
+int uflash_devinit(struct platform_device *op, struct device_node *dp)
 {
 	struct uflash_dev *up;
 
@@ -55,8 +56,8 @@ int uflash_devinit(struct of_device *op, struct device_node *dp)
 		/* Non-CFI userflash device-- once I find one we
 		 * can work on supporting it.
 		 */
-		printk(KERN_ERR PFX "Unsupported device at %s, 0x%llx\n",
-		       dp->full_name, (unsigned long long)op->resource[0].start);
+		printk(KERN_ERR PFX "Unsupported device at %pOF, 0x%llx\n",
+		       dp, (unsigned long long)op->resource[0].start);
 
 		return -ENODEV;
 	}
@@ -74,7 +75,7 @@ int uflash_devinit(struct of_device *op, struct device_node *dp)
 
 	up->name = of_get_property(dp, "model", NULL);
 	if (up->name && 0 < strlen(up->name))
-		up->map.name = (char *)up->name;
+		up->map.name = up->name;
 
 	up->map.phys = op->resource[0].start;
 
@@ -100,16 +101,16 @@ int uflash_devinit(struct of_device *op, struct device_node *dp)
 
 	up->mtd->owner = THIS_MODULE;
 
-	add_mtd_device(up->mtd);
+	mtd_device_register(up->mtd, NULL, 0);
 
 	dev_set_drvdata(&op->dev, up);
 
 	return 0;
 }
 
-static int __devinit uflash_probe(struct of_device *op, const struct of_device_id *match)
+static int uflash_probe(struct platform_device *op)
 {
-	struct device_node *dp = op->node;
+	struct device_node *dp = op->dev.of_node;
 
 	/* Flashprom must have the "user" property in order to
 	 * be used by this driver.
@@ -120,12 +121,12 @@ static int __devinit uflash_probe(struct of_device *op, const struct of_device_i
 	return uflash_devinit(op, dp);
 }
 
-static int __devexit uflash_remove(struct of_device *op)
+static int uflash_remove(struct platform_device *op)
 {
 	struct uflash_dev *up = dev_get_drvdata(&op->dev);
 
 	if (up->mtd) {
-		del_mtd_device(up->mtd);
+		mtd_device_unregister(up->mtd);
 		map_destroy(up->mtd);
 	}
 	if (up->map.virt) {
@@ -147,22 +148,13 @@ static const struct of_device_id uflash_match[] = {
 
 MODULE_DEVICE_TABLE(of, uflash_match);
 
-static struct of_platform_driver uflash_driver = {
-	.name		= DRIVER_NAME,
-	.match_table	= uflash_match,
+static struct platform_driver uflash_driver = {
+	.driver = {
+		.name = DRIVER_NAME,
+		.of_match_table = uflash_match,
+	},
 	.probe		= uflash_probe,
-	.remove		= __devexit_p(uflash_remove),
+	.remove		= uflash_remove,
 };
 
-static int __init uflash_init(void)
-{
-	return of_register_driver(&uflash_driver, &of_bus_type);
-}
-
-static void __exit uflash_exit(void)
-{
-	of_unregister_driver(&uflash_driver);
-}
-
-module_init(uflash_init);
-module_exit(uflash_exit);
+module_platform_driver(uflash_driver);

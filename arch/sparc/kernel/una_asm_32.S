@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* una_asm.S: Kernel unaligned trap assembler helpers.
  *
  * Copyright (C) 1996,2005,2008 David S. Miller (davem@davemloft.net)
@@ -24,9 +25,9 @@ retl_efault:
 	.globl	__do_int_store
 __do_int_store:
 	ld	[%o2], %g1
-	cmp	%1, 2
+	cmp	%o1, 2
 	be	2f
-	 cmp	%1, 4
+	 cmp	%o1, 4
 	be	1f
 	 srl	%g1, 24, %g2
 	srl	%g1, 16, %g7

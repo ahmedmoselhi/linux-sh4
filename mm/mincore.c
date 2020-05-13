@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *	linux/mm/mincore.c
  *
@@ -7,17 +8,39 @@
 /*
  * The mincore() system call.
  */
-#include <linux/slab.h>
 #include <linux/pagemap.h>
-#include <linux/mm.h>
+#include <linux/gfp.h>
+#include <linux/pagewalk.h>
 #include <linux/mman.h>
 #include <linux/syscalls.h>
 #include <linux/swap.h>
 #include <linux/swapops.h>
+#include <linux/shmem_fs.h>
 #include <linux/hugetlb.h>
 
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/pgtable.h>
+
+static int mincore_hugetlb(pte_t *pte, unsigned long hmask, unsigned long addr,
+			unsigned long end, struct mm_walk *walk)
+{
+#ifdef CONFIG_HUGETLB_PAGE
+	unsigned char present;
+	unsigned char *vec = walk->private;
+
+	/*
+	 * Hugepages under user process are always in RAM and never
+	 * swapped out, but theoretically it needs to be checked.
+	 */
+	present = pte && !huge_pte_none(huge_ptep_get(pte));
+	for (; addr != end; vec++, addr += PAGE_SIZE)
+		*vec = present;
+	walk->private = vec;
+#else
+	BUG();
+#endif
+	return 0;
+}
 
 /*
  * Later we can get more picky about what "in core" means precisely.
@@ -35,150 +58,49 @@ static unsigned char mincore_page(struct address_space *mapping, pgoff_t pgoff)
 	 * file will not get a swp_entry_t in its pte, but rather it is like
 	 * any other file mapping (ie. marked !present and faulted in with
 	 * tmpfs's .fault). So swapped out tmpfs mappings are tested here.
-	 *
-	 * However when tmpfs moves the page from pagecache and into swapcache,
-	 * it is still in core, but the find_get_page below won't find it.
-	 * No big deal, but make a note of it.
 	 */
+#ifdef CONFIG_SWAP
+	if (shmem_mapping(mapping)) {
+		page = find_get_entry(mapping, pgoff);
+		/*
+		 * shmem/tmpfs may return swap: account for swapcache
+		 * page too.
+		 */
+		if (xa_is_value(page)) {
+			swp_entry_t swp = radix_to_swp_entry(page);
+			struct swap_info_struct *si;
+
+			/* Prevent swap device to being swapoff under us */
+			si = get_swap_device(swp);
+			if (si) {
+				page = find_get_page(swap_address_space(swp),
+						     swp_offset(swp));
+				put_swap_device(si);
+			} else
+				page = NULL;
+		}
+	} else
+		page = find_get_page(mapping, pgoff);
+#else
 	page = find_get_page(mapping, pgoff);
+#endif
 	if (page) {
 		present = PageUptodate(page);
-		page_cache_release(page);
+		put_page(page);
 	}
 
 	return present;
 }
 
-/*
- * Do a chunk of "sys_mincore()". We've already checked
- * all the arguments, we hold the mmap semaphore: we should
- * just return the amount of info we're asked for.
- */
-static long do_mincore(unsigned long addr, unsigned char *vec, unsigned long pages)
+static int __mincore_unmapped_range(unsigned long addr, unsigned long end,
+				struct vm_area_struct *vma, unsigned char *vec)
 {
-	pgd_t *pgd;
-	pud_t *pud;
-	pmd_t *pmd;
-	pte_t *ptep;
-	spinlock_t *ptl;
-	unsigned long nr;
+	unsigned long nr = (end - addr) >> PAGE_SHIFT;
 	int i;
-	pgoff_t pgoff;
-	struct vm_area_struct *vma = find_vma(current->mm, addr);
 
-	/*
-	 * find_vma() didn't find anything above us, or we're
-	 * in an unmapped hole in the address space: ENOMEM.
-	 */
-	if (!vma || addr < vma->vm_start)
-		return -ENOMEM;
-
-#ifdef CONFIG_HUGETLB_PAGE
-	if (is_vm_hugetlb_page(vma)) {
-		struct hstate *h;
-		unsigned long nr_huge;
-		unsigned char present;
-
-		i = 0;
-		nr = min(pages, (vma->vm_end - addr) >> PAGE_SHIFT);
-		h = hstate_vma(vma);
-		nr_huge = ((addr + pages * PAGE_SIZE - 1) >> huge_page_shift(h))
-			  - (addr >> huge_page_shift(h)) + 1;
-		nr_huge = min(nr_huge,
-			      (vma->vm_end - addr) >> huge_page_shift(h));
-		while (1) {
-			/* hugepage always in RAM for now,
-			 * but generally it needs to be check */
-			ptep = huge_pte_offset(current->mm,
-					       addr & huge_page_mask(h));
-			present = !!(ptep &&
-				     !huge_pte_none(huge_ptep_get(ptep)));
-			while (1) {
-				vec[i++] = present;
-				addr += PAGE_SIZE;
-				/* reach buffer limit */
-				if (i == nr)
-					return nr;
-				/* check hugepage border */
-				if (!((addr & ~huge_page_mask(h))
-				      >> PAGE_SHIFT))
-					break;
-			}
-		}
-		return nr;
-	}
-#endif
-
-	/*
-	 * Calculate how many pages there are left in the last level of the
-	 * PTE array for our address.
-	 */
-	nr = PTRS_PER_PTE - ((addr >> PAGE_SHIFT) & (PTRS_PER_PTE-1));
-
-	/*
-	 * Don't overrun this vma
-	 */
-	nr = min(nr, (vma->vm_end - addr) >> PAGE_SHIFT);
-
-	/*
-	 * Don't return more than the caller asked for
-	 */
-	nr = min(nr, pages);
-
-	pgd = pgd_offset(vma->vm_mm, addr);
-	if (pgd_none_or_clear_bad(pgd))
-		goto none_mapped;
-	pud = pud_offset(pgd, addr);
-	if (pud_none_or_clear_bad(pud))
-		goto none_mapped;
-	pmd = pmd_offset(pud, addr);
-	if (pmd_none_or_clear_bad(pmd))
-		goto none_mapped;
-
-	ptep = pte_offset_map_lock(vma->vm_mm, pmd, addr, &ptl);
-	for (i = 0; i < nr; i++, ptep++, addr += PAGE_SIZE) {
-		unsigned char present;
-		pte_t pte = *ptep;
-
-		if (pte_present(pte)) {
-			present = 1;
-
-		} else if (pte_none(pte)) {
-			if (vma->vm_file) {
-				pgoff = linear_page_index(vma, addr);
-				present = mincore_page(vma->vm_file->f_mapping,
-							pgoff);
-			} else
-				present = 0;
-
-		} else if (pte_file(pte)) {
-			pgoff = pte_to_pgoff(pte);
-			present = mincore_page(vma->vm_file->f_mapping, pgoff);
-
-		} else { /* pte is a swap entry */
-			swp_entry_t entry = pte_to_swp_entry(pte);
-			if (is_migration_entry(entry)) {
-				/* migration entries are always uptodate */
-				present = 1;
-			} else {
-#ifdef CONFIG_SWAP
-				pgoff = entry.val;
-				present = mincore_page(&swapper_space, pgoff);
-#else
-				WARN_ON(1);
-				present = 1;
-#endif
-			}
-		}
-
-		vec[i] = present;
-	}
-	pte_unmap_unlock(ptep-1, ptl);
-
-	return nr;
-
-none_mapped:
 	if (vma->vm_file) {
+		pgoff_t pgoff;
+
 		pgoff = linear_page_index(vma, addr);
 		for (i = 0; i < nr; i++, pgoff++)
 			vec[i] = mincore_page(vma->vm_file->f_mapping, pgoff);
@@ -186,8 +108,122 @@ none_mapped:
 		for (i = 0; i < nr; i++)
 			vec[i] = 0;
 	}
-
 	return nr;
+}
+
+static int mincore_unmapped_range(unsigned long addr, unsigned long end,
+				   __always_unused int depth,
+				   struct mm_walk *walk)
+{
+	walk->private += __mincore_unmapped_range(addr, end,
+						  walk->vma, walk->private);
+	return 0;
+}
+
+static int mincore_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
+			struct mm_walk *walk)
+{
+	spinlock_t *ptl;
+	struct vm_area_struct *vma = walk->vma;
+	pte_t *ptep;
+	unsigned char *vec = walk->private;
+	int nr = (end - addr) >> PAGE_SHIFT;
+
+	ptl = pmd_trans_huge_lock(pmd, vma);
+	if (ptl) {
+		memset(vec, 1, nr);
+		spin_unlock(ptl);
+		goto out;
+	}
+
+	if (pmd_trans_unstable(pmd)) {
+		__mincore_unmapped_range(addr, end, vma, vec);
+		goto out;
+	}
+
+	ptep = pte_offset_map_lock(walk->mm, pmd, addr, &ptl);
+	for (; addr != end; ptep++, addr += PAGE_SIZE) {
+		pte_t pte = *ptep;
+
+		if (pte_none(pte))
+			__mincore_unmapped_range(addr, addr + PAGE_SIZE,
+						 vma, vec);
+		else if (pte_present(pte))
+			*vec = 1;
+		else { /* pte is a swap entry */
+			swp_entry_t entry = pte_to_swp_entry(pte);
+
+			if (non_swap_entry(entry)) {
+				/*
+				 * migration or hwpoison entries are always
+				 * uptodate
+				 */
+				*vec = 1;
+			} else {
+#ifdef CONFIG_SWAP
+				*vec = mincore_page(swap_address_space(entry),
+						    swp_offset(entry));
+#else
+				WARN_ON(1);
+				*vec = 1;
+#endif
+			}
+		}
+		vec++;
+	}
+	pte_unmap_unlock(ptep - 1, ptl);
+out:
+	walk->private += nr;
+	cond_resched();
+	return 0;
+}
+
+static inline bool can_do_mincore(struct vm_area_struct *vma)
+{
+	if (vma_is_anonymous(vma))
+		return true;
+	if (!vma->vm_file)
+		return false;
+	/*
+	 * Reveal pagecache information only for non-anonymous mappings that
+	 * correspond to the files the calling process could (if tried) open
+	 * for writing; otherwise we'd be including shared non-exclusive
+	 * mappings, which opens a side channel.
+	 */
+	return inode_owner_or_capable(file_inode(vma->vm_file)) ||
+		inode_permission(file_inode(vma->vm_file), MAY_WRITE) == 0;
+}
+
+static const struct mm_walk_ops mincore_walk_ops = {
+	.pmd_entry		= mincore_pte_range,
+	.pte_hole		= mincore_unmapped_range,
+	.hugetlb_entry		= mincore_hugetlb,
+};
+
+/*
+ * Do a chunk of "sys_mincore()". We've already checked
+ * all the arguments, we hold the mmap semaphore: we should
+ * just return the amount of info we're asked for.
+ */
+static long do_mincore(unsigned long addr, unsigned long pages, unsigned char *vec)
+{
+	struct vm_area_struct *vma;
+	unsigned long end;
+	int err;
+
+	vma = find_vma(current->mm, addr);
+	if (!vma || addr < vma->vm_start)
+		return -ENOMEM;
+	end = min(vma->vm_end, addr + (pages << PAGE_SHIFT));
+	if (!can_do_mincore(vma)) {
+		unsigned long pages = DIV_ROUND_UP(end - addr, PAGE_SIZE);
+		memset(vec, 1, pages);
+		return pages;
+	}
+	err = walk_page_range(vma->vm_mm, addr, end, &mincore_walk_ops, vec);
+	if (err < 0)
+		return err;
+	return (end - addr) >> PAGE_SHIFT;
 }
 
 /*
@@ -207,7 +243,7 @@ none_mapped:
  * return values:
  *  zero    - success
  *  -EFAULT - vec points to an illegal address
- *  -EINVAL - addr is not a multiple of PAGE_CACHE_SIZE
+ *  -EINVAL - addr is not a multiple of PAGE_SIZE
  *  -ENOMEM - Addresses in the range [addr, addr + len] are
  *		invalid for the address space of this process, or
  *		specify one or more pages which are not currently
@@ -221,19 +257,21 @@ SYSCALL_DEFINE3(mincore, unsigned long, start, size_t, len,
 	unsigned long pages;
 	unsigned char *tmp;
 
+	start = untagged_addr(start);
+
 	/* Check the start address: needs to be page-aligned.. */
- 	if (start & ~PAGE_CACHE_MASK)
+	if (start & ~PAGE_MASK)
 		return -EINVAL;
 
 	/* ..and we need to be passed a valid user-space range */
-	if (!access_ok(VERIFY_READ, (void __user *) start, len))
+	if (!access_ok((void __user *) start, len))
 		return -ENOMEM;
 
-	/* This also avoids any overflows on PAGE_CACHE_ALIGN */
+	/* This also avoids any overflows on PAGE_ALIGN */
 	pages = len >> PAGE_SHIFT;
-	pages += (len & ~PAGE_MASK) != 0;
+	pages += (offset_in_page(len)) != 0;
 
-	if (!access_ok(VERIFY_WRITE, vec, pages))
+	if (!access_ok(vec, pages))
 		return -EFAULT;
 
 	tmp = (void *) __get_free_page(GFP_USER);
@@ -247,7 +285,7 @@ SYSCALL_DEFINE3(mincore, unsigned long, start, size_t, len,
 		 * the temporary buffer size.
 		 */
 		down_read(&current->mm->mmap_sem);
-		retval = do_mincore(start, tmp, min(pages, PAGE_SIZE));
+		retval = do_mincore(start, min(pages, PAGE_SIZE), tmp);
 		up_read(&current->mm->mmap_sem);
 
 		if (retval <= 0)

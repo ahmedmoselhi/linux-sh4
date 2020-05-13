@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * IDE ATAPI floppy driver.
  *
@@ -18,6 +19,7 @@
 #include <linux/types.h>
 #include <linux/string.h>
 #include <linux/kernel.h>
+#include <linux/compat.h>
 #include <linux/delay.h>
 #include <linux/timer.h>
 #include <linux/mm.h>
@@ -25,7 +27,6 @@
 #include <linux/major.h>
 #include <linux/errno.h>
 #include <linux/genhd.h>
-#include <linux/slab.h>
 #include <linux/cdrom.h>
 #include <linux/ide.h>
 #include <linux/hdreg.h>
@@ -36,7 +37,6 @@
 #include <scsi/scsi_ioctl.h>
 
 #include <asm/byteorder.h>
-#include <linux/irq.h>
 #include <linux/uaccess.h>
 #include <linux/io.h>
 #include <asm/unaligned.h>
@@ -74,7 +74,7 @@ static int ide_floppy_callback(ide_drive_t *drive, int dsc)
 		drive->failed_pc = NULL;
 
 	if (pc->c[0] == GPCMD_READ_10 || pc->c[0] == GPCMD_WRITE_10 ||
-	    (rq && blk_pc_request(rq)))
+	    blk_rq_is_scsi(rq))
 		uptodate = 1; /* FIXME */
 	else if (pc->c[0] == GPCMD_REQUEST_SENSE) {
 
@@ -99,8 +99,8 @@ static int ide_floppy_callback(ide_drive_t *drive, int dsc)
 			       "Aborting request!\n");
 	}
 
-	if (blk_special_request(rq))
-		rq->errors = uptodate ? 0 : IDE_DRV_ERROR_GENERAL;
+	if (ata_misc_request(rq))
+		scsi_req(rq)->result = uptodate ? 0 : IDE_DRV_ERROR_GENERAL;
 
 	return uptodate;
 }
@@ -108,7 +108,7 @@ static int ide_floppy_callback(ide_drive_t *drive, int dsc)
 static void ide_floppy_report_error(struct ide_disk_obj *floppy,
 				    struct ide_atapi_pc *pc)
 {
-	/* supress error messages resulting from Medium not present */
+	/* suppress error messages resulting from Medium not present */
 	if (floppy->sense_key == 0x02 &&
 	    floppy->asc       == 0x3a &&
 	    floppy->ascq      == 0x00)
@@ -145,7 +145,7 @@ static ide_startstop_t ide_floppy_issue_pc(ide_drive_t *drive,
 
 		drive->failed_pc = NULL;
 		drive->pc_callback(drive, 0);
-		ide_complete_rq(drive, -EIO, done);
+		ide_complete_rq(drive, BLK_STS_IOERR, done);
 		return ide_stopped;
 	}
 
@@ -205,10 +205,10 @@ static void idefloppy_create_rw_cmd(ide_drive_t *drive,
 	put_unaligned(cpu_to_be16(blocks), (unsigned short *)&pc->c[7]);
 	put_unaligned(cpu_to_be32(block), (unsigned int *) &pc->c[2]);
 
-	memcpy(rq->cmd, pc->c, 12);
+	memcpy(scsi_req(rq)->cmd, pc->c, 12);
 
 	pc->rq = rq;
-	if (rq->cmd_flags & REQ_RW)
+	if (cmd == WRITE)
 		pc->flags |= PC_FLAG_WRITING;
 
 	pc->flags |= PC_FLAG_DMA_OK;
@@ -218,7 +218,7 @@ static void idefloppy_blockpc_cmd(struct ide_disk_obj *floppy,
 		struct ide_atapi_pc *pc, struct request *rq)
 {
 	ide_init_pc(pc);
-	memcpy(pc->c, rq->cmd, sizeof(pc->c));
+	memcpy(pc->c, scsi_req(rq)->cmd, sizeof(pc->c));
 	pc->rq = rq;
 	if (blk_rq_bytes(rq)) {
 		pc->flags |= PC_FLAG_DMA_OK;
@@ -241,21 +241,23 @@ static ide_startstop_t ide_floppy_do_request(ide_drive_t *drive,
 					? rq->rq_disk->disk_name
 					: "dev?"));
 
-	if (rq->errors >= ERROR_MAX) {
+	if (scsi_req(rq)->result >= ERROR_MAX) {
 		if (drive->failed_pc) {
 			ide_floppy_report_error(floppy, drive->failed_pc);
 			drive->failed_pc = NULL;
 		} else
 			printk(KERN_ERR PFX "%s: I/O error\n", drive->name);
 
-		if (blk_special_request(rq)) {
-			rq->errors = 0;
-			ide_complete_rq(drive, 0, blk_rq_bytes(rq));
+		if (ata_misc_request(rq)) {
+			scsi_req(rq)->result = 0;
+			ide_complete_rq(drive, BLK_STS_OK, blk_rq_bytes(rq));
 			return ide_stopped;
 		} else
 			goto out_end;
 	}
-	if (blk_fs_request(rq)) {
+
+	switch (req_op(rq)) {
+	default:
 		if (((long)blk_rq_pos(rq) % floppy->bs_factor) ||
 		    (blk_rq_sectors(rq) % floppy->bs_factor)) {
 			printk(KERN_ERR PFX "%s: unsupported r/w rq size\n",
@@ -264,13 +266,23 @@ static ide_startstop_t ide_floppy_do_request(ide_drive_t *drive,
 		}
 		pc = &floppy->queued_pc;
 		idefloppy_create_rw_cmd(drive, pc, rq, (unsigned long)block);
-	} else if (blk_special_request(rq) || blk_sense_request(rq)) {
-		pc = (struct ide_atapi_pc *)rq->special;
-	} else if (blk_pc_request(rq)) {
+		break;
+	case REQ_OP_SCSI_IN:
+	case REQ_OP_SCSI_OUT:
 		pc = &floppy->queued_pc;
 		idefloppy_blockpc_cmd(floppy, pc, rq);
-	} else
-		BUG();
+		break;
+	case REQ_OP_DRV_IN:
+	case REQ_OP_DRV_OUT:
+		switch (ide_req(rq)->type) {
+		case ATA_PRIV_MISC:
+		case ATA_PRIV_SENSE:
+			pc = (struct ide_atapi_pc *)ide_req(rq)->special;
+			break;
+		default:
+			BUG();
+		}
+	}
 
 	ide_prep_sense(drive, rq);
 
@@ -281,7 +293,7 @@ static ide_startstop_t ide_floppy_do_request(ide_drive_t *drive,
 
 	cmd.rq = rq;
 
-	if (blk_fs_request(rq) || blk_rq_bytes(rq)) {
+	if (!blk_rq_is_passthrough(rq) || blk_rq_bytes(rq)) {
 		ide_init_sg_cmd(&cmd, blk_rq_bytes(rq));
 		ide_map_sg(drive, &cmd);
 	}
@@ -291,9 +303,9 @@ static ide_startstop_t ide_floppy_do_request(ide_drive_t *drive,
 	return ide_floppy_issue_pc(drive, &cmd, pc);
 out_end:
 	drive->failed_pc = NULL;
-	if (blk_fs_request(rq) == 0 && rq->errors == 0)
-		rq->errors = -EIO;
-	ide_complete_rq(drive, -EIO, blk_rq_bytes(rq));
+	if (blk_rq_is_passthrough(rq) && scsi_req(rq)->result == 0)
+		scsi_req(rq)->result = -EIO;
+	ide_complete_rq(drive, BLK_STS_IOERR, blk_rq_bytes(rq));
 	return ide_stopped;
 }
 
@@ -416,6 +428,7 @@ static int ide_floppy_get_capacity(ide_drive_t *drive)
 				 * (maintains previous driver behaviour)
 				 */
 				break;
+			/* fall through */
 		case CAPACITY_CURRENT:
 			/* Normal Zip/LS-120 disks */
 			if (memcmp(cap_desc, &floppy->cap_desc, 8))
@@ -482,19 +495,19 @@ static void ide_floppy_setup(ide_drive_t *drive)
 	 * it. It should be fixed as of version 1.9, but to be on the safe side
 	 * we'll leave the limitation below for the 2.2.x tree.
 	 */
-	if (!strncmp((char *)&id[ATA_ID_PROD], "IOMEGA ZIP 100 ATAPI", 20)) {
+	if (strstarts((char *)&id[ATA_ID_PROD], "IOMEGA ZIP 100 ATAPI")) {
 		drive->atapi_flags |= IDE_AFLAG_ZIP_DRIVE;
 		/* This value will be visible in the /proc/ide/hdx/settings */
 		drive->pc_delay = IDEFLOPPY_PC_DELAY;
-		blk_queue_max_sectors(drive->queue, 64);
+		blk_queue_max_hw_sectors(drive->queue, 64);
 	}
 
 	/*
 	 * Guess what? The IOMEGA Clik! drive also needs the above fix. It makes
 	 * nasty clicking noises without it, so please don't remove this.
 	 */
-	if (strncmp((char *)&id[ATA_ID_PROD], "IOMEGA Clik!", 11) == 0) {
-		blk_queue_max_sectors(drive->queue, 64);
+	if (strstarts((char *)&id[ATA_ID_PROD], "IOMEGA Clik!")) {
+		blk_queue_max_hw_sectors(drive->queue, 64);
 		drive->atapi_flags |= IDE_AFLAG_CLIK_DRIVE;
 		/* IOMEGA Clik! drives do not support lock/unlock commands */
 		drive->dev_flags &= ~IDE_DFLAG_DOORLOCKING;
@@ -534,4 +547,7 @@ const struct ide_disk_ops ide_atapi_disk_ops = {
 	.set_doorlock	= ide_set_media_lock,
 	.do_request	= ide_floppy_do_request,
 	.ioctl		= ide_floppy_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl	= ide_floppy_compat_ioctl,
+#endif
 };

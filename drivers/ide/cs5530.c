@@ -41,8 +41,8 @@ static unsigned int cs5530_pio_timings[2][5] = {
 
 /**
  *	cs5530_set_pio_mode	-	set host controller for PIO mode
+ *	@hwif: port
  *	@drive: drive
- *	@pio: PIO mode number
  *
  *	Handles setting of PIO mode for the chipset.
  *
@@ -50,10 +50,11 @@ static unsigned int cs5530_pio_timings[2][5] = {
  *	will have valid default PIO timings set up before we get here.
  */
 
-static void cs5530_set_pio_mode(ide_drive_t *drive, const u8 pio)
+static void cs5530_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
-	unsigned long basereg = CS5530_BASEREG(drive->hwif);
+	unsigned long basereg = CS5530_BASEREG(hwif);
 	unsigned int format = (inl(basereg + 4) >> 31) & 1;
+	const u8 pio = drive->pio_mode - XFER_PIO_0;
 
 	outl(cs5530_pio_timings[format][pio], basereg + ((drive->dn & 1)<<3));
 }
@@ -99,12 +100,12 @@ out:
 	return mask;
 }
 
-static void cs5530_set_dma_mode(ide_drive_t *drive, const u8 mode)
+static void cs5530_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
 	unsigned long basereg;
 	unsigned int reg, timings = 0;
 
-	switch (mode) {
+	switch (drive->dma_mode) {
 		case XFER_UDMA_0:	timings = 0x00921250; break;
 		case XFER_UDMA_1:	timings = 0x00911140; break;
 		case XFER_UDMA_2:	timings = 0x00911030; break;
@@ -112,7 +113,7 @@ static void cs5530_set_dma_mode(ide_drive_t *drive, const u8 mode)
 		case XFER_MW_DMA_1:	timings = 0x00012121; break;
 		case XFER_MW_DMA_2:	timings = 0x00002020; break;
 	}
-	basereg = CS5530_BASEREG(drive->hwif);
+	basereg = CS5530_BASEREG(hwif);
 	reg = inl(basereg + 4);			/* get drive0 config register */
 	timings |= reg & 0x80000000;		/* preserve PIO format bit */
 	if ((drive-> dn & 1) == 0) {		/* are we configuring drive0? */
@@ -225,7 +226,7 @@ out:
  *	performs channel-specific pre-initialization before drive probing.
  */
 
-static void __devinit init_hwif_cs5530 (ide_hwif_t *hwif)
+static void init_hwif_cs5530 (ide_hwif_t *hwif)
 {
 	unsigned long basereg;
 	u32 d0_timings;
@@ -244,7 +245,7 @@ static const struct ide_port_ops cs5530_port_ops = {
 	.udma_filter		= cs5530_udma_filter,
 };
 
-static const struct ide_port_info cs5530_chipset __devinitdata = {
+static const struct ide_port_info cs5530_chipset = {
 	.name		= DRV_NAME,
 	.init_chipset	= init_chipset_cs5530,
 	.init_hwif	= init_hwif_cs5530,
@@ -256,7 +257,7 @@ static const struct ide_port_info cs5530_chipset __devinitdata = {
 	.udma_mask	= ATA_UDMA2,
 };
 
-static int __devinit cs5530_init_one(struct pci_dev *dev, const struct pci_device_id *id)
+static int cs5530_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 {
 	return ide_pci_init_one(dev, &cs5530_chipset, NULL);
 }

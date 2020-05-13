@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * rsparser.c - parses and encodes pnpbios resource data streams
  */
@@ -5,7 +6,6 @@
 #include <linux/ctype.h>
 #include <linux/pnp.h>
 #include <linux/string.h>
-#include <linux/slab.h>
 
 #ifdef CONFIG_PCI
 #include <linux/pci.h>
@@ -191,7 +191,7 @@ static unsigned char *pnpbios_parse_allocated_resource_data(struct pnp_dev *dev,
 			return (unsigned char *)p;
 			break;
 
-		default:	/* an unkown tag */
+		default:	/* an unknown tag */
 len_err:
 			dev_err(&dev->dev, "unknown tag %#x length %d\n",
 				tag, len);
@@ -405,7 +405,7 @@ pnpbios_parse_resource_option_data(unsigned char *p, unsigned char *end,
 		case SMALL_TAG_END:
 			return p + 2;
 
-		default:	/* an unkown tag */
+		default:	/* an unknown tag */
 len_err:
 			dev_err(&dev->dev, "unknown tag %#x length %d\n",
 				tag, len);
@@ -475,7 +475,7 @@ static unsigned char *pnpbios_parse_compatible_ids(unsigned char *p,
 			return (unsigned char *)p;
 			break;
 
-		default:	/* an unkown tag */
+		default:	/* an unknown tag */
 len_err:
 			dev_err(&dev->dev, "unknown tag %#x length %d\n",
 				tag, len);
@@ -506,7 +506,7 @@ static void pnpbios_encode_mem(struct pnp_dev *dev, unsigned char *p,
 
 	if (pnp_resource_enabled(res)) {
 		base = res->start;
-		len = res->end - res->start + 1;
+		len = resource_size(res);
 	} else {
 		base = 0;
 		len = 0;
@@ -530,7 +530,7 @@ static void pnpbios_encode_mem32(struct pnp_dev *dev, unsigned char *p,
 
 	if (pnp_resource_enabled(res)) {
 		base = res->start;
-		len = res->end - res->start + 1;
+		len = resource_size(res);
 	} else {
 		base = 0;
 		len = 0;
@@ -560,7 +560,7 @@ static void pnpbios_encode_fixed_mem32(struct pnp_dev *dev, unsigned char *p,
 
 	if (pnp_resource_enabled(res)) {
 		base = res->start;
-		len = res->end - res->start + 1;
+		len = resource_size(res);
 	} else {
 		base = 0;
 		len = 0;
@@ -618,7 +618,7 @@ static void pnpbios_encode_port(struct pnp_dev *dev, unsigned char *p,
 
 	if (pnp_resource_enabled(res)) {
 		base = res->start;
-		len = res->end - res->start + 1;
+		len = resource_size(res);
 	} else {
 		base = 0;
 		len = 0;
@@ -637,11 +637,11 @@ static void pnpbios_encode_fixed_port(struct pnp_dev *dev, unsigned char *p,
 				      struct resource *res)
 {
 	unsigned long base = res->start;
-	unsigned long len = res->end - res->start + 1;
+	unsigned long len = resource_size(res);
 
 	if (pnp_resource_enabled(res)) {
 		base = res->start;
-		len = res->end - res->start + 1;
+		len = resource_size(res);
 	} else {
 		base = 0;
 		len = 0;
@@ -744,7 +744,7 @@ static unsigned char *pnpbios_encode_allocated_resource_data(struct pnp_dev
 			return (unsigned char *)p;
 			break;
 
-		default:	/* an unkown tag */
+		default:	/* an unknown tag */
 len_err:
 			dev_err(&dev->dev, "unknown tag %#x length %d\n",
 				tag, len);

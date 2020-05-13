@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Hitachi SCA HD64570 driver for Linux
  *
  * Copyright (C) 1998-2003 Krzysztof Halasa <khc@pm.waw.pl>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of version 2 of the GNU General Public License
- * as published by the Free Software Foundation.
  *
  * Source of information: Hitachi HD64570 SCA User's Manual
  *
@@ -29,7 +26,6 @@
 #include <linux/fcntl.h>
 #include <linux/hdlc.h>
 #include <linux/in.h>
-#include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/ioport.h>
 #include <linux/jiffies.h>
@@ -37,12 +33,10 @@
 #include <linux/module.h>
 #include <linux/netdevice.h>
 #include <linux/skbuff.h>
-#include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/types.h>
 #include <asm/io.h>
-#include <asm/system.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include "hd64570.h"
 
 #define get_msci(port)	  (phy_node(port) ?   MSCI1_OFFSET :   MSCI0_OFFSET)
@@ -583,8 +577,8 @@ static void sca_dump_rings(struct net_device *dev)
 	       sca_in(DSR_RX(phy_node(port)), card), port->rxin,
 	       sca_in(DSR_RX(phy_node(port)), card) & DSR_DE ? "" : "in");
 	for (cnt = 0; cnt < port_to_card(port)->rx_ring_buffers; cnt++)
-		printk(" %02X", readb(&(desc_address(port, cnt, 0)->stat)));
-	printk(KERN_CONT "\n");
+		pr_cont(" %02X", readb(&(desc_address(port, cnt, 0)->stat)));
+	pr_cont("\n");
 
 	printk(KERN_DEBUG "TX ring: CDA=%u EDA=%u DSR=%02X in=%u "
 	       "last=%u %sactive",
@@ -594,8 +588,8 @@ static void sca_dump_rings(struct net_device *dev)
 	       sca_in(DSR_TX(phy_node(port)), card) & DSR_DE ? "" : "in");
 
 	for (cnt = 0; cnt < port_to_card(port)->tx_ring_buffers; cnt++)
-		printk(" %02X", readb(&(desc_address(port, cnt, 1)->stat)));
-	printk("\n");
+		pr_cont(" %02X", readb(&(desc_address(port, cnt, 1)->stat)));
+	pr_cont("\n");
 
 	printk(KERN_DEBUG "MSCI: MD: %02x %02x %02x, ST: %02x %02x %02x %02x,"
 	       " FST: %02x CST: %02x %02x\n",
@@ -659,7 +653,6 @@ static netdev_tx_t sca_xmit(struct sk_buff *skb, struct net_device *dev)
 #endif
 	writew(len, &desc->len);
 	writeb(ST_TX_EOM, &desc->stat);
-	dev->trans_start = jiffies;
 
 	port->txin = next_desc(port, port->txin, 1);
 	sca_outw(desc_offset(port, port->txin, 1),
@@ -679,8 +672,7 @@ static netdev_tx_t sca_xmit(struct sk_buff *skb, struct net_device *dev)
 
 
 #ifdef NEED_DETECT_RAM
-static u32 __devinit sca_detect_ram(card_t *card, u8 __iomem *rambase,
-				    u32 ramsize)
+static u32 sca_detect_ram(card_t *card, u8 __iomem *rambase, u32 ramsize)
 {
 	/* Round RAM size to 32 bits, fill from end to start */
 	u32 i = ramsize &= ~3;
@@ -708,7 +700,7 @@ static u32 __devinit sca_detect_ram(card_t *card, u8 __iomem *rambase,
 #endif /* NEED_DETECT_RAM */
 
 
-static void __devinit sca_init(card_t *card, int wait_states)
+static void sca_init(card_t *card, int wait_states)
 {
 	sca_out(wait_states, WCRL, card); /* Wait Control */
 	sca_out(wait_states, WCRM, card);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006 Oracle.  All rights reserved.
+ * Copyright (c) 2006, 2019 Oracle and/or its affiliates. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -31,52 +31,18 @@
  *
  */
 #include <linux/kernel.h>
+#include <linux/slab.h>
 #include <linux/pci.h>
 #include <linux/dma-mapping.h>
 #include <rdma/rdma_cm.h>
 
+#include "rds_single_path.h"
 #include "rds.h"
 #include "ib.h"
 
 static struct kmem_cache *rds_ib_incoming_slab;
 static struct kmem_cache *rds_ib_frag_slab;
 static atomic_t	rds_ib_allocation = ATOMIC_INIT(0);
-
-static void rds_ib_frag_drop_page(struct rds_page_frag *frag)
-{
-	rdsdebug("frag %p page %p\n", frag, frag->f_page);
-	__free_page(frag->f_page);
-	frag->f_page = NULL;
-}
-
-static void rds_ib_frag_free(struct rds_page_frag *frag)
-{
-	rdsdebug("frag %p page %p\n", frag, frag->f_page);
-	BUG_ON(frag->f_page != NULL);
-	kmem_cache_free(rds_ib_frag_slab, frag);
-}
-
-/*
- * We map a page at a time.  Its fragments are posted in order.  This
- * is called in fragment order as the fragments get send completion events.
- * Only the last frag in the page performs the unmapping.
- *
- * It's OK for ring cleanup to call this in whatever order it likes because
- * DMA is not in flight and so we can unmap while other ring entries still
- * hold page references in their frags.
- */
-static void rds_ib_recv_unmap_page(struct rds_ib_connection *ic,
-				   struct rds_ib_recv_work *recv)
-{
-	struct rds_page_frag *frag = recv->r_frag;
-
-	rdsdebug("recv %p frag %p page %p\n", recv, frag, frag->f_page);
-	if (frag->f_mapped)
-		ib_dma_unmap_page(ic->i_cm_id->device,
-			       frag->f_mapped,
-			       RDS_FRAG_SIZE, DMA_FROM_DEVICE);
-	frag->f_mapped = 0;
-}
 
 void rds_ib_recv_init_ring(struct rds_ib_connection *ic)
 {
@@ -94,16 +60,164 @@ void rds_ib_recv_init_ring(struct rds_ib_connection *ic)
 		recv->r_wr.sg_list = recv->r_sge;
 		recv->r_wr.num_sge = RDS_IB_RECV_SGE;
 
-		sge = rds_ib_data_sge(ic, recv->r_sge);
+		sge = &recv->r_sge[0];
+		sge->addr = ic->i_recv_hdrs_dma[i];
+		sge->length = sizeof(struct rds_header);
+		sge->lkey = ic->i_pd->local_dma_lkey;
+
+		sge = &recv->r_sge[1];
 		sge->addr = 0;
 		sge->length = RDS_FRAG_SIZE;
-		sge->lkey = ic->i_mr->lkey;
-
-		sge = rds_ib_header_sge(ic, recv->r_sge);
-		sge->addr = ic->i_recv_hdrs_dma + (i * sizeof(struct rds_header));
-		sge->length = sizeof(struct rds_header);
-		sge->lkey = ic->i_mr->lkey;
+		sge->lkey = ic->i_pd->local_dma_lkey;
 	}
+}
+
+/*
+ * The entire 'from' list, including the from element itself, is put on
+ * to the tail of the 'to' list.
+ */
+static void list_splice_entire_tail(struct list_head *from,
+				    struct list_head *to)
+{
+	struct list_head *from_last = from->prev;
+
+	list_splice_tail(from_last, to);
+	list_add_tail(from_last, to);
+}
+
+static void rds_ib_cache_xfer_to_ready(struct rds_ib_refill_cache *cache)
+{
+	struct list_head *tmp;
+
+	tmp = xchg(&cache->xfer, NULL);
+	if (tmp) {
+		if (cache->ready)
+			list_splice_entire_tail(tmp, cache->ready);
+		else
+			cache->ready = tmp;
+	}
+}
+
+static int rds_ib_recv_alloc_cache(struct rds_ib_refill_cache *cache, gfp_t gfp)
+{
+	struct rds_ib_cache_head *head;
+	int cpu;
+
+	cache->percpu = alloc_percpu_gfp(struct rds_ib_cache_head, gfp);
+	if (!cache->percpu)
+	       return -ENOMEM;
+
+	for_each_possible_cpu(cpu) {
+		head = per_cpu_ptr(cache->percpu, cpu);
+		head->first = NULL;
+		head->count = 0;
+	}
+	cache->xfer = NULL;
+	cache->ready = NULL;
+
+	return 0;
+}
+
+int rds_ib_recv_alloc_caches(struct rds_ib_connection *ic, gfp_t gfp)
+{
+	int ret;
+
+	ret = rds_ib_recv_alloc_cache(&ic->i_cache_incs, gfp);
+	if (!ret) {
+		ret = rds_ib_recv_alloc_cache(&ic->i_cache_frags, gfp);
+		if (ret)
+			free_percpu(ic->i_cache_incs.percpu);
+	}
+
+	return ret;
+}
+
+static void rds_ib_cache_splice_all_lists(struct rds_ib_refill_cache *cache,
+					  struct list_head *caller_list)
+{
+	struct rds_ib_cache_head *head;
+	int cpu;
+
+	for_each_possible_cpu(cpu) {
+		head = per_cpu_ptr(cache->percpu, cpu);
+		if (head->first) {
+			list_splice_entire_tail(head->first, caller_list);
+			head->first = NULL;
+		}
+	}
+
+	if (cache->ready) {
+		list_splice_entire_tail(cache->ready, caller_list);
+		cache->ready = NULL;
+	}
+}
+
+void rds_ib_recv_free_caches(struct rds_ib_connection *ic)
+{
+	struct rds_ib_incoming *inc;
+	struct rds_ib_incoming *inc_tmp;
+	struct rds_page_frag *frag;
+	struct rds_page_frag *frag_tmp;
+	LIST_HEAD(list);
+
+	rds_ib_cache_xfer_to_ready(&ic->i_cache_incs);
+	rds_ib_cache_splice_all_lists(&ic->i_cache_incs, &list);
+	free_percpu(ic->i_cache_incs.percpu);
+
+	list_for_each_entry_safe(inc, inc_tmp, &list, ii_cache_entry) {
+		list_del(&inc->ii_cache_entry);
+		WARN_ON(!list_empty(&inc->ii_frags));
+		kmem_cache_free(rds_ib_incoming_slab, inc);
+		atomic_dec(&rds_ib_allocation);
+	}
+
+	rds_ib_cache_xfer_to_ready(&ic->i_cache_frags);
+	rds_ib_cache_splice_all_lists(&ic->i_cache_frags, &list);
+	free_percpu(ic->i_cache_frags.percpu);
+
+	list_for_each_entry_safe(frag, frag_tmp, &list, f_cache_entry) {
+		list_del(&frag->f_cache_entry);
+		WARN_ON(!list_empty(&frag->f_item));
+		kmem_cache_free(rds_ib_frag_slab, frag);
+	}
+}
+
+/* fwd decl */
+static void rds_ib_recv_cache_put(struct list_head *new_item,
+				  struct rds_ib_refill_cache *cache);
+static struct list_head *rds_ib_recv_cache_get(struct rds_ib_refill_cache *cache);
+
+
+/* Recycle frag and attached recv buffer f_sg */
+static void rds_ib_frag_free(struct rds_ib_connection *ic,
+			     struct rds_page_frag *frag)
+{
+	rdsdebug("frag %p page %p\n", frag, sg_page(&frag->f_sg));
+
+	rds_ib_recv_cache_put(&frag->f_cache_entry, &ic->i_cache_frags);
+	atomic_add(RDS_FRAG_SIZE / SZ_1K, &ic->i_cache_allocs);
+	rds_ib_stats_add(s_ib_recv_added_to_cache, RDS_FRAG_SIZE);
+}
+
+/* Recycle inc after freeing attached frags */
+void rds_ib_inc_free(struct rds_incoming *inc)
+{
+	struct rds_ib_incoming *ibinc;
+	struct rds_page_frag *frag;
+	struct rds_page_frag *pos;
+	struct rds_ib_connection *ic = inc->i_conn->c_transport_data;
+
+	ibinc = container_of(inc, struct rds_ib_incoming, ii_inc);
+
+	/* Free attached frags */
+	list_for_each_entry_safe(frag, pos, &ibinc->ii_frags, f_item) {
+		list_del_init(&frag->f_item);
+		rds_ib_frag_free(ic, frag);
+	}
+	BUG_ON(!list_empty(&ibinc->ii_frags));
+
+	rdsdebug("freeing ibinc %p inc %p\n", ibinc, inc);
+	rds_ib_recv_cache_put(&ibinc->ii_cache_entry, &ic->i_cache_incs);
 }
 
 static void rds_ib_recv_clear_one(struct rds_ib_connection *ic,
@@ -114,10 +228,8 @@ static void rds_ib_recv_clear_one(struct rds_ib_connection *ic,
 		recv->r_ibinc = NULL;
 	}
 	if (recv->r_frag) {
-		rds_ib_recv_unmap_page(ic, recv);
-		if (recv->r_frag->f_page)
-			rds_ib_frag_drop_page(recv->r_frag);
-		rds_ib_frag_free(recv->r_frag);
+		ib_dma_unmap_sg(ic->i_cm_id->device, &recv->r_frag->f_sg, 1, DMA_FROM_DEVICE);
+		rds_ib_frag_free(ic, recv->r_frag);
 		recv->r_frag = NULL;
 	}
 }
@@ -128,138 +240,196 @@ void rds_ib_recv_clear_ring(struct rds_ib_connection *ic)
 
 	for (i = 0; i < ic->i_recv_ring.w_nr; i++)
 		rds_ib_recv_clear_one(ic, &ic->i_recvs[i]);
+}
 
-	if (ic->i_frag.f_page)
-		rds_ib_frag_drop_page(&ic->i_frag);
+static struct rds_ib_incoming *rds_ib_refill_one_inc(struct rds_ib_connection *ic,
+						     gfp_t slab_mask)
+{
+	struct rds_ib_incoming *ibinc;
+	struct list_head *cache_item;
+	int avail_allocs;
+
+	cache_item = rds_ib_recv_cache_get(&ic->i_cache_incs);
+	if (cache_item) {
+		ibinc = container_of(cache_item, struct rds_ib_incoming, ii_cache_entry);
+	} else {
+		avail_allocs = atomic_add_unless(&rds_ib_allocation,
+						 1, rds_ib_sysctl_max_recv_allocation);
+		if (!avail_allocs) {
+			rds_ib_stats_inc(s_ib_rx_alloc_limit);
+			return NULL;
+		}
+		ibinc = kmem_cache_alloc(rds_ib_incoming_slab, slab_mask);
+		if (!ibinc) {
+			atomic_dec(&rds_ib_allocation);
+			return NULL;
+		}
+		rds_ib_stats_inc(s_ib_rx_total_incs);
+	}
+	INIT_LIST_HEAD(&ibinc->ii_frags);
+	rds_inc_init(&ibinc->ii_inc, ic->conn, &ic->conn->c_faddr);
+
+	return ibinc;
+}
+
+static struct rds_page_frag *rds_ib_refill_one_frag(struct rds_ib_connection *ic,
+						    gfp_t slab_mask, gfp_t page_mask)
+{
+	struct rds_page_frag *frag;
+	struct list_head *cache_item;
+	int ret;
+
+	cache_item = rds_ib_recv_cache_get(&ic->i_cache_frags);
+	if (cache_item) {
+		frag = container_of(cache_item, struct rds_page_frag, f_cache_entry);
+		atomic_sub(RDS_FRAG_SIZE / SZ_1K, &ic->i_cache_allocs);
+		rds_ib_stats_add(s_ib_recv_added_to_cache, RDS_FRAG_SIZE);
+	} else {
+		frag = kmem_cache_alloc(rds_ib_frag_slab, slab_mask);
+		if (!frag)
+			return NULL;
+
+		sg_init_table(&frag->f_sg, 1);
+		ret = rds_page_remainder_alloc(&frag->f_sg,
+					       RDS_FRAG_SIZE, page_mask);
+		if (ret) {
+			kmem_cache_free(rds_ib_frag_slab, frag);
+			return NULL;
+		}
+		rds_ib_stats_inc(s_ib_rx_total_frags);
+	}
+
+	INIT_LIST_HEAD(&frag->f_item);
+
+	return frag;
 }
 
 static int rds_ib_recv_refill_one(struct rds_connection *conn,
-				  struct rds_ib_recv_work *recv,
-				  gfp_t kptr_gfp, gfp_t page_gfp)
+				  struct rds_ib_recv_work *recv, gfp_t gfp)
 {
 	struct rds_ib_connection *ic = conn->c_transport_data;
-	dma_addr_t dma_addr;
 	struct ib_sge *sge;
 	int ret = -ENOMEM;
+	gfp_t slab_mask = GFP_NOWAIT;
+	gfp_t page_mask = GFP_NOWAIT;
 
-	if (recv->r_ibinc == NULL) {
-		if (atomic_read(&rds_ib_allocation) >= rds_ib_sysctl_max_recv_allocation) {
-			rds_ib_stats_inc(s_ib_rx_alloc_limit);
-			goto out;
-		}
-		recv->r_ibinc = kmem_cache_alloc(rds_ib_incoming_slab,
-						 kptr_gfp);
-		if (recv->r_ibinc == NULL)
-			goto out;
-		atomic_inc(&rds_ib_allocation);
-		INIT_LIST_HEAD(&recv->r_ibinc->ii_frags);
-		rds_inc_init(&recv->r_ibinc->ii_inc, conn, conn->c_faddr);
+	if (gfp & __GFP_DIRECT_RECLAIM) {
+		slab_mask = GFP_KERNEL;
+		page_mask = GFP_HIGHUSER;
 	}
 
-	if (recv->r_frag == NULL) {
-		recv->r_frag = kmem_cache_alloc(rds_ib_frag_slab, kptr_gfp);
-		if (recv->r_frag == NULL)
-			goto out;
-		INIT_LIST_HEAD(&recv->r_frag->f_item);
-		recv->r_frag->f_page = NULL;
-	}
-
-	if (ic->i_frag.f_page == NULL) {
-		ic->i_frag.f_page = alloc_page(page_gfp);
-		if (ic->i_frag.f_page == NULL)
-			goto out;
-		ic->i_frag.f_offset = 0;
-	}
-
-	dma_addr = ib_dma_map_page(ic->i_cm_id->device,
-				  ic->i_frag.f_page,
-				  ic->i_frag.f_offset,
-				  RDS_FRAG_SIZE,
-				  DMA_FROM_DEVICE);
-	if (ib_dma_mapping_error(ic->i_cm_id->device, dma_addr))
-		goto out;
+	if (!ic->i_cache_incs.ready)
+		rds_ib_cache_xfer_to_ready(&ic->i_cache_incs);
+	if (!ic->i_cache_frags.ready)
+		rds_ib_cache_xfer_to_ready(&ic->i_cache_frags);
 
 	/*
-	 * Once we get the RDS_PAGE_LAST_OFF frag then rds_ib_frag_unmap()
-	 * must be called on this recv.  This happens as completions hit
-	 * in order or on connection shutdown.
+	 * ibinc was taken from recv if recv contained the start of a message.
+	 * recvs that were continuations will still have this allocated.
 	 */
-	recv->r_frag->f_page = ic->i_frag.f_page;
-	recv->r_frag->f_offset = ic->i_frag.f_offset;
-	recv->r_frag->f_mapped = dma_addr;
+	if (!recv->r_ibinc) {
+		recv->r_ibinc = rds_ib_refill_one_inc(ic, slab_mask);
+		if (!recv->r_ibinc)
+			goto out;
+	}
 
-	sge = rds_ib_data_sge(ic, recv->r_sge);
-	sge->addr = dma_addr;
-	sge->length = RDS_FRAG_SIZE;
+	WARN_ON(recv->r_frag); /* leak! */
+	recv->r_frag = rds_ib_refill_one_frag(ic, slab_mask, page_mask);
+	if (!recv->r_frag)
+		goto out;
 
-	sge = rds_ib_header_sge(ic, recv->r_sge);
-	sge->addr = ic->i_recv_hdrs_dma + (recv - ic->i_recvs) * sizeof(struct rds_header);
+	ret = ib_dma_map_sg(ic->i_cm_id->device, &recv->r_frag->f_sg,
+			    1, DMA_FROM_DEVICE);
+	WARN_ON(ret != 1);
+
+	sge = &recv->r_sge[0];
+	sge->addr = ic->i_recv_hdrs_dma[recv - ic->i_recvs];
 	sge->length = sizeof(struct rds_header);
 
-	get_page(recv->r_frag->f_page);
-
-	if (ic->i_frag.f_offset < RDS_PAGE_LAST_OFF) {
-		ic->i_frag.f_offset += RDS_FRAG_SIZE;
-	} else {
-		put_page(ic->i_frag.f_page);
-		ic->i_frag.f_page = NULL;
-		ic->i_frag.f_offset = 0;
-	}
+	sge = &recv->r_sge[1];
+	sge->addr = sg_dma_address(&recv->r_frag->f_sg);
+	sge->length = sg_dma_len(&recv->r_frag->f_sg);
 
 	ret = 0;
 out:
 	return ret;
 }
 
+static int acquire_refill(struct rds_connection *conn)
+{
+	return test_and_set_bit(RDS_RECV_REFILL, &conn->c_flags) == 0;
+}
+
+static void release_refill(struct rds_connection *conn)
+{
+	clear_bit(RDS_RECV_REFILL, &conn->c_flags);
+
+	/* We don't use wait_on_bit()/wake_up_bit() because our waking is in a
+	 * hot path and finding waiters is very rare.  We don't want to walk
+	 * the system-wide hashed waitqueue buckets in the fast path only to
+	 * almost never find waiters.
+	 */
+	if (waitqueue_active(&conn->c_waitq))
+		wake_up_all(&conn->c_waitq);
+}
+
 /*
  * This tries to allocate and post unused work requests after making sure that
  * they have all the allocations they need to queue received fragments into
- * sockets.  The i_recv_mutex is held here so that ring_alloc and _unalloc
- * pairs don't go unmatched.
- *
- * -1 is returned if posting fails due to temporary resource exhaustion.
+ * sockets.
  */
-int rds_ib_recv_refill(struct rds_connection *conn, gfp_t kptr_gfp,
-		       gfp_t page_gfp, int prefill)
+void rds_ib_recv_refill(struct rds_connection *conn, int prefill, gfp_t gfp)
 {
 	struct rds_ib_connection *ic = conn->c_transport_data;
 	struct rds_ib_recv_work *recv;
-	struct ib_recv_wr *failed_wr;
 	unsigned int posted = 0;
 	int ret = 0;
+	bool can_wait = !!(gfp & __GFP_DIRECT_RECLAIM);
+	bool must_wake = false;
 	u32 pos;
 
-	while ((prefill || rds_conn_up(conn))
-			&& rds_ib_ring_alloc(&ic->i_recv_ring, 1, &pos)) {
+	/* the goal here is to just make sure that someone, somewhere
+	 * is posting buffers.  If we can't get the refill lock,
+	 * let them do their thing
+	 */
+	if (!acquire_refill(conn))
+		return;
+
+	while ((prefill || rds_conn_up(conn)) &&
+	       rds_ib_ring_alloc(&ic->i_recv_ring, 1, &pos)) {
 		if (pos >= ic->i_recv_ring.w_nr) {
 			printk(KERN_NOTICE "Argh - ring alloc returned pos=%u\n",
 					pos);
-			ret = -EINVAL;
 			break;
 		}
 
 		recv = &ic->i_recvs[pos];
-		ret = rds_ib_recv_refill_one(conn, recv, kptr_gfp, page_gfp);
+		ret = rds_ib_recv_refill_one(conn, recv, gfp);
 		if (ret) {
-			ret = -1;
+			must_wake = true;
 			break;
 		}
 
+		rdsdebug("recv %p ibinc %p page %p addr %lu\n", recv,
+			 recv->r_ibinc, sg_page(&recv->r_frag->f_sg),
+			 (long)sg_dma_address(&recv->r_frag->f_sg));
+
 		/* XXX when can this fail? */
-		ret = ib_post_recv(ic->i_cm_id->qp, &recv->r_wr, &failed_wr);
-		rdsdebug("recv %p ibinc %p page %p addr %lu ret %d\n", recv,
-			 recv->r_ibinc, recv->r_frag->f_page,
-			 (long) recv->r_frag->f_mapped, ret);
+		ret = ib_post_recv(ic->i_cm_id->qp, &recv->r_wr, NULL);
 		if (ret) {
 			rds_ib_conn_error(conn, "recv post on "
-			       "%pI4 returned %d, disconnecting and "
+			       "%pI6c returned %d, disconnecting and "
 			       "reconnecting\n", &conn->c_faddr,
 			       ret);
-			ret = -1;
 			break;
 		}
 
 		posted++;
+
+		if ((posted > 128 && need_resched()) || posted > 8192) {
+			must_wake = true;
+			break;
+		}
 	}
 
 	/* We're doing flow control - update the window. */
@@ -268,48 +438,103 @@ int rds_ib_recv_refill(struct rds_connection *conn, gfp_t kptr_gfp,
 
 	if (ret)
 		rds_ib_ring_unalloc(&ic->i_recv_ring, 1);
-	return ret;
-}
 
-void rds_ib_inc_purge(struct rds_incoming *inc)
-{
-	struct rds_ib_incoming *ibinc;
-	struct rds_page_frag *frag;
-	struct rds_page_frag *pos;
+	release_refill(conn);
 
-	ibinc = container_of(inc, struct rds_ib_incoming, ii_inc);
-	rdsdebug("purging ibinc %p inc %p\n", ibinc, inc);
-
-	list_for_each_entry_safe(frag, pos, &ibinc->ii_frags, f_item) {
-		list_del_init(&frag->f_item);
-		rds_ib_frag_drop_page(frag);
-		rds_ib_frag_free(frag);
+	/* if we're called from the softirq handler, we'll be GFP_NOWAIT.
+	 * in this case the ring being low is going to lead to more interrupts
+	 * and we can safely let the softirq code take care of it unless the
+	 * ring is completely empty.
+	 *
+	 * if we're called from krdsd, we'll be GFP_KERNEL.  In this case
+	 * we might have raced with the softirq code while we had the refill
+	 * lock held.  Use rds_ib_ring_low() instead of ring_empty to decide
+	 * if we should requeue.
+	 */
+	if (rds_conn_up(conn) &&
+	    (must_wake ||
+	    (can_wait && rds_ib_ring_low(&ic->i_recv_ring)) ||
+	    rds_ib_ring_empty(&ic->i_recv_ring))) {
+		queue_delayed_work(rds_wq, &conn->c_recv_w, 1);
 	}
+	if (can_wait)
+		cond_resched();
 }
 
-void rds_ib_inc_free(struct rds_incoming *inc)
+/*
+ * We want to recycle several types of recv allocations, like incs and frags.
+ * To use this, the *_free() function passes in the ptr to a list_head within
+ * the recyclee, as well as the cache to put it on.
+ *
+ * First, we put the memory on a percpu list. When this reaches a certain size,
+ * We move it to an intermediate non-percpu list in a lockless manner, with some
+ * xchg/compxchg wizardry.
+ *
+ * N.B. Instead of a list_head as the anchor, we use a single pointer, which can
+ * be NULL and xchg'd. The list is actually empty when the pointer is NULL, and
+ * list_empty() will return true with one element is actually present.
+ */
+static void rds_ib_recv_cache_put(struct list_head *new_item,
+				 struct rds_ib_refill_cache *cache)
 {
-	struct rds_ib_incoming *ibinc;
+	unsigned long flags;
+	struct list_head *old, *chpfirst;
 
-	ibinc = container_of(inc, struct rds_ib_incoming, ii_inc);
+	local_irq_save(flags);
 
-	rds_ib_inc_purge(inc);
-	rdsdebug("freeing ibinc %p inc %p\n", ibinc, inc);
-	BUG_ON(!list_empty(&ibinc->ii_frags));
-	kmem_cache_free(rds_ib_incoming_slab, ibinc);
-	atomic_dec(&rds_ib_allocation);
-	BUG_ON(atomic_read(&rds_ib_allocation) < 0);
+	chpfirst = __this_cpu_read(cache->percpu->first);
+	if (!chpfirst)
+		INIT_LIST_HEAD(new_item);
+	else /* put on front */
+		list_add_tail(new_item, chpfirst);
+
+	__this_cpu_write(cache->percpu->first, new_item);
+	__this_cpu_inc(cache->percpu->count);
+
+	if (__this_cpu_read(cache->percpu->count) < RDS_IB_RECYCLE_BATCH_COUNT)
+		goto end;
+
+	/*
+	 * Return our per-cpu first list to the cache's xfer by atomically
+	 * grabbing the current xfer list, appending it to our per-cpu list,
+	 * and then atomically returning that entire list back to the
+	 * cache's xfer list as long as it's still empty.
+	 */
+	do {
+		old = xchg(&cache->xfer, NULL);
+		if (old)
+			list_splice_entire_tail(old, chpfirst);
+		old = cmpxchg(&cache->xfer, NULL, chpfirst);
+	} while (old);
+
+
+	__this_cpu_write(cache->percpu->first, NULL);
+	__this_cpu_write(cache->percpu->count, 0);
+end:
+	local_irq_restore(flags);
 }
 
-int rds_ib_inc_copy_to_user(struct rds_incoming *inc, struct iovec *first_iov,
-			    size_t size)
+static struct list_head *rds_ib_recv_cache_get(struct rds_ib_refill_cache *cache)
+{
+	struct list_head *head = cache->ready;
+
+	if (head) {
+		if (!list_empty(head)) {
+			cache->ready = head->next;
+			list_del_init(head);
+		} else
+			cache->ready = NULL;
+	}
+
+	return head;
+}
+
+int rds_ib_inc_copy_to_user(struct rds_incoming *inc, struct iov_iter *to)
 {
 	struct rds_ib_incoming *ibinc;
 	struct rds_page_frag *frag;
-	struct iovec *iov = first_iov;
 	unsigned long to_copy;
 	unsigned long frag_off = 0;
-	unsigned long iov_off = 0;
 	int copied = 0;
 	int ret;
 	u32 len;
@@ -318,37 +543,25 @@ int rds_ib_inc_copy_to_user(struct rds_incoming *inc, struct iovec *first_iov,
 	frag = list_entry(ibinc->ii_frags.next, struct rds_page_frag, f_item);
 	len = be32_to_cpu(inc->i_hdr.h_len);
 
-	while (copied < size && copied < len) {
+	while (iov_iter_count(to) && copied < len) {
 		if (frag_off == RDS_FRAG_SIZE) {
 			frag = list_entry(frag->f_item.next,
 					  struct rds_page_frag, f_item);
 			frag_off = 0;
 		}
-		while (iov_off == iov->iov_len) {
-			iov_off = 0;
-			iov++;
-		}
-
-		to_copy = min(iov->iov_len - iov_off, RDS_FRAG_SIZE - frag_off);
-		to_copy = min_t(size_t, to_copy, size - copied);
+		to_copy = min_t(unsigned long, iov_iter_count(to),
+				RDS_FRAG_SIZE - frag_off);
 		to_copy = min_t(unsigned long, to_copy, len - copied);
 
-		rdsdebug("%lu bytes to user [%p, %zu] + %lu from frag "
-			 "[%p, %lu] + %lu\n",
-			 to_copy, iov->iov_base, iov->iov_len, iov_off,
-			 frag->f_page, frag->f_offset, frag_off);
-
 		/* XXX needs + offset for multiple recvs per page */
-		ret = rds_page_copy_to_user(frag->f_page,
-					    frag->f_offset + frag_off,
-					    iov->iov_base + iov_off,
-					    to_copy);
-		if (ret) {
-			copied = ret;
-			break;
-		}
+		rds_stats_add(s_copy_to_user, to_copy);
+		ret = copy_page_to_iter(sg_page(&frag->f_sg),
+					frag->f_sg.offset + frag_off,
+					to_copy,
+					to);
+		if (ret != to_copy)
+			return -EFAULT;
 
-		iov_off += to_copy;
 		frag_off += to_copy;
 		copied += to_copy;
 	}
@@ -364,7 +577,7 @@ void rds_ib_recv_init_ack(struct rds_ib_connection *ic)
 
 	sge->addr = ic->i_ack_dma;
 	sge->length = sizeof(struct rds_header);
-	sge->lkey = ic->i_mr->lkey;
+	sge->lkey = ic->i_pd->local_dma_lkey;
 
 	wr->sg_list = sge;
 	wr->num_sge = 1;
@@ -396,8 +609,7 @@ void rds_ib_recv_init_ack(struct rds_ib_connection *ic)
  * wr_id and avoids working with the ring in that case.
  */
 #ifndef KERNEL_HAS_ATOMIC64
-static void rds_ib_set_ack(struct rds_ib_connection *ic, u64 seq,
-				int ack_required)
+void rds_ib_set_ack(struct rds_ib_connection *ic, u64 seq, int ack_required)
 {
 	unsigned long flags;
 
@@ -422,12 +634,11 @@ static u64 rds_ib_get_ack(struct rds_ib_connection *ic)
 	return seq;
 }
 #else
-static void rds_ib_set_ack(struct rds_ib_connection *ic, u64 seq,
-				int ack_required)
+void rds_ib_set_ack(struct rds_ib_connection *ic, u64 seq, int ack_required)
 {
 	atomic64_set(&ic->i_ack_next, seq);
 	if (ack_required) {
-		smp_mb__before_clear_bit();
+		smp_mb__before_atomic();
 		set_bit(IB_ACK_REQUESTED, &ic->i_ack_flags);
 	}
 }
@@ -435,7 +646,7 @@ static void rds_ib_set_ack(struct rds_ib_connection *ic, u64 seq,
 static u64 rds_ib_get_ack(struct rds_ib_connection *ic)
 {
 	clear_bit(IB_ACK_REQUESTED, &ic->i_ack_flags);
-	smp_mb__after_clear_bit();
+	smp_mb__after_atomic();
 
 	return atomic64_read(&ic->i_ack_next);
 }
@@ -445,7 +656,6 @@ static u64 rds_ib_get_ack(struct rds_ib_connection *ic)
 static void rds_ib_send_ack(struct rds_ib_connection *ic, unsigned int adv_credits)
 {
 	struct rds_header *hdr = ic->i_ack;
-	struct ib_send_wr *failed_wr;
 	u64 seq;
 	int ret;
 
@@ -458,7 +668,7 @@ static void rds_ib_send_ack(struct rds_ib_connection *ic, unsigned int adv_credi
 	rds_message_make_checksum(hdr);
 	ic->i_ack_queued = jiffies;
 
-	ret = ib_post_send(ic->i_cm_id->qp, &ic->i_ack_wr, &failed_wr);
+	ret = ib_post_send(ic->i_cm_id->qp, &ic->i_ack_wr, NULL);
 	if (unlikely(ret)) {
 		/* Failed to send. Release the WR, and
 		 * force another ACK.
@@ -467,8 +677,8 @@ static void rds_ib_send_ack(struct rds_ib_connection *ic, unsigned int adv_credi
 		set_bit(IB_ACK_REQUESTED, &ic->i_ack_flags);
 
 		rds_ib_stats_inc(s_ib_ack_send_failure);
-		/* Need to finesse this later. */
-		BUG();
+
+		rds_ib_conn_error(ic->conn, "sending ack failed\n");
 	} else
 		rds_ib_stats_inc(s_ib_ack_sent);
 }
@@ -555,47 +765,6 @@ u64 rds_ib_piggyb_ack(struct rds_ib_connection *ic)
 	return rds_ib_get_ack(ic);
 }
 
-static struct rds_header *rds_ib_get_header(struct rds_connection *conn,
-					    struct rds_ib_recv_work *recv,
-					    u32 data_len)
-{
-	struct rds_ib_connection *ic = conn->c_transport_data;
-	void *hdr_buff = &ic->i_recv_hdrs[recv - ic->i_recvs];
-	void *addr;
-	u32 misplaced_hdr_bytes;
-
-	/*
-	 * Support header at the front (RDS 3.1+) as well as header-at-end.
-	 *
-	 * Cases:
-	 * 1) header all in header buff (great!)
-	 * 2) header all in data page (copy all to header buff)
-	 * 3) header split across hdr buf + data page
-	 *    (move bit in hdr buff to end before copying other bit from data page)
-	 */
-	if (conn->c_version > RDS_PROTOCOL_3_0 || data_len == RDS_FRAG_SIZE)
-	        return hdr_buff;
-
-	if (data_len <= (RDS_FRAG_SIZE - sizeof(struct rds_header))) {
-		addr = kmap_atomic(recv->r_frag->f_page, KM_SOFTIRQ0);
-		memcpy(hdr_buff,
-		       addr + recv->r_frag->f_offset + data_len,
-		       sizeof(struct rds_header));
-		kunmap_atomic(addr, KM_SOFTIRQ0);
-		return hdr_buff;
-	}
-
-	misplaced_hdr_bytes = (sizeof(struct rds_header) - (RDS_FRAG_SIZE - data_len));
-
-	memmove(hdr_buff + misplaced_hdr_bytes, hdr_buff, misplaced_hdr_bytes);
-
-	addr = kmap_atomic(recv->r_frag->f_page, KM_SOFTIRQ0);
-	memcpy(hdr_buff, addr + recv->r_frag->f_offset + data_len,
-	       sizeof(struct rds_header) - misplaced_hdr_bytes);
-	kunmap_atomic(addr, KM_SOFTIRQ0);
-	return hdr_buff;
-}
-
 /*
  * It's kind of lame that we're copying from the posted receive pages into
  * long-lived bitmaps.  We could have posted the bitmaps and rdma written into
@@ -614,7 +783,7 @@ static void rds_ib_cong_recv(struct rds_connection *conn,
 	unsigned long frag_off;
 	unsigned long to_copy;
 	unsigned long copied;
-	uint64_t uncongested = 0;
+	__le64 uncongested = 0;
 	void *addr;
 
 	/* catch completely corrupt packets */
@@ -631,15 +800,15 @@ static void rds_ib_cong_recv(struct rds_connection *conn,
 	copied = 0;
 
 	while (copied < RDS_CONG_MAP_BYTES) {
-		uint64_t *src, *dst;
+		__le64 *src, *dst;
 		unsigned int k;
 
 		to_copy = min(RDS_FRAG_SIZE - frag_off, PAGE_SIZE - map_off);
 		BUG_ON(to_copy & 7); /* Must be 64bit aligned. */
 
-		addr = kmap_atomic(frag->f_page, KM_SOFTIRQ0);
+		addr = kmap_atomic(sg_page(&frag->f_sg));
 
-		src = addr + frag_off;
+		src = addr + frag->f_sg.offset + frag_off;
 		dst = (void *)map->m_page_addrs[map_page] + map_off;
 		for (k = 0; k < to_copy; k += 8) {
 			/* Record ports that became uncongested, ie
@@ -647,7 +816,7 @@ static void rds_ib_cong_recv(struct rds_connection *conn,
 			uncongested |= ~(*src) & *dst;
 			*dst++ = *src++;
 		}
-		kunmap_atomic(addr, KM_SOFTIRQ0);
+		kunmap_atomic(addr);
 
 		copied += to_copy;
 
@@ -666,24 +835,8 @@ static void rds_ib_cong_recv(struct rds_connection *conn,
 	}
 
 	/* the congestion map is in little endian order */
-	uncongested = le64_to_cpu(uncongested);
-
-	rds_cong_map_updated(map, uncongested);
+	rds_cong_map_updated(map, le64_to_cpu(uncongested));
 }
-
-/*
- * Rings are posted with all the allocations they'll need to queue the
- * incoming message to the receiving socket so this can't fail.
- * All fragments start with a header, so we can make sure we're not receiving
- * garbage, and we can tell a small 8 byte fragment from an ACK frame.
- */
-struct rds_ib_ack_state {
-	u64		ack_next;
-	u64		ack_recv;
-	unsigned int	ack_required:1;
-	unsigned int	ack_next_valid:1;
-	unsigned int	ack_recv_valid:1;
-};
 
 static void rds_ib_process_recv(struct rds_connection *conn,
 				struct rds_ib_recv_work *recv, u32 data_len,
@@ -700,7 +853,7 @@ static void rds_ib_process_recv(struct rds_connection *conn,
 
 	if (data_len < sizeof(struct rds_header)) {
 		rds_ib_conn_error(conn, "incoming message "
-		       "from %pI4 didn't inclue a "
+		       "from %pI6c didn't include a "
 		       "header, disconnecting and "
 		       "reconnecting\n",
 		       &conn->c_faddr);
@@ -708,12 +861,12 @@ static void rds_ib_process_recv(struct rds_connection *conn,
 	}
 	data_len -= sizeof(struct rds_header);
 
-	ihdr = rds_ib_get_header(conn, recv, data_len);
+	ihdr = ic->i_recv_hdrs[recv - ic->i_recvs];
 
 	/* Validate the checksum. */
 	if (!rds_message_verify_checksum(ihdr)) {
 		rds_ib_conn_error(conn, "incoming message "
-		       "from %pI4 has corrupted header - "
+		       "from %pI6c has corrupted header - "
 		       "forcing a reconnect\n",
 		       &conn->c_faddr);
 		rds_stats_inc(s_recv_drop_bad_checksum);
@@ -740,12 +893,12 @@ static void rds_ib_process_recv(struct rds_connection *conn,
 		 * the inc is freed.  We don't go that route, so we have to drop the
 		 * page ref ourselves.  We can't just leave the page on the recv
 		 * because that confuses the dma mapping of pages and each recv's use
-		 * of a partial page.  We can leave the frag, though, it will be
-		 * reused.
+		 * of a partial page.
 		 *
 		 * FIXME: Fold this into the code path below.
 		 */
-		rds_ib_frag_drop_page(recv->r_frag);
+		rds_ib_frag_free(ic, recv->r_frag);
+		recv->r_frag = NULL;
 		return;
 	}
 
@@ -755,14 +908,18 @@ static void rds_ib_process_recv(struct rds_connection *conn,
 	 * into the inc and save the inc so we can hang upcoming fragments
 	 * off its list.
 	 */
-	if (ibinc == NULL) {
+	if (!ibinc) {
 		ibinc = recv->r_ibinc;
 		recv->r_ibinc = NULL;
 		ic->i_ibinc = ibinc;
 
 		hdr = &ibinc->ii_inc.i_hdr;
+		ibinc->ii_inc.i_rx_lat_trace[RDS_MSG_RX_HDR] =
+				local_clock();
 		memcpy(hdr, ihdr, sizeof(*hdr));
 		ic->i_recv_data_rem = be32_to_cpu(hdr->h_len);
+		ibinc->ii_inc.i_rx_lat_trace[RDS_MSG_RX_START] =
+				local_clock();
 
 		rdsdebug("ic %p ibinc %p rem %u flag 0x%x\n", ic, ibinc,
 			 ic->i_recv_data_rem, hdr->h_flags);
@@ -770,10 +927,10 @@ static void rds_ib_process_recv(struct rds_connection *conn,
 		hdr = &ibinc->ii_inc.i_hdr;
 		/* We can't just use memcmp here; fragments of a
 		 * single message may carry different ACKs */
-		if (hdr->h_sequence != ihdr->h_sequence
-		 || hdr->h_len != ihdr->h_len
-		 || hdr->h_sport != ihdr->h_sport
-		 || hdr->h_dport != ihdr->h_dport) {
+		if (hdr->h_sequence != ihdr->h_sequence ||
+		    hdr->h_len != ihdr->h_len ||
+		    hdr->h_sport != ihdr->h_sport ||
+		    hdr->h_dport != ihdr->h_dport) {
 			rds_ib_conn_error(conn,
 				"fragment header mismatch; forcing reconnect\n");
 			return;
@@ -789,12 +946,11 @@ static void rds_ib_process_recv(struct rds_connection *conn,
 		ic->i_recv_data_rem = 0;
 		ic->i_ibinc = NULL;
 
-		if (ibinc->ii_inc.i_hdr.h_flags == RDS_FLAG_CONG_BITMAP)
+		if (ibinc->ii_inc.i_hdr.h_flags == RDS_FLAG_CONG_BITMAP) {
 			rds_ib_cong_recv(conn, ibinc);
-		else {
-			rds_recv_incoming(conn, conn->c_faddr, conn->c_laddr,
-					  &ibinc->ii_inc, GFP_ATOMIC,
-					  KM_SOFTIRQ0);
+		} else {
+			rds_recv_incoming(conn, &conn->c_faddr, &conn->c_laddr,
+					  &ibinc->ii_inc, GFP_ATOMIC);
 			state->ack_next = be64_to_cpu(hdr->h_sequence);
 			state->ack_next_valid = 1;
 		}
@@ -811,67 +967,51 @@ static void rds_ib_process_recv(struct rds_connection *conn,
 	}
 }
 
-/*
- * Plucking the oldest entry from the ring can be done concurrently with
- * the thread refilling the ring.  Each ring operation is protected by
- * spinlocks and the transient state of refilling doesn't change the
- * recording of which entry is oldest.
- *
- * This relies on IB only calling one cq comp_handler for each cq so that
- * there will only be one caller of rds_recv_incoming() per RDS connection.
- */
-void rds_ib_recv_cq_comp_handler(struct ib_cq *cq, void *context)
+void rds_ib_recv_cqe_handler(struct rds_ib_connection *ic,
+			     struct ib_wc *wc,
+			     struct rds_ib_ack_state *state)
 {
-	struct rds_connection *conn = context;
-	struct rds_ib_connection *ic = conn->c_transport_data;
-	struct ib_wc wc;
-	struct rds_ib_ack_state state = { 0, };
+	struct rds_connection *conn = ic->conn;
 	struct rds_ib_recv_work *recv;
 
-	rdsdebug("conn %p cq %p\n", conn, cq);
+	rdsdebug("wc wr_id 0x%llx status %u (%s) byte_len %u imm_data %u\n",
+		 (unsigned long long)wc->wr_id, wc->status,
+		 ib_wc_status_msg(wc->status), wc->byte_len,
+		 be32_to_cpu(wc->ex.imm_data));
 
-	rds_ib_stats_inc(s_ib_rx_cq_call);
+	rds_ib_stats_inc(s_ib_rx_cq_event);
+	recv = &ic->i_recvs[rds_ib_ring_oldest(&ic->i_recv_ring)];
+	ib_dma_unmap_sg(ic->i_cm_id->device, &recv->r_frag->f_sg, 1,
+			DMA_FROM_DEVICE);
 
-	ib_req_notify_cq(cq, IB_CQ_SOLICITED);
-
-	while (ib_poll_cq(cq, 1, &wc) > 0) {
-		rdsdebug("wc wr_id 0x%llx status %u byte_len %u imm_data %u\n",
-			 (unsigned long long)wc.wr_id, wc.status, wc.byte_len,
-			 be32_to_cpu(wc.ex.imm_data));
-		rds_ib_stats_inc(s_ib_rx_cq_event);
-
-		recv = &ic->i_recvs[rds_ib_ring_oldest(&ic->i_recv_ring)];
-
-		rds_ib_recv_unmap_page(ic, recv);
-
-		/*
-		 * Also process recvs in connecting state because it is possible
-		 * to get a recv completion _before_ the rdmacm ESTABLISHED
-		 * event is processed.
-		 */
-		if (rds_conn_up(conn) || rds_conn_connecting(conn)) {
-			/* We expect errors as the qp is drained during shutdown */
-			if (wc.status == IB_WC_SUCCESS) {
-				rds_ib_process_recv(conn, recv, wc.byte_len, &state);
-			} else {
-				rds_ib_conn_error(conn, "recv completion on "
-				       "%pI4 had status %u, disconnecting and "
-				       "reconnecting\n", &conn->c_faddr,
-				       wc.status);
-			}
-		}
-
-		rds_ib_ring_free(&ic->i_recv_ring, 1);
+	/* Also process recvs in connecting state because it is possible
+	 * to get a recv completion _before_ the rdmacm ESTABLISHED
+	 * event is processed.
+	 */
+	if (wc->status == IB_WC_SUCCESS) {
+		rds_ib_process_recv(conn, recv, wc->byte_len, state);
+	} else {
+		/* We expect errors as the qp is drained during shutdown */
+		if (rds_conn_up(conn) || rds_conn_connecting(conn))
+			rds_ib_conn_error(conn, "recv completion on <%pI6c,%pI6c, %d> had status %u (%s), vendor err 0x%x, disconnecting and reconnecting\n",
+					  &conn->c_laddr, &conn->c_faddr,
+					  conn->c_tos, wc->status,
+					  ib_wc_status_msg(wc->status),
+					  wc->vendor_err);
 	}
 
-	if (state.ack_next_valid)
-		rds_ib_set_ack(ic, state.ack_next, state.ack_required);
-	if (state.ack_recv_valid && state.ack_recv > ic->i_ack_recv) {
-		rds_send_drop_acked(conn, state.ack_recv, NULL);
-		ic->i_ack_recv = state.ack_recv;
+	/* rds_ib_process_recv() doesn't always consume the frag, and
+	 * we might not have called it at all if the wc didn't indicate
+	 * success. We already unmapped the frag's pages, though, and
+	 * the following rds_ib_ring_free() call tells the refill path
+	 * that it will not find an allocated frag here. Make sure we
+	 * keep that promise by freeing a frag that's still on the ring.
+	 */
+	if (recv->r_frag) {
+		rds_ib_frag_free(ic, recv->r_frag);
+		recv->r_frag = NULL;
 	}
-	if (rds_conn_up(conn))
-		rds_ib_attempt_ack(ic);
+	rds_ib_ring_free(&ic->i_recv_ring, 1);
 
 	/* If we ever end up with a really empty receive ring, we're
 	 * in deep trouble, as the sender will definitely see RNR
@@ -879,38 +1019,28 @@ void rds_ib_recv_cq_comp_handler(struct ib_cq *cq, void *context)
 	if (rds_ib_ring_empty(&ic->i_recv_ring))
 		rds_ib_stats_inc(s_ib_rx_ring_empty);
 
-	/*
-	 * If the ring is running low, then schedule the thread to refill.
-	 */
-	if (rds_ib_ring_low(&ic->i_recv_ring))
-		queue_delayed_work(rds_wq, &conn->c_recv_w, 0);
+	if (rds_ib_ring_low(&ic->i_recv_ring)) {
+		rds_ib_recv_refill(conn, 0, GFP_NOWAIT);
+		rds_ib_stats_inc(s_ib_rx_refill_from_cq);
+	}
 }
 
-int rds_ib_recv(struct rds_connection *conn)
+int rds_ib_recv_path(struct rds_conn_path *cp)
 {
+	struct rds_connection *conn = cp->cp_conn;
 	struct rds_ib_connection *ic = conn->c_transport_data;
-	int ret = 0;
 
 	rdsdebug("conn %p\n", conn);
-
-	/*
-	 * If we get a temporary posting failure in this context then
-	 * we're really low and we want the caller to back off for a bit.
-	 */
-	mutex_lock(&ic->i_recv_mutex);
-	if (rds_ib_recv_refill(conn, GFP_KERNEL, GFP_HIGHUSER, 0))
-		ret = -ENOMEM;
-	else
-		rds_ib_stats_inc(s_ib_rx_refill_from_thread);
-	mutex_unlock(&ic->i_recv_mutex);
-
-	if (rds_conn_up(conn))
+	if (rds_conn_up(conn)) {
 		rds_ib_attempt_ack(ic);
+		rds_ib_recv_refill(conn, 0, GFP_KERNEL);
+		rds_ib_stats_inc(s_ib_rx_refill_from_thread);
+	}
 
-	return ret;
+	return 0;
 }
 
-int __init rds_ib_recv_init(void)
+int rds_ib_recv_init(void)
 {
 	struct sysinfo si;
 	int ret = -ENOMEM;
@@ -919,18 +1049,24 @@ int __init rds_ib_recv_init(void)
 	si_meminfo(&si);
 	rds_ib_sysctl_max_recv_allocation = si.totalram / 3 * PAGE_SIZE / RDS_FRAG_SIZE;
 
-	rds_ib_incoming_slab = kmem_cache_create("rds_ib_incoming",
-					sizeof(struct rds_ib_incoming),
-					0, 0, NULL);
-	if (rds_ib_incoming_slab == NULL)
+	rds_ib_incoming_slab =
+		kmem_cache_create_usercopy("rds_ib_incoming",
+					   sizeof(struct rds_ib_incoming),
+					   0, SLAB_HWCACHE_ALIGN,
+					   offsetof(struct rds_ib_incoming,
+						    ii_inc.i_usercopy),
+					   sizeof(struct rds_inc_usercopy),
+					   NULL);
+	if (!rds_ib_incoming_slab)
 		goto out;
 
 	rds_ib_frag_slab = kmem_cache_create("rds_ib_frag",
 					sizeof(struct rds_page_frag),
-					0, 0, NULL);
-	if (rds_ib_frag_slab == NULL)
+					0, SLAB_HWCACHE_ALIGN, NULL);
+	if (!rds_ib_frag_slab) {
 		kmem_cache_destroy(rds_ib_incoming_slab);
-	else
+		rds_ib_incoming_slab = NULL;
+	} else
 		ret = 0;
 out:
 	return ret;
@@ -938,6 +1074,8 @@ out:
 
 void rds_ib_recv_exit(void)
 {
+	WARN_ON(atomic_read(&rds_ib_allocation));
+
 	kmem_cache_destroy(rds_ib_incoming_slab);
 	kmem_cache_destroy(rds_ib_frag_slab);
 }

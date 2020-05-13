@@ -1,21 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Copyright(C) MontaVista Software Inc, 2006
  *
  *  Author: dmitry pervushin <dpervushin@ru.mvista.com>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -190,7 +177,7 @@ static struct platform_device markeins_flash_device = {
 	.name		= "physmap-flash",
 	.id		= 0,
 	.dev		= {
-        	.platform_data  = &markeins_flash_data,
+		.platform_data	= &markeins_flash_data,
 	},
 	.num_resources	= 1,
 	.resource	= &markeins_flash_resource,

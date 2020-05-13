@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * arch/ia64/kernel/crash.c
  *
@@ -11,7 +12,7 @@
 #include <linux/smp.h>
 #include <linux/delay.h>
 #include <linux/crash_dump.h>
-#include <linux/bootmem.h>
+#include <linux/memblock.h>
 #include <linux/kexec.h>
 #include <linux/elfcore.h>
 #include <linux/sysctl.h>
@@ -26,28 +27,6 @@ atomic_t kdump_in_progress;
 static int kdump_freeze_monarch;
 static int kdump_on_init = 1;
 static int kdump_on_fatal_mca = 1;
-
-static inline Elf64_Word
-*append_elf_note(Elf64_Word *buf, char *name, unsigned type, void *data,
-		size_t data_len)
-{
-	struct elf_note *note = (struct elf_note *)buf;
-	note->n_namesz = strlen(name) + 1;
-	note->n_descsz = data_len;
-	note->n_type   = type;
-	buf += (sizeof(*note) + 3)/4;
-	memcpy(buf, name, note->n_namesz);
-	buf += (note->n_namesz + 3)/4;
-	memcpy(buf, data, data_len);
-	buf += (data_len + 3)/4;
-	return buf;
-}
-
-static void
-final_note(void *buf)
-{
-	memset(buf, 0, sizeof(struct elf_note));
-}
 
 extern void ia64_dump_cpu_regs(void *);
 
@@ -237,34 +216,31 @@ kdump_init_notifier(struct notifier_block *self, unsigned long val, void *data)
 }
 
 #ifdef CONFIG_SYSCTL
-static ctl_table kdump_ctl_table[] = {
+static struct ctl_table kdump_ctl_table[] = {
 	{
-		.ctl_name = CTL_UNNUMBERED,
 		.procname = "kdump_on_init",
 		.data = &kdump_on_init,
 		.maxlen = sizeof(int),
 		.mode = 0644,
-		.proc_handler = &proc_dointvec,
+		.proc_handler = proc_dointvec,
 	},
 	{
-		.ctl_name = CTL_UNNUMBERED,
 		.procname = "kdump_on_fatal_mca",
 		.data = &kdump_on_fatal_mca,
 		.maxlen = sizeof(int),
 		.mode = 0644,
-		.proc_handler = &proc_dointvec,
+		.proc_handler = proc_dointvec,
 	},
-	{ .ctl_name = 0 }
+	{ }
 };
 
-static ctl_table sys_table[] = {
+static struct ctl_table sys_table[] = {
 	{
-	  .ctl_name = CTL_KERN,
 	  .procname = "kernel",
 	  .mode = 0555,
 	  .child = kdump_ctl_table,
 	},
-	{ .ctl_name = 0 }
+	{ }
 };
 #endif
 

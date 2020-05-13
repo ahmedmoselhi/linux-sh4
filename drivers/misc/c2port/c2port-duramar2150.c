@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  Silicon Labs C2 port Linux support for Eurotech Duramar 2150
  *
  *  Copyright (c) 2008 Rodolfo Giometti <giometti@linux.it>
  *  Copyright (c) 2008 Eurotech S.p.A. <info@eurotech.it>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation
  */
 
 #include <linux/errno.h>
@@ -15,6 +12,7 @@
 #include <linux/module.h>
 #include <linux/delay.h>
 #include <linux/io.h>
+#include <linux/ioport.h>
 #include <linux/c2port.h>
 
 #define DATA_PORT	0x325
@@ -41,7 +39,7 @@ static void duramar2150_c2port_access(struct c2port_device *dev, int status)
 		outb(v | (C2D | C2CK), DIR_PORT);
 	else
 		/* When access is "off" is important that both lines are set
-		 * as inputs or hi-impedence */
+		 * as inputs or hi-impedance */
 		outb(v & ~(C2D | C2CK), DIR_PORT);
 
 	mutex_unlock(&update_lock);
@@ -128,8 +126,8 @@ static int __init duramar2150_c2port_init(void)
 
 	duramar2150_c2port_dev = c2port_device_register("uc",
 					&duramar2150_c2port_ops, NULL);
-	if (!duramar2150_c2port_dev) {
-		ret = -ENODEV;
+	if (IS_ERR(duramar2150_c2port_dev)) {
+		ret = PTR_ERR(duramar2150_c2port_dev);
 		goto free_region;
 	}
 

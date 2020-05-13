@@ -1,8 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
- *	This program is free software; you can redistribute it and/or
- *	modify it under the terms of the GNU General Public License
- *	as published by the Free Software Foundation; either version
- *	2 of the License, or (at your option) any later version.
  *
  *	(c) Copyright 1998 Alan Cox <alan@lxorguk.ukuu.org.uk>
  *	(c) Copyright 2000, 2001 Red Hat Inc
@@ -36,6 +33,8 @@
  *	Synchronous mode without DMA is unlikely to pass about 2400 baud.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
@@ -47,6 +46,7 @@
 #include <linux/hdlc.h>
 #include <linux/ioport.h>
 #include <linux/init.h>
+#include <linux/gfp.h>
 #include <asm/dma.h>
 #include <asm/io.h>
 #define RT_LOCK
@@ -364,7 +364,7 @@ static void z8530_rx(struct z8530_channel *c)
 				c->count=0;
 				if(stat&Rx_OVR)
 				{
-					printk(KERN_WARNING "%s: overrun\n", c->dev->name);
+					pr_warn("%s: overrun\n", c->dev->name);
 					c->rx_overrun++;
 				}
 				if(stat&CRC_ERR)
@@ -463,12 +463,12 @@ static void z8530_status(struct z8530_channel *chan)
 	if (altered & chan->dcdcheck)
 	{
 		if (status & chan->dcdcheck) {
-			printk(KERN_INFO "%s: DCD raised\n", chan->dev->name);
+			pr_info("%s: DCD raised\n", chan->dev->name);
 			write_zsreg(chan, R3, chan->regs[3] | RxENABLE);
 			if (chan->netdevice)
 				netif_carrier_on(chan->netdevice);
 		} else {
-			printk(KERN_INFO "%s: DCD lost\n", chan->dev->name);
+			pr_info("%s: DCD lost\n", chan->dev->name);
 			write_zsreg(chan, R3, chan->regs[3] & ~RxENABLE);
 			z8530_flush_fifo(chan);
 			if (chan->netdevice)
@@ -480,11 +480,10 @@ static void z8530_status(struct z8530_channel *chan)
 	write_zsctrl(chan, RES_H_IUS);
 }
 
-struct z8530_irqhandler z8530_sync =
-{
-	z8530_rx,
-	z8530_tx,
-	z8530_status
+struct z8530_irqhandler z8530_sync = {
+	.rx = z8530_rx,
+	.tx = z8530_tx,
+	.status = z8530_status,
 };
 
 EXPORT_SYMBOL(z8530_sync);
@@ -537,12 +536,12 @@ static void z8530_dma_tx(struct z8530_channel *chan)
 {
 	if(!chan->dma_tx)
 	{
-		printk(KERN_WARNING "Hey who turned the DMA off?\n");
+		pr_warn("Hey who turned the DMA off?\n");
 		z8530_tx(chan);
 		return;
 	}
-	/* This shouldnt occur in DMA mode */
-	printk(KERN_ERR "DMA tx - bogus event!\n");
+	/* This shouldn't occur in DMA mode */
+	pr_err("DMA tx - bogus event!\n");
 	z8530_tx(chan);
 }
 
@@ -584,12 +583,12 @@ static void z8530_dma_status(struct z8530_channel *chan)
 	if (altered & chan->dcdcheck)
 	{
 		if (status & chan->dcdcheck) {
-			printk(KERN_INFO "%s: DCD raised\n", chan->dev->name);
+			pr_info("%s: DCD raised\n", chan->dev->name);
 			write_zsreg(chan, R3, chan->regs[3] | RxENABLE);
 			if (chan->netdevice)
 				netif_carrier_on(chan->netdevice);
 		} else {
-			printk(KERN_INFO "%s:DCD lost\n", chan->dev->name);
+			pr_info("%s: DCD lost\n", chan->dev->name);
 			write_zsreg(chan, R3, chan->regs[3] & ~RxENABLE);
 			z8530_flush_fifo(chan);
 			if (chan->netdevice)
@@ -602,15 +601,15 @@ static void z8530_dma_status(struct z8530_channel *chan)
 }
 
 static struct z8530_irqhandler z8530_dma_sync = {
-	z8530_dma_rx,
-	z8530_dma_tx,
-	z8530_dma_status
+	.rx = z8530_dma_rx,
+	.tx = z8530_dma_tx,
+	.status = z8530_dma_status,
 };
 
 static struct z8530_irqhandler z8530_txdma_sync = {
-	z8530_rx,
-	z8530_dma_tx,
-	z8530_dma_status
+	.rx = z8530_rx,
+	.tx = z8530_dma_tx,
+	.status = z8530_dma_status,
 };
 
 /**
@@ -675,11 +674,10 @@ static void z8530_status_clear(struct z8530_channel *chan)
 	write_zsctrl(chan, RES_H_IUS);
 }
 
-struct z8530_irqhandler z8530_nop=
-{
-	z8530_rx_clear,
-	z8530_tx_clear,
-	z8530_status_clear
+struct z8530_irqhandler z8530_nop = {
+	.rx = z8530_rx_clear,
+	.tx = z8530_tx_clear,
+	.status = z8530_status_clear,
 };
 
 
@@ -711,7 +709,7 @@ irqreturn_t z8530_interrupt(int irq, void *dev_id)
 	
 	if(locker)
 	{
-		printk(KERN_ERR "IRQ re-enter\n");
+		pr_err("IRQ re-enter\n");
 		return IRQ_NONE;
 	}
 	locker=1;
@@ -757,7 +755,8 @@ irqreturn_t z8530_interrupt(int irq, void *dev_id)
 	}
 	spin_unlock(&dev->lock);
 	if(work==5000)
-		printk(KERN_ERR "%s: interrupt jammed - abort(0x%X)!\n", dev->name, intr);
+		pr_err("%s: interrupt jammed - abort(0x%X)!\n",
+		       dev->name, intr);
 	/* Ok all done */
 	locker=0;
 	return IRQ_HANDLED;
@@ -765,7 +764,7 @@ irqreturn_t z8530_interrupt(int irq, void *dev_id)
 
 EXPORT_SYMBOL(z8530_interrupt);
 
-static char reg_init[16]=
+static const u8 reg_init[16]=
 {
 	0,0,0,0,
 	0,0,0,0,
@@ -1040,7 +1039,7 @@ EXPORT_SYMBOL(z8530_sync_dma_close);
  *	@dev: The network device to attach
  *	@c: The Z8530 channel to configure in sync DMA mode.
  *
- *	Set up a Z85x30 device for synchronous DMA tranmission. One
+ *	Set up a Z85x30 device for synchronous DMA transmission. One
  *	ISA DMA channel must be available for this to work. The receive
  *	side is run in PIO mode, but then it has the bigger FIFO.
  */
@@ -1205,7 +1204,7 @@ EXPORT_SYMBOL(z8530_sync_txdma_close);
  *	it exists...
  */
  
-static char *z8530_type_name[]={
+static const char *z8530_type_name[]={
 	"Z8530",
 	"Z85C30",
 	"Z85230"
@@ -1218,13 +1217,13 @@ static char *z8530_type_name[]={
  *	@io: the port value in question
  *
  *	Describe a Z8530 in a standard format. We must pass the I/O as
- *	the port offset isnt predictable. The main reason for this function
+ *	the port offset isn't predictable. The main reason for this function
  *	is to try and get a common format of report.
  */
 
 void z8530_describe(struct z8530_dev *dev, char *mapping, unsigned long io)
 {
-	printk(KERN_INFO "%s: %s found at %s 0x%lX, IRQ %d.\n",
+	pr_info("%s: %s found at %s 0x%lX, IRQ %d\n",
 		dev->name, 
 		z8530_type_name[dev->type],
 		mapping,
@@ -1534,7 +1533,7 @@ static void z8530_tx_done(struct z8530_channel *c)
 	z8530_tx_begin(c);
 	c->netdevice->stats.tx_packets++;
 	c->netdevice->stats.tx_bytes += skb->len;
-	dev_kfree_skb_irq(skb);
+	dev_consume_skb_irq(skb);
 }
 
 /**
@@ -1587,7 +1586,7 @@ static void z8530_rx_done(struct z8530_channel *c)
 		unsigned long flags;
 		
 		/*
-		 *	Complete this DMA. Neccessary to find the length
+		 *	Complete this DMA. Necessary to find the length
 		 */		
 		 
 		flags=claim_dma_lock();
@@ -1620,8 +1619,7 @@ static void z8530_rx_done(struct z8530_channel *c)
 		else
 			/* Can't occur as we dont reenable the DMA irq until
 			   after the flip is done */
-			printk(KERN_WARNING "%s: DMA flip overrun!\n",
-			       c->netdevice->name);
+			netdev_warn(c->netdevice, "DMA flip overrun!\n");
 
 		release_dma_lock(flags);
 
@@ -1636,8 +1634,7 @@ static void z8530_rx_done(struct z8530_channel *c)
 		skb = dev_alloc_skb(ct);
 		if (skb == NULL) {
 			c->netdevice->stats.rx_dropped++;
-			printk(KERN_WARNING "%s: Memory squeeze.\n",
-			       c->netdevice->name);
+			netdev_warn(c->netdevice, "Memory squeeze\n");
 		} else {
 			skb_put(skb, ct);
 			skb_copy_to_linear_data(skb, rxb, ct);
@@ -1656,7 +1653,7 @@ static void z8530_rx_done(struct z8530_channel *c)
 		 *	fifo length for this. Thus we want to flip to the new
 		 *	buffer and then mess around copying and allocating
 		 *	things. For the current case it doesn't matter but
-		 *	if you build a system where the sync irq isnt blocked
+		 *	if you build a system where the sync irq isn't blocked
 		 *	by the kernel IRQ disable then you need only block the
 		 *	sync IRQ for the RT_LOCK area.
 		 *
@@ -1677,8 +1674,7 @@ static void z8530_rx_done(struct z8530_channel *c)
 
 		c->skb2 = dev_alloc_skb(c->mtu);
 		if (c->skb2 == NULL)
-			printk(KERN_WARNING "%s: memory squeeze.\n",
-			       c->netdevice->name);
+			netdev_warn(c->netdevice, "memory squeeze\n");
 		else
 			skb_put(c->skb2, c->mtu);
 		c->netdevice->stats.rx_packets++;
@@ -1692,7 +1688,7 @@ static void z8530_rx_done(struct z8530_channel *c)
 		c->rx_function(c, skb);
 	} else {
 		c->netdevice->stats.rx_dropped++;
-		printk(KERN_ERR "%s: Lost a frame\n", c->netdevice->name);
+		netdev_err(c->netdevice, "Lost a frame\n");
 	}
 }
 
@@ -1774,7 +1770,7 @@ EXPORT_SYMBOL(z8530_queue_xmit);
 /*
  *	Module support
  */
-static const char banner[] __initdata =
+static const char banner[] __initconst =
 	KERN_INFO "Generic Z85C30/Z85230 interface driver v0.02\n";
 
 static int __init z85230_init_driver(void)

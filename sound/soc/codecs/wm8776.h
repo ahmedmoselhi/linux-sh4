@@ -1,13 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * wm8776.h  --  WM8776 ASoC driver
  *
  * Copyright 2009 Wolfson Microelectronics plc
  *
  * Author: Mark Brown <broonie@opensource.wolfsonmicro.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef _WM8776_H
@@ -44,8 +41,5 @@
 
 #define WM8776_DAI_DAC 0
 #define WM8776_DAI_ADC 1
-
-extern struct snd_soc_dai wm8776_dai[];
-extern struct snd_soc_codec_device soc_codec_dev_wm8776;
 
 #endif

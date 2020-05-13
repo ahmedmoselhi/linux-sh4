@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *  linux/include/linux/mtd/onenand_regs.h
  *
@@ -5,10 +6,6 @@
  *
  *  Copyright (C) 2005-2007 Samsung Electronics
  *  Kyungmin Park <kyungmin.park@samsung.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef __ONENAND_REG_H
@@ -80,6 +77,7 @@
 #define ONENAND_DEVICE_DENSITY_1Gb	(0x003)
 #define ONENAND_DEVICE_DENSITY_2Gb	(0x004)
 #define ONENAND_DEVICE_DENSITY_4Gb	(0x005)
+#define ONENAND_DEVICE_DENSITY_8Gb	(0x006)
 
 /*
  * Version ID Register F002h (R)
@@ -131,6 +129,8 @@
 #define ONENAND_CMD_LOCK_TIGHT		(0x2C)
 #define ONENAND_CMD_UNLOCK_ALL		(0x27)
 #define ONENAND_CMD_ERASE		(0x94)
+#define ONENAND_CMD_MULTIBLOCK_ERASE	(0x95)
+#define ONENAND_CMD_ERASE_VERIFY	(0x71)
 #define ONENAND_CMD_RESET		(0xF0)
 #define ONENAND_CMD_OTP_ACCESS		(0x65)
 #define ONENAND_CMD_READID		(0x90)
@@ -166,6 +166,7 @@
 #define ONENAND_SYS_CFG1_INT		(1 << 6)
 #define ONENAND_SYS_CFG1_IOBE		(1 << 5)
 #define ONENAND_SYS_CFG1_RDY_CONF	(1 << 4)
+#define ONENAND_SYS_CFG1_VHF		(1 << 3)
 #define ONENAND_SYS_CFG1_HF		(1 << 2)
 #define ONENAND_SYS_CFG1_SYNC_WRITE	(1 << 1)
 

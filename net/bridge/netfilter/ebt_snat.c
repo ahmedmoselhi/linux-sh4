@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  ebt_snat
  *
@@ -17,14 +18,14 @@
 #include <linux/netfilter_bridge/ebt_nat.h>
 
 static unsigned int
-ebt_snat_tg(struct sk_buff *skb, const struct xt_target_param *par)
+ebt_snat_tg(struct sk_buff *skb, const struct xt_action_param *par)
 {
 	const struct ebt_nat_info *info = par->targinfo;
 
-	if (!skb_make_writable(skb, 0))
+	if (skb_ensure_writable(skb, ETH_ALEN * 2))
 		return EBT_DROP;
 
-	memcpy(eth_hdr(skb)->h_source, info->mac, ETH_ALEN);
+	ether_addr_copy(eth_hdr(skb)->h_source, info->mac);
 	if (!(info->target & NAT_ARP_BIT) &&
 	    eth_hdr(skb)->h_proto == htons(ETH_P_ARP)) {
 		const struct arphdr *ap;
@@ -35,28 +36,28 @@ ebt_snat_tg(struct sk_buff *skb, const struct xt_target_param *par)
 			return EBT_DROP;
 		if (ap->ar_hln != ETH_ALEN)
 			goto out;
-		if (skb_store_bits(skb, sizeof(_ah), info->mac,ETH_ALEN))
+		if (skb_store_bits(skb, sizeof(_ah), info->mac, ETH_ALEN))
 			return EBT_DROP;
 	}
 out:
 	return info->target | ~EBT_VERDICT_BITS;
 }
 
-static bool ebt_snat_tg_check(const struct xt_tgchk_param *par)
+static int ebt_snat_tg_check(const struct xt_tgchk_param *par)
 {
 	const struct ebt_nat_info *info = par->targinfo;
 	int tmp;
 
 	tmp = info->target | ~EBT_VERDICT_BITS;
 	if (BASE_CHAIN && tmp == EBT_RETURN)
-		return false;
+		return -EINVAL;
 
-	if (tmp < -NUM_STANDARD_TARGETS || tmp >= 0)
-		return false;
+	if (ebt_invalid_target(tmp))
+		return -EINVAL;
 	tmp = info->target | EBT_VERDICT_BITS;
 	if ((tmp & ~NAT_ARP_BIT) != ~NAT_ARP_BIT)
-		return false;
-	return true;
+		return -EINVAL;
+	return 0;
 }
 
 static struct xt_target ebt_snat_tg_reg __read_mostly = {
@@ -67,7 +68,7 @@ static struct xt_target ebt_snat_tg_reg __read_mostly = {
 	.hooks		= (1 << NF_BR_NUMHOOKS) | (1 << NF_BR_POST_ROUTING),
 	.target		= ebt_snat_tg,
 	.checkentry	= ebt_snat_tg_check,
-	.targetsize	= XT_ALIGN(sizeof(struct ebt_nat_info)),
+	.targetsize	= sizeof(struct ebt_nat_info),
 	.me		= THIS_MODULE,
 };
 

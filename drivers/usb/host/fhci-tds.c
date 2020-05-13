@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Freescale QUICC Engine USB Host Controller Driver
  *
@@ -8,20 +9,16 @@
  *               Peter Barada <peterb@logicpd.com>
  * Copyright (c) MontaVista Software, Inc. 2008.
  *               Anton Vorontsov <avorontsov@ru.mvista.com>
- *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  */
 
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/errno.h>
+#include <linux/slab.h>
 #include <linux/list.h>
 #include <linux/io.h>
 #include <linux/usb.h>
-#include "../core/hcd.h"
+#include <linux/usb/hcd.h>
 #include "fhci.h"
 
 #define DUMMY_BD_BUFFER  0xdeadbeef
@@ -39,7 +36,7 @@
 #define TD_RXER		0x0020 /* Rx error or not */
 
 #define TD_NAK		0x0010 /* No ack. */
-#define TD_STAL		0x0008 /* Stall recieved */
+#define TD_STAL		0x0008 /* Stall received */
 #define TD_TO		0x0004 /* time out */
 #define TD_UN		0x0002 /* underrun */
 #define TD_NO		0x0010 /* Rx Non Octet Aligned Packet */
@@ -84,7 +81,7 @@ static struct usb_td __iomem *next_bd(struct usb_td __iomem *base,
 
 void fhci_push_dummy_bd(struct endpoint *ep)
 {
-	if (ep->already_pushed_dummy_bd == false) {
+	if (!ep->already_pushed_dummy_bd) {
 		u16 td_status = in_be16(&ep->empty_td->status);
 
 		out_be32(&ep->empty_td->buf_ptr, DUMMY_BD_BUFFER);
@@ -105,34 +102,34 @@ void fhci_ep0_free(struct fhci_usb *usb)
 		if (ep->td_base)
 			cpm_muram_free(cpm_muram_offset(ep->td_base));
 
-		if (ep->conf_frame_Q) {
-			size = cq_howmany(ep->conf_frame_Q);
+		if (kfifo_initialized(&ep->conf_frame_Q)) {
+			size = cq_howmany(&ep->conf_frame_Q);
 			for (; size; size--) {
-				struct packet *pkt = cq_get(ep->conf_frame_Q);
+				struct packet *pkt = cq_get(&ep->conf_frame_Q);
 
 				kfree(pkt);
 			}
-			cq_delete(ep->conf_frame_Q);
+			cq_delete(&ep->conf_frame_Q);
 		}
 
-		if (ep->empty_frame_Q) {
-			size = cq_howmany(ep->empty_frame_Q);
+		if (kfifo_initialized(&ep->empty_frame_Q)) {
+			size = cq_howmany(&ep->empty_frame_Q);
 			for (; size; size--) {
-				struct packet *pkt = cq_get(ep->empty_frame_Q);
+				struct packet *pkt = cq_get(&ep->empty_frame_Q);
 
 				kfree(pkt);
 			}
-			cq_delete(ep->empty_frame_Q);
+			cq_delete(&ep->empty_frame_Q);
 		}
 
-		if (ep->dummy_packets_Q) {
-			size = cq_howmany(ep->dummy_packets_Q);
+		if (kfifo_initialized(&ep->dummy_packets_Q)) {
+			size = cq_howmany(&ep->dummy_packets_Q);
 			for (; size; size--) {
-				u8 *buff = cq_get(ep->dummy_packets_Q);
+				u8 *buff = cq_get(&ep->dummy_packets_Q);
 
 				kfree(buff);
 			}
-			cq_delete(ep->dummy_packets_Q);
+			cq_delete(&ep->dummy_packets_Q);
 		}
 
 		kfree(ep);
@@ -154,7 +151,7 @@ u32 fhci_create_ep(struct fhci_usb *usb, enum fhci_mem_alloc data_mem,
 	struct endpoint *ep;
 	struct usb_td __iomem *td;
 	unsigned long ep_offset;
-	char *err_for = "enpoint PRAM";
+	char *err_for = "endpoint PRAM";
 	int ep_mem_size;
 	u32 i;
 
@@ -175,10 +172,9 @@ u32 fhci_create_ep(struct fhci_usb *usb, enum fhci_mem_alloc data_mem,
 	ep->td_base = cpm_muram_addr(ep_offset);
 
 	/* zero all queue pointers */
-	ep->conf_frame_Q = cq_new(ring_len + 2);
-	ep->empty_frame_Q = cq_new(ring_len + 2);
-	ep->dummy_packets_Q = cq_new(ring_len + 2);
-	if (!ep->conf_frame_Q || !ep->empty_frame_Q || !ep->dummy_packets_Q) {
+	if (cq_new(&ep->conf_frame_Q, ring_len + 2) ||
+	    cq_new(&ep->empty_frame_Q, ring_len + 2) ||
+	    cq_new(&ep->dummy_packets_Q, ring_len + 2)) {
 		err_for = "frame_queues";
 		goto err;
 	}
@@ -193,14 +189,14 @@ u32 fhci_create_ep(struct fhci_usb *usb, enum fhci_mem_alloc data_mem,
 			goto err;
 		}
 
-		buff = kmalloc(1028 * sizeof(*buff), GFP_KERNEL);
+		buff = kmalloc_array(1028, sizeof(*buff), GFP_KERNEL);
 		if (!buff) {
 			kfree(pkt);
 			err_for = "buffer";
 			goto err;
 		}
-		cq_put(ep->empty_frame_Q, pkt);
-		cq_put(ep->dummy_packets_Q, buff);
+		cq_put(&ep->empty_frame_Q, pkt);
+		cq_put(&ep->dummy_packets_Q, buff);
 	}
 
 	/* we put the endpoint parameter RAM right behind the TD ring */
@@ -249,7 +245,7 @@ void fhci_init_ep_registers(struct fhci_usb *usb, struct endpoint *ep,
 	u8 rt;
 
 	/* set the endpoint registers according to the endpoint */
-	out_be16(&usb->fhci->regs->usb_ep[0],
+	out_be16(&usb->fhci->regs->usb_usep[0],
 		 USB_TRANS_CTR | USB_EP_MF | USB_EP_RTE);
 	out_be16(&usb->fhci->pram->ep_ptr[0],
 		 cpm_muram_offset(ep->ep_pram_ptr));
@@ -271,10 +267,10 @@ void fhci_init_ep_registers(struct fhci_usb *usb, struct endpoint *ep,
 
 /*
  * Collect the submitted frames and inform the application about them
- * It is also prepearing the TDs for new frames. If the Tx interrupts
- * are diabled, the application should call that routine to get
+ * It is also preparing the TDs for new frames. If the Tx interrupts
+ * are disabled, the application should call that routine to get
  * confirmation about the submitted frames. Otherwise, the routine is
- * called frome the interrupt service routine during the Tx interrupt.
+ * called from the interrupt service routine during the Tx interrupt.
  * In that case the application is informed by calling the application
  * specific 'fhci_transaction_confirm' routine
  */
@@ -319,7 +315,7 @@ static void fhci_td_transaction_confirm(struct fhci_usb *usb)
 		if ((buf == DUMMY2_BD_BUFFER) && !(td_status & ~TD_W))
 			continue;
 
-		pkt = cq_get(ep->conf_frame_Q);
+		pkt = cq_get(&ep->conf_frame_Q);
 		if (!pkt)
 			fhci_err(usb->fhci, "no frame to confirm\n");
 
@@ -337,7 +333,7 @@ static void fhci_td_transaction_confirm(struct fhci_usb *usb)
 					pkt->status = USB_TD_RX_ER_NONOCT;
 				else
 					fhci_err(usb->fhci, "illegal error "
-						 "occured\n");
+						 "occurred\n");
 			} else if (td_status & TD_NAK)
 				pkt->status = USB_TD_TX_ER_NAK;
 			else if (td_status & TD_TO)
@@ -347,7 +343,7 @@ static void fhci_td_transaction_confirm(struct fhci_usb *usb)
 			else if (td_status & TD_STAL)
 				pkt->status = USB_TD_TX_ER_STALL;
 			else
-				fhci_err(usb->fhci, "illegal error occured\n");
+				fhci_err(usb->fhci, "illegal error occurred\n");
 		} else if ((extra_data & TD_TOK_IN) &&
 				pkt->len > td_length - CRC_SIZE) {
 			pkt->status = USB_TD_RX_DATA_UNDERUN;
@@ -460,10 +456,10 @@ u32 fhci_host_transaction(struct fhci_usb *usb,
 		out_be16(&td->length, pkt->len);
 
 	/* put the frame to the confirmation queue */
-	cq_put(ep->conf_frame_Q, pkt);
+	cq_put(&ep->conf_frame_Q, pkt);
 
-	if (cq_howmany(ep->conf_frame_Q) == 1)
-		out_8(&usb->fhci->regs->usb_comm, USB_CMD_STR_FIFO);
+	if (cq_howmany(&ep->conf_frame_Q) == 1)
+		out_8(&usb->fhci->regs->usb_uscom, USB_CMD_STR_FIFO);
 
 	return 0;
 }
@@ -535,8 +531,8 @@ void fhci_flush_actual_frame(struct fhci_usb *usb)
 	struct endpoint *ep = usb->ep0;
 
 	/* disable the USB controller */
-	mode = in_8(&usb->fhci->regs->usb_mod);
-	out_8(&usb->fhci->regs->usb_mod, mode & ~USB_MODE_EN);
+	mode = in_8(&usb->fhci->regs->usb_usmod);
+	out_8(&usb->fhci->regs->usb_usmod, mode & ~USB_MODE_EN);
 
 	tb_ptr = in_be16(&ep->ep_pram_ptr->tx_bd_ptr);
 	td = cpm_muram_addr(tb_ptr);
@@ -571,9 +567,9 @@ void fhci_flush_actual_frame(struct fhci_usb *usb)
 	usb->actual_frame->frame_status = FRAME_TIMER_END_TRANSMISSION;
 
 	/* reset the event register */
-	out_be16(&usb->fhci->regs->usb_event, 0xffff);
+	out_be16(&usb->fhci->regs->usb_usber, 0xffff);
 	/* enable the USB controller */
-	out_8(&usb->fhci->regs->usb_mod, mode | USB_MODE_EN);
+	out_8(&usb->fhci->regs->usb_usmod, mode | USB_MODE_EN);
 }
 
 /* handles Tx confirm and Tx error interrupt */
@@ -613,7 +609,7 @@ void fhci_host_transmit_actual_frame(struct fhci_usb *usb)
 
 		/* start transmit only if we have something in the TDs */
 		if (in_be16(&td->status) & TD_R)
-			out_8(&usb->fhci->regs->usb_comm, USB_CMD_STR_FIFO);
+			out_8(&usb->fhci->regs->usb_uscom, USB_CMD_STR_FIFO);
 
 		if (in_be32(&ep->conf_td->buf_ptr) == DUMMY_BD_BUFFER) {
 			out_be32(&old_td->buf_ptr, 0);

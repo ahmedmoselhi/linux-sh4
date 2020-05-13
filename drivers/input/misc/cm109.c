@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Driver for the VoIP USB phones with CM109 chipsets.
  *
  * Copyright (C) 2007 - 2008 Alfred E. Heggestad <aeh@db.org>
- *
- *	This program is free software; you can redistribute it and/or
- *	modify it under the terms of the GNU General Public License as
- *	published by the Free Software Foundation, version 2.
  */
 
 /*
@@ -76,8 +73,8 @@ enum {
 
 	BUZZER_ON = 1 << 5,
 
-	/* up to 256 normal keys, up to 16 special keys */
-	KEYMAP_SIZE = 256 + 16,
+	/* up to 256 normal keys, up to 15 special key combinations */
+	KEYMAP_SIZE = 256 + 15,
 };
 
 /* CM109 protocol packet */
@@ -102,7 +99,6 @@ struct cm109_dev {
 	struct cm109_ctl_packet *ctl_data;
 	dma_addr_t ctl_dma;
 	struct usb_ctrlrequest *ctl_req;
-	dma_addr_t ctl_req_dma;
 	struct urb *urb_ctl;
 	/*
 	 * The 3 bitfields below are protected by ctl_submit_lock.
@@ -140,7 +136,7 @@ static unsigned short special_keymap(int code)
 {
 	if (code > 0xff) {
 		switch (code - 0xff) {
-		case RECORD_MUTE:	return KEY_MUTE;
+		case RECORD_MUTE:	return KEY_MICMUTE;
 		case PLAYBACK_MUTE:	return KEY_MUTE;
 		case VOLUME_DOWN:	return KEY_VOLUMEDOWN;
 		case VOLUME_UP:		return KEY_VOLUMEUP;
@@ -260,7 +256,7 @@ static unsigned short keymap_usbph01(int scancode)
 
 /*
  * Keymap for ATCom AU-100
- * http://www.atcom.cn/En_products_AU100.html
+ * http://www.atcom.cn/products.html 
  * http://www.packetizer.com/products/au100/
  * http://www.voip-info.org/wiki/view/AU-100
  *
@@ -313,6 +309,32 @@ static void report_key(struct cm109_dev *dev, int key)
 	input_sync(idev);
 }
 
+/*
+ * Converts data of special key presses (volume, mute) into events
+ * for the input subsystem, sends press-n-release for mute keys.
+ */
+static void cm109_report_special(struct cm109_dev *dev)
+{
+	static const u8 autorelease = RECORD_MUTE | PLAYBACK_MUTE;
+	struct input_dev *idev = dev->idev;
+	u8 data = dev->irq_data->byte[HID_IR0];
+	unsigned short keycode;
+	int i;
+
+	for (i = 0; i < 4; i++) {
+		keycode = dev->keymap[0xff + BIT(i)];
+		if (keycode == KEY_RESERVED)
+			continue;
+
+		input_report_key(idev, keycode, data & BIT(i));
+		if (data & autorelease & BIT(i)) {
+			input_sync(idev);
+			input_report_key(idev, keycode, 0);
+		}
+	}
+	input_sync(idev);
+}
+
 /******************************************************************************
  * CM109 usb communication interface
  *****************************************************************************/
@@ -328,7 +350,9 @@ static void cm109_submit_buzz_toggle(struct cm109_dev *dev)
 
 	error = usb_submit_urb(dev->urb_ctl, GFP_ATOMIC);
 	if (error)
-		err("%s: usb_submit_urb (urb_ctl) failed %d", __func__, error);
+		dev_err(&dev->intf->dev,
+			"%s: usb_submit_urb (urb_ctl) failed %d\n",
+			__func__, error);
 }
 
 /*
@@ -339,8 +363,9 @@ static void cm109_urb_irq_callback(struct urb *urb)
 	struct cm109_dev *dev = urb->context;
 	const int status = urb->status;
 	int error;
+	unsigned long flags;
 
-	dev_dbg(&urb->dev->dev, "### URB IRQ: [0x%02x 0x%02x 0x%02x 0x%02x] keybit=0x%02x\n",
+	dev_dbg(&dev->intf->dev, "### URB IRQ: [0x%02x 0x%02x 0x%02x 0x%02x] keybit=0x%02x\n",
 	     dev->irq_data->byte[0],
 	     dev->irq_data->byte[1],
 	     dev->irq_data->byte[2],
@@ -350,14 +375,13 @@ static void cm109_urb_irq_callback(struct urb *urb)
 	if (status) {
 		if (status == -ESHUTDOWN)
 			return;
-		err("%s: urb status %d", __func__, status);
+		dev_err_ratelimited(&dev->intf->dev, "%s: urb status %d\n",
+				    __func__, status);
+		goto out;
 	}
 
 	/* Special keys */
-	if (dev->irq_data->byte[HID_IR0] & 0x0f) {
-		const int code = (dev->irq_data->byte[HID_IR0] & 0x0f);
-		report_key(dev, dev->keymap[0xff + code]);
-	}
+	cm109_report_special(dev);
 
 	/* Scan key column */
 	if (dev->keybit == 0xf) {
@@ -378,7 +402,7 @@ static void cm109_urb_irq_callback(struct urb *urb)
 
  out:
 
-	spin_lock(&dev->ctl_submit_lock);
+	spin_lock_irqsave(&dev->ctl_submit_lock, flags);
 
 	dev->irq_urb_pending = 0;
 
@@ -397,11 +421,12 @@ static void cm109_urb_irq_callback(struct urb *urb)
 
 		error = usb_submit_urb(dev->urb_ctl, GFP_ATOMIC);
 		if (error)
-			err("%s: usb_submit_urb (urb_ctl) failed %d",
+			dev_err(&dev->intf->dev,
+				"%s: usb_submit_urb (urb_ctl) failed %d\n",
 				__func__, error);
 	}
 
-	spin_unlock(&dev->ctl_submit_lock);
+	spin_unlock_irqrestore(&dev->ctl_submit_lock, flags);
 }
 
 static void cm109_urb_ctl_callback(struct urb *urb)
@@ -409,23 +434,28 @@ static void cm109_urb_ctl_callback(struct urb *urb)
 	struct cm109_dev *dev = urb->context;
 	const int status = urb->status;
 	int error;
+	unsigned long flags;
 
-	dev_dbg(&urb->dev->dev, "### URB CTL: [0x%02x 0x%02x 0x%02x 0x%02x]\n",
+	dev_dbg(&dev->intf->dev, "### URB CTL: [0x%02x 0x%02x 0x%02x 0x%02x]\n",
 	     dev->ctl_data->byte[0],
 	     dev->ctl_data->byte[1],
 	     dev->ctl_data->byte[2],
 	     dev->ctl_data->byte[3]);
 
-	if (status)
-		err("%s: urb status %d", __func__, status);
+	if (status) {
+		if (status == -ESHUTDOWN)
+			return;
+		dev_err_ratelimited(&dev->intf->dev, "%s: urb status %d\n",
+				    __func__, status);
+	}
 
-	spin_lock(&dev->ctl_submit_lock);
+	spin_lock_irqsave(&dev->ctl_submit_lock, flags);
 
 	dev->ctl_urb_pending = 0;
 
 	if (likely(!dev->shutdown)) {
 
-		if (dev->buzzer_pending) {
+		if (dev->buzzer_pending || status) {
 			dev->buzzer_pending = 0;
 			dev->ctl_urb_pending = 1;
 			cm109_submit_buzz_toggle(dev);
@@ -434,12 +464,13 @@ static void cm109_urb_ctl_callback(struct urb *urb)
 			dev->irq_urb_pending = 1;
 			error = usb_submit_urb(dev->urb_irq, GFP_ATOMIC);
 			if (error)
-				err("%s: usb_submit_urb (urb_irq) failed %d",
+				dev_err(&dev->intf->dev,
+					"%s: usb_submit_urb (urb_irq) failed %d\n",
 					__func__, error);
 		}
 	}
 
-	spin_unlock(&dev->ctl_submit_lock);
+	spin_unlock_irqrestore(&dev->ctl_submit_lock, flags);
 }
 
 static void cm109_toggle_buzzer_async(struct cm109_dev *dev)
@@ -476,8 +507,9 @@ static void cm109_toggle_buzzer_sync(struct cm109_dev *dev, int on)
 				le16_to_cpu(dev->ctl_req->wIndex),
 				dev->ctl_data,
 				USB_PKT_LEN, USB_CTRL_SET_TIMEOUT);
-	if (error && error != EINTR)
-		err("%s: usb_control_msg() failed %d", __func__, error);
+	if (error < 0 && error != -EINTR)
+		dev_err(&dev->intf->dev, "%s: usb_control_msg() failed %d\n",
+			__func__, error);
 }
 
 static void cm109_stop_traffic(struct cm109_dev *dev)
@@ -519,8 +551,8 @@ static int cm109_input_open(struct input_dev *idev)
 
 	error = usb_autopm_get_interface(dev->intf);
 	if (error < 0) {
-		err("%s - cannot autoresume, result %d",
-		    __func__, error);
+		dev_err(&idev->dev, "%s - cannot autoresume, result %d\n",
+			__func__, error);
 		return error;
 	}
 
@@ -538,7 +570,8 @@ static int cm109_input_open(struct input_dev *idev)
 
 	error = usb_submit_urb(dev->urb_ctl, GFP_KERNEL);
 	if (error)
-		err("%s: usb_submit_urb (urb_ctl) failed %d", __func__, error);
+		dev_err(&dev->intf->dev, "%s: usb_submit_urb (urb_ctl) failed %d\n",
+			__func__, error);
 	else
 		dev->open = 1;
 
@@ -574,7 +607,7 @@ static int cm109_input_ev(struct input_dev *idev, unsigned int type,
 {
 	struct cm109_dev *dev = input_get_drvdata(idev);
 
-	dev_dbg(&dev->udev->dev,
+	dev_dbg(&dev->intf->dev,
 		"input_ev: type=%u code=%u value=%d\n", type, code, value);
 
 	if (type != EV_SND)
@@ -629,15 +662,13 @@ static const struct usb_device_id cm109_usb_table[] = {
 
 static void cm109_usb_cleanup(struct cm109_dev *dev)
 {
-	if (dev->ctl_req)
-		usb_buffer_free(dev->udev, sizeof(*(dev->ctl_req)),
-				dev->ctl_req, dev->ctl_req_dma);
+	kfree(dev->ctl_req);
 	if (dev->ctl_data)
-		usb_buffer_free(dev->udev, USB_PKT_LEN,
-				dev->ctl_data, dev->ctl_dma);
+		usb_free_coherent(dev->udev, USB_PKT_LEN,
+				  dev->ctl_data, dev->ctl_dma);
 	if (dev->irq_data)
-		usb_buffer_free(dev->udev, USB_PKT_LEN,
-				dev->irq_data, dev->irq_dma);
+		usb_free_coherent(dev->udev, USB_PKT_LEN,
+				  dev->irq_data, dev->irq_dma);
 
 	usb_free_urb(dev->urb_irq);	/* parameter validation in core/urb */
 	usb_free_urb(dev->urb_ctl);	/* parameter validation in core/urb */
@@ -666,6 +697,10 @@ static int cm109_usb_probe(struct usb_interface *intf,
 	int error = -ENOMEM;
 
 	interface = intf->cur_altsetting;
+
+	if (interface->desc.bNumEndpoints < 1)
+		return -ENODEV;
+
 	endpoint = &interface->endpoint[0].desc;
 
 	if (!usb_endpoint_is_int_in(endpoint))
@@ -686,18 +721,17 @@ static int cm109_usb_probe(struct usb_interface *intf,
 		goto err_out;
 
 	/* allocate usb buffers */
-	dev->irq_data = usb_buffer_alloc(udev, USB_PKT_LEN,
-					 GFP_KERNEL, &dev->irq_dma);
+	dev->irq_data = usb_alloc_coherent(udev, USB_PKT_LEN,
+					   GFP_KERNEL, &dev->irq_dma);
 	if (!dev->irq_data)
 		goto err_out;
 
-	dev->ctl_data = usb_buffer_alloc(udev, USB_PKT_LEN,
-					 GFP_KERNEL, &dev->ctl_dma);
+	dev->ctl_data = usb_alloc_coherent(udev, USB_PKT_LEN,
+					   GFP_KERNEL, &dev->ctl_dma);
 	if (!dev->ctl_data)
 		goto err_out;
 
-	dev->ctl_req = usb_buffer_alloc(udev, sizeof(*(dev->ctl_req)),
-					GFP_KERNEL, &dev->ctl_req_dma);
+	dev->ctl_req = kmalloc(sizeof(*(dev->ctl_req)), GFP_KERNEL);
 	if (!dev->ctl_req)
 		goto err_out;
 
@@ -714,7 +748,8 @@ static int cm109_usb_probe(struct usb_interface *intf,
 	pipe = usb_rcvintpipe(udev, endpoint->bEndpointAddress);
 	ret = usb_maxpacket(udev, pipe, usb_pipeout(pipe));
 	if (ret != USB_PKT_LEN)
-		err("invalid payload size %d, expected %d", ret, USB_PKT_LEN);
+		dev_err(&intf->dev, "invalid payload size %d, expected %d\n",
+			ret, USB_PKT_LEN);
 
 	/* initialise irq urb */
 	usb_fill_int_urb(dev->urb_irq, udev, pipe, dev->irq_data,
@@ -735,10 +770,8 @@ static int cm109_usb_probe(struct usb_interface *intf,
 	usb_fill_control_urb(dev->urb_ctl, udev, usb_sndctrlpipe(udev, 0),
 			     (void *)dev->ctl_req, dev->ctl_data, USB_PKT_LEN,
 			     cm109_urb_ctl_callback, dev);
-	dev->urb_ctl->setup_dma = dev->ctl_req_dma;
 	dev->urb_ctl->transfer_dma = dev->ctl_dma;
-	dev->urb_ctl->transfer_flags |= URB_NO_SETUP_DMA_MAP |
-					URB_NO_TRANSFER_DMA_MAP;
+	dev->urb_ctl->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
 	dev->urb_ctl->dev = udev;
 
 	/* find out the physical bus location */

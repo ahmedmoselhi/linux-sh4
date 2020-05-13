@@ -1,5 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * SH7720 Setup
+ * Setup code for SH7720, SH7721.
  *
  *  Copyright (C) 2007  Markus Brunner, Mark Jonas
  *  Copyright (C) 2009  Paul Mundt
@@ -8,10 +9,6 @@
  *
  *  Copyright (C) 2006  Paul Mundt
  *  Copyright (C) 2006  Jamie Lenehan
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 #include <linux/platform_device.h>
 #include <linux/init.h>
@@ -19,7 +16,11 @@
 #include <linux/io.h>
 #include <linux/serial_sci.h>
 #include <linux/sh_timer.h>
+#include <linux/sh_intc.h>
+#include <linux/usb/ohci_pdriver.h>
 #include <asm/rtc.h>
+#include <asm/platform_early.h>
+#include <cpu/serial.h>
 
 static struct resource rtc_resources[] = {
 	[0] = {
@@ -29,7 +30,7 @@ static struct resource rtc_resources[] = {
 	},
 	[1] = {
 		/* Shared Period/Carry/Alarm IRQ */
-		.start	= 20,
+		.start	= evt2irq(0x480),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -48,28 +49,45 @@ static struct platform_device rtc_device = {
 	},
 };
 
-static struct plat_sci_port sci_platform_data[] = {
-	{
-		.mapbase	= 0xa4430000,
-		.flags		= UPF_BOOT_AUTOCONF,
-		.type		= PORT_SCIF,
-		.irqs		= { 80, 80, 80, 80 },
-	}, {
-		.mapbase	= 0xa4438000,
-		.flags		= UPF_BOOT_AUTOCONF,
-		.type		= PORT_SCIF,
-		.irqs           = { 81, 81, 81, 81 },
-	}, {
-
-		.flags = 0,
-	}
+static struct plat_sci_port scif0_platform_data = {
+	.type		= PORT_SCIF,
+	.ops		= &sh7720_sci_port_ops,
+	.regtype	= SCIx_SH7705_SCIF_REGTYPE,
 };
 
-static struct platform_device sci_device = {
+static struct resource scif0_resources[] = {
+	DEFINE_RES_MEM(0xa4430000, 0x100),
+	DEFINE_RES_IRQ(evt2irq(0xc00)),
+};
+
+static struct platform_device scif0_device = {
 	.name		= "sh-sci",
-	.id		= -1,
+	.id		= 0,
+	.resource	= scif0_resources,
+	.num_resources	= ARRAY_SIZE(scif0_resources),
 	.dev		= {
-		.platform_data	= sci_platform_data,
+		.platform_data	= &scif0_platform_data,
+	},
+};
+
+static struct plat_sci_port scif1_platform_data = {
+	.type		= PORT_SCIF,
+	.ops		= &sh7720_sci_port_ops,
+	.regtype	= SCIx_SH7705_SCIF_REGTYPE,
+};
+
+static struct resource scif1_resources[] = {
+	DEFINE_RES_MEM(0xa4438000, 0x100),
+	DEFINE_RES_IRQ(evt2irq(0xc20)),
+};
+
+static struct platform_device scif1_device = {
+	.name		= "sh-sci",
+	.id		= 1,
+	.resource	= scif1_resources,
+	.num_resources	= ARRAY_SIZE(scif1_resources),
+	.dev		= {
+		.platform_data	= &scif1_platform_data,
 	},
 };
 
@@ -80,19 +98,23 @@ static struct resource usb_ohci_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
-		.start	= 67,
-		.end	= 67,
+		.start	= evt2irq(0xa60),
+		.end	= evt2irq(0xa60),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
 
 static u64 usb_ohci_dma_mask = 0xffffffffUL;
+
+static struct usb_ohci_pdata usb_ohci_pdata;
+
 static struct platform_device usb_ohci_device = {
-	.name		= "sh_ohci",
+	.name		= "ohci-platform",
 	.id		= -1,
 	.dev = {
 		.dma_mask		= &usb_ohci_dma_mask,
 		.coherent_dma_mask	= 0xffffffff,
+		.platform_data		= &usb_ohci_pdata,
 	},
 	.num_resources	= ARRAY_SIZE(usb_ohci_resources),
 	.resource	= usb_ohci_resources,
@@ -107,8 +129,8 @@ static struct resource usbf_resources[] = {
 	},
 	[1] = {
 		.name	= "sh_udc",
-		.start	= 65,
-		.end	= 65,
+		.start	= evt2irq(0xa20),
+		.end	= evt2irq(0xa20),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -124,181 +146,38 @@ static struct platform_device usbf_device = {
 	.resource	= usbf_resources,
 };
 
-static struct sh_timer_config cmt0_platform_data = {
-	.name = "CMT0",
-	.channel_offset = 0x10,
-	.timer_bit = 0,
-	.clk = "peripheral_clk",
-	.clockevent_rating = 125,
-	.clocksource_rating = 125,
+static struct sh_timer_config cmt_platform_data = {
+	.channels_mask = 0x1f,
 };
 
-static struct resource cmt0_resources[] = {
-	[0] = {
-		.name	= "CMT0",
-		.start	= 0x044a0010,
-		.end	= 0x044a001b,
-		.flags	= IORESOURCE_MEM,
-	},
-	[1] = {
-		.start	= 104,
-		.flags	= IORESOURCE_IRQ,
-	},
+static struct resource cmt_resources[] = {
+	DEFINE_RES_MEM(0x044a0000, 0x60),
+	DEFINE_RES_IRQ(evt2irq(0xf00)),
 };
 
-static struct platform_device cmt0_device = {
-	.name		= "sh_cmt",
+static struct platform_device cmt_device = {
+	.name		= "sh-cmt-32",
 	.id		= 0,
 	.dev = {
-		.platform_data	= &cmt0_platform_data,
+		.platform_data	= &cmt_platform_data,
 	},
-	.resource	= cmt0_resources,
-	.num_resources	= ARRAY_SIZE(cmt0_resources),
-};
-
-static struct sh_timer_config cmt1_platform_data = {
-	.name = "CMT1",
-	.channel_offset = 0x20,
-	.timer_bit = 1,
-	.clk = "peripheral_clk",
-};
-
-static struct resource cmt1_resources[] = {
-	[0] = {
-		.name	= "CMT1",
-		.start	= 0x044a0020,
-		.end	= 0x044a002b,
-		.flags	= IORESOURCE_MEM,
-	},
-	[1] = {
-		.start	= 104,
-		.flags	= IORESOURCE_IRQ,
-	},
-};
-
-static struct platform_device cmt1_device = {
-	.name		= "sh_cmt",
-	.id		= 1,
-	.dev = {
-		.platform_data	= &cmt1_platform_data,
-	},
-	.resource	= cmt1_resources,
-	.num_resources	= ARRAY_SIZE(cmt1_resources),
-};
-
-static struct sh_timer_config cmt2_platform_data = {
-	.name = "CMT2",
-	.channel_offset = 0x30,
-	.timer_bit = 2,
-	.clk = "peripheral_clk",
-};
-
-static struct resource cmt2_resources[] = {
-	[0] = {
-		.name	= "CMT2",
-		.start	= 0x044a0030,
-		.end	= 0x044a003b,
-		.flags	= IORESOURCE_MEM,
-	},
-	[1] = {
-		.start	= 104,
-		.flags	= IORESOURCE_IRQ,
-	},
-};
-
-static struct platform_device cmt2_device = {
-	.name		= "sh_cmt",
-	.id		= 2,
-	.dev = {
-		.platform_data	= &cmt2_platform_data,
-	},
-	.resource	= cmt2_resources,
-	.num_resources	= ARRAY_SIZE(cmt2_resources),
-};
-
-static struct sh_timer_config cmt3_platform_data = {
-	.name = "CMT3",
-	.channel_offset = 0x40,
-	.timer_bit = 3,
-	.clk = "peripheral_clk",
-};
-
-static struct resource cmt3_resources[] = {
-	[0] = {
-		.name	= "CMT3",
-		.start	= 0x044a0040,
-		.end	= 0x044a004b,
-		.flags	= IORESOURCE_MEM,
-	},
-	[1] = {
-		.start	= 104,
-		.flags	= IORESOURCE_IRQ,
-	},
-};
-
-static struct platform_device cmt3_device = {
-	.name		= "sh_cmt",
-	.id		= 3,
-	.dev = {
-		.platform_data	= &cmt3_platform_data,
-	},
-	.resource	= cmt3_resources,
-	.num_resources	= ARRAY_SIZE(cmt3_resources),
-};
-
-static struct sh_timer_config cmt4_platform_data = {
-	.name = "CMT4",
-	.channel_offset = 0x50,
-	.timer_bit = 4,
-	.clk = "peripheral_clk",
-};
-
-static struct resource cmt4_resources[] = {
-	[0] = {
-		.name	= "CMT4",
-		.start	= 0x044a0050,
-		.end	= 0x044a005b,
-		.flags	= IORESOURCE_MEM,
-	},
-	[1] = {
-		.start	= 104,
-		.flags	= IORESOURCE_IRQ,
-	},
-};
-
-static struct platform_device cmt4_device = {
-	.name		= "sh_cmt",
-	.id		= 4,
-	.dev = {
-		.platform_data	= &cmt4_platform_data,
-	},
-	.resource	= cmt4_resources,
-	.num_resources	= ARRAY_SIZE(cmt4_resources),
+	.resource	= cmt_resources,
+	.num_resources	= ARRAY_SIZE(cmt_resources),
 };
 
 static struct sh_timer_config tmu0_platform_data = {
-	.name = "TMU0",
-	.channel_offset = 0x02,
-	.timer_bit = 0,
-	.clk = "peripheral_clk",
-	.clockevent_rating = 200,
+	.channels_mask = 7,
 };
 
 static struct resource tmu0_resources[] = {
-	[0] = {
-		.name	= "TMU0",
-		.start	= 0xa412fe94,
-		.end	= 0xa412fe9f,
-		.flags	= IORESOURCE_MEM,
-	},
-	[1] = {
-		.start	= 16,
-		.flags	= IORESOURCE_IRQ,
-	},
+	DEFINE_RES_MEM(0xa412fe90, 0x28),
+	DEFINE_RES_IRQ(evt2irq(0x400)),
+	DEFINE_RES_IRQ(evt2irq(0x420)),
+	DEFINE_RES_IRQ(evt2irq(0x440)),
 };
 
 static struct platform_device tmu0_device = {
-	.name		= "sh_tmu",
+	.name		= "sh-tmu-sh3",
 	.id		= 0,
 	.dev = {
 		.platform_data	= &tmu0_platform_data,
@@ -307,78 +186,12 @@ static struct platform_device tmu0_device = {
 	.num_resources	= ARRAY_SIZE(tmu0_resources),
 };
 
-static struct sh_timer_config tmu1_platform_data = {
-	.name = "TMU1",
-	.channel_offset = 0xe,
-	.timer_bit = 1,
-	.clk = "peripheral_clk",
-	.clocksource_rating = 200,
-};
-
-static struct resource tmu1_resources[] = {
-	[0] = {
-		.name	= "TMU1",
-		.start	= 0xa412fea0,
-		.end	= 0xa412feab,
-		.flags	= IORESOURCE_MEM,
-	},
-	[1] = {
-		.start	= 17,
-		.flags	= IORESOURCE_IRQ,
-	},
-};
-
-static struct platform_device tmu1_device = {
-	.name		= "sh_tmu",
-	.id		= 1,
-	.dev = {
-		.platform_data	= &tmu1_platform_data,
-	},
-	.resource	= tmu1_resources,
-	.num_resources	= ARRAY_SIZE(tmu1_resources),
-};
-
-static struct sh_timer_config tmu2_platform_data = {
-	.name = "TMU2",
-	.channel_offset = 0x1a,
-	.timer_bit = 2,
-	.clk = "peripheral_clk",
-};
-
-static struct resource tmu2_resources[] = {
-	[0] = {
-		.name	= "TMU2",
-		.start	= 0xa412feac,
-		.end	= 0xa412feb5,
-		.flags	= IORESOURCE_MEM,
-	},
-	[1] = {
-		.start	= 18,
-		.flags	= IORESOURCE_IRQ,
-	},
-};
-
-static struct platform_device tmu2_device = {
-	.name		= "sh_tmu",
-	.id		= 2,
-	.dev = {
-		.platform_data	= &tmu2_platform_data,
-	},
-	.resource	= tmu2_resources,
-	.num_resources	= ARRAY_SIZE(tmu2_resources),
-};
-
 static struct platform_device *sh7720_devices[] __initdata = {
-	&cmt0_device,
-	&cmt1_device,
-	&cmt2_device,
-	&cmt3_device,
-	&cmt4_device,
+	&scif0_device,
+	&scif1_device,
+	&cmt_device,
 	&tmu0_device,
-	&tmu1_device,
-	&tmu2_device,
 	&rtc_device,
-	&sci_device,
 	&usb_ohci_device,
 	&usbf_device,
 };
@@ -391,19 +204,15 @@ static int __init sh7720_devices_setup(void)
 arch_initcall(sh7720_devices_setup);
 
 static struct platform_device *sh7720_early_devices[] __initdata = {
-	&cmt0_device,
-	&cmt1_device,
-	&cmt2_device,
-	&cmt3_device,
-	&cmt4_device,
+	&scif0_device,
+	&scif1_device,
+	&cmt_device,
 	&tmu0_device,
-	&tmu1_device,
-	&tmu2_device,
 };
 
 void __init plat_early_device_setup(void)
 {
-	early_platform_add_devices(sh7720_early_devices,
+	sh_early_platform_add_devices(sh7720_early_devices,
 				   ARRAY_SIZE(sh7720_early_devices));
 }
 

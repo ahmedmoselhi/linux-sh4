@@ -1,10 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2001 David J. Mckay (david.mckay@st.com)
  * Copyright (C) 2003, 2004 Paul Mundt
  * Copyright (C) 2004 Richard Curnow
- *
- * May be copied or modified under the terms of the GNU General Public
- * License.  See linux/COPYING for more information.
  *
  * Support functions for the SH5 PCI hardware.
  */
@@ -20,7 +18,6 @@
 #include <linux/types.h>
 #include <linux/irq.h>
 #include <cpu/irq.h>
-#include <asm/pci.h>
 #include <asm/io.h>
 #include "pci-sh5.h"
 
@@ -89,14 +86,13 @@ static irqreturn_t pcish5_serr_irq(int irq, void *dev_id)
 	return IRQ_NONE;
 }
 
-static struct resource sh5_io_resource = { /* place holder */ };
-static struct resource sh5_mem_resource = { /* place holder */ };
+static struct resource sh5_pci_resources[2];
 
 static struct pci_channel sh5pci_controller = {
 	.pci_ops		= &sh5_pci_ops,
-	.mem_resource		= &sh5_mem_resource,
+	.resources		= sh5_pci_resources,
+	.nr_resources		= ARRAY_SIZE(sh5_pci_resources),
 	.mem_offset		= 0x00000000,
-	.io_resource		= &sh5_io_resource,
 	.io_offset		= 0x00000000,
 };
 
@@ -108,23 +104,23 @@ static int __init sh5pci_init(void)
 	u32 uval;
 
         if (request_irq(IRQ_ERR, pcish5_err_irq,
-                        IRQF_DISABLED, "PCI Error",NULL) < 0) {
+                        0, "PCI Error",NULL) < 0) {
                 printk(KERN_ERR "PCISH5: Cannot hook PCI_PERR interrupt\n");
                 return -EINVAL;
         }
 
         if (request_irq(IRQ_SERR, pcish5_serr_irq,
-                        IRQF_DISABLED, "PCI SERR interrupt", NULL) < 0) {
+                        0, "PCI SERR interrupt", NULL) < 0) {
                 printk(KERN_ERR "PCISH5: Cannot hook PCI_SERR interrupt\n");
                 return -EINVAL;
         }
 
-	pcicr_virt = (unsigned long)ioremap_nocache(SH5PCI_ICR_BASE, 1024);
+	pcicr_virt = (unsigned long)ioremap(SH5PCI_ICR_BASE, 1024);
 	if (!pcicr_virt) {
 		panic("Unable to remap PCICR\n");
 	}
 
-	PCI_IO_AREA = (unsigned long)ioremap_nocache(SH5PCI_IO_BASE, 0x10000);
+	PCI_IO_AREA = (unsigned long)ioremap(SH5PCI_IO_BASE, 0x10000);
 	if (!PCI_IO_AREA) {
 		panic("Unable to remap PCIIO\n");
 	}
@@ -210,14 +206,12 @@ static int __init sh5pci_init(void)
         SH5PCI_WRITE(AINTM, ~0);
         SH5PCI_WRITE(PINTM, ~0);
 
-	sh5_io_resource.start = PCI_IO_AREA;
-	sh5_io_resource.end = PCI_IO_AREA + 0x10000;
+	sh5_pci_resources[0].start = PCI_IO_AREA;
+	sh5_pci_resources[0].end = PCI_IO_AREA + 0x10000;
 
-	sh5_mem_resource.start = memStart;
-	sh5_mem_resource.end = memStart + memSize;
+	sh5_pci_resources[1].start = memStart;
+	sh5_pci_resources[1].end = memStart + memSize;
 
-	register_pci_controller(&sh5pci_controller);
-
-	return 0;
+	return register_pci_controller(&sh5pci_controller);
 }
 arch_initcall(sh5pci_init);

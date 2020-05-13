@@ -1,11 +1,7 @@
-/* 
+/* SPDX-License-Identifier: GPL-2.0
+ *
  *  Copyright (C) 1999, 2000, 2002  Niibe Yutaka
  *  Copyright (C) 2003 - 2008  Paul Mundt
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
- *
  */
 
 ! NOTE:
@@ -45,7 +41,7 @@
  */
 #include <asm/dwarf.h>
 
-#if defined(CONFIG_PREEMPT)
+#if defined(CONFIG_PREEMPTION)
 #  define preempt_stop()	cli ; TRACE_IRQS_OFF
 #else
 #  define preempt_stop()
@@ -70,8 +66,14 @@ ret_from_exception:
 	CFI_STARTPROC simple
 	CFI_DEF_CFA r14, 0
 	CFI_REL_OFFSET 17, 64
-	CFI_REL_OFFSET 15, 0
+	CFI_REL_OFFSET 15, 60
 	CFI_REL_OFFSET 14, 56
+	CFI_REL_OFFSET 13, 52
+	CFI_REL_OFFSET 12, 48
+	CFI_REL_OFFSET 11, 44
+	CFI_REL_OFFSET 10, 40
+	CFI_REL_OFFSET 9, 36
+	CFI_REL_OFFSET 8, 32
 	preempt_stop()
 ENTRY(ret_from_irq)
 	!
@@ -82,7 +84,7 @@ ENTRY(ret_from_irq)
 	get_current_thread_info r8, r0
 	bt	resume_kernel	! Yes, it's from kernel, go back soon
 
-#ifdef CONFIG_PREEMPT
+#ifdef CONFIG_PREEMPTION
 	bra	resume_userspace
 	 nop
 ENTRY(resume_kernel)
@@ -102,7 +104,7 @@ need_resched:
 	and	#(0xf0>>1), r0		! interrupts off (exception path)?
 	cmp/eq	#(0xf0>>1), r0
 	bt	noresched
-	mov.l	3f, r0
+	mov.l	1f, r0
 	jsr	@r0			! call preempt_schedule_irq
 	 nop
 	bra	need_resched
@@ -113,9 +115,7 @@ noresched:
 	 nop
 
 	.align 2
-1:	.long	PREEMPT_ACTIVE
-2:	.long	schedule
-3:	.long	preempt_schedule_irq
+1:	.long	preempt_schedule_irq
 #endif
 
 ENTRY(resume_userspace)
@@ -133,12 +133,13 @@ work_pending:
 	! r8: current_thread_info
 	! t:  result of "tst	#_TIF_NEED_RESCHED, r0"
 	bf/s	work_resched
-	 tst	#(_TIF_SIGPENDING | _TIF_RESTORE_SIGMASK), r0
+	 tst	#(_TIF_SIGPENDING | _TIF_NOTIFY_RESUME), r0
 work_notifysig:
 	bt/s	__restore_all
 	 mov	r15, r4
 	mov	r12, r5		! set arg1(save_r0)
 	mov	r0, r6
+	sti
 	mov.l	2f, r1
 	mov.l	3f, r0
 	jmp	@r1
@@ -188,10 +189,10 @@ syscall_trace_entry:
 	!			Reload R0-R4 from kernel stack, where the
 	!   	    	    	parent may have modified them using
 	!   	    	    	ptrace(POKEUSR).  (Note that R0-R2 are
-	!   	    	    	used by the system call handler directly
-	!   	    	    	from the kernel stack anyway, so don't need
-	!   	    	    	to be reloaded here.)  This allows the parent
-	!   	    	    	to rewrite system calls and args on the fly.
+	!   	    	    	reloaded from the kernel stack by syscall_call
+	!   	    	    	below, so don't need to be reloaded here.)
+	!   	    	    	This allows the parent to rewrite system calls
+	!   	    	    	and args on the fly.
 	mov.l	@(OFF_R4,r15), r4   ! arg0
 	mov.l	@(OFF_R5,r15), r5
 	mov.l	@(OFF_R6,r15), r6
@@ -250,7 +251,7 @@ debug_trap:
 	mov.l	@r8, r8
 	jsr	@r8
 	 nop
-	bra	__restore_all
+	bra	ret_from_exception
 	 nop
 	CFI_ENDPROC
 
@@ -263,19 +264,28 @@ debug_trap:
  *	Syscall #: R3
  *	Arguments #0 to #3: R4--R7
  *	Arguments #4 to #6: R0, R1, R2
- *	TRA: (number of arguments + ABI revision) x 4
+ *	TRA: See following table.
  *
- * This code also handles delegating other traps to the BIOS/gdb stub
- * according to:
- *
- * Trap number
  * (TRA>>2)	Purpose
  * --------	-------
  * 0x00-0x0f	original SH-3/4 syscall ABI (not in general use).
  * 0x10-0x1f	general SH-3/4 syscall ABI.
- * 0x20-0x2f	syscall ABI for SH-2 parts.
+ *      0x1f	unified SH-2/3/4 syscall ABI (preferred).
+ * 0x20-0x2f	original SH-2 syscall ABI.
  * 0x30-0x3f	debug traps used by the kernel.
  * 0x40-0xff	Not supported by all parts, so left unhandled.
+ *
+ * For making system calls, any trap number in the range for the
+ * given cpu model may be used, but the unified trap number 0x1f is
+ * preferred for compatibility with all models.
+ *
+ * The low bits of the trap number were once documented as matching
+ * the number of arguments, but they were never actually used as such
+ * by the kernel. SH-2 originally used its own separate trap range
+ * because several hardware exceptions fell in the range used for the
+ * SH-3/4 syscall ABI.
+ *
+ * This code also handles delegating other traps to the BIOS/gdb stub.
  *
  * Note: When we're first called, the TRA value must be shifted
  * right 2 bits in order to get the value that was used as the "trapa"
@@ -290,6 +300,19 @@ ret_from_fork:
 	 mov	r0, r4
 	bra	syscall_exit
 	 nop
+
+	.align	2
+	.globl	ret_from_kernel_thread
+ret_from_kernel_thread:
+	mov.l	1f, r8
+	jsr	@r8
+	 mov	r0, r4
+	mov.l	@(OFF_R5,r15), r5   ! fn
+	jsr	@r5
+	 mov.l	@(OFF_R4,r15), r4   ! arg
+	bra	syscall_exit
+	 nop
+
 	.align	2
 1:	.long	schedule_tail
 
@@ -339,8 +362,15 @@ syscall_call:
 	mov.l	3f, r8		! Load the address of sys_call_table
 	add	r8, r3
 	mov.l	@r3, r8
+	mov.l	@(OFF_R2,r15), r2
+	mov.l	@(OFF_R1,r15), r1
+	mov.l	@(OFF_R0,r15), r0
+	mov.l	r2, @-r15
+	mov.l	r1, @-r15
+	mov.l	r0, @-r15
 	jsr	@r8	    	! jump to specific syscall handler
 	 nop
+	add	#12, r15
 	mov.l	@(OFF_R0,r15), r12		! save r0
 	mov.l	r0, @(OFF_R0,r15)		! save the return value
 	!
@@ -358,7 +388,6 @@ syscall_exit:
 	bf	syscall_exit_work
 	bra	__restore_all
 	 nop
-ret_from_exception_end:
 	.align	2
 #if !defined(CONFIG_CPU_SH2)
 1:	.long	TRA
@@ -367,73 +396,3 @@ ret_from_exception_end:
 3:	.long	sys_call_table
 7:	.long	do_syscall_trace_enter
 8:	.long	do_syscall_trace_leave
-
-	.section	.debug_frame,"",@progbits
-.LCIE:
-	.ualong	.LCIE_end - .LCIE_start
-.LCIE_start:
-	.ualong	0xffffffff	/* CIE ID */
-	.byte	0x1		/* Version number */
-	.string	""		/* NUL-terminated augmentation string */
-	.uleb128 0x1		/* Code alignment factor */
-	.sleb128 -4		/* Data alignment factor */
-	.byte	0x11		/* Return address register column */
-				/* Augmentation length and data (none) */
-	.byte	0xc		/* DW_CFA_def_cfa */
-	.uleb128 0xf		/* r15 */
-	.uleb128 0x0		/* offset 0 */
-
-	.align 2
-.LCIE_end:
-
-	.ualong	.LFDE_end-.LFDE_start	/* Length FDE */
-.LFDE_start:
-	.ualong	.LCIE			/* CIE pointer */
-	.ualong	ret_from_exception-4	/* absolute start address */
-	.ualong	ret_from_exception_end-(ret_from_exception-4)
-					/* length */
-	.byte	0x4			/* DW_CFA_advance_loc4 */
-	.ualong	0			/*   by */
-	.byte	0xe			/* DW_CFA_def_cfa_offset */
-	.uleb128 OFF_TRA+4		/*   advance CFA by sizeof(ptregs)+4 */
-
-	.byte	0x80+0			/* DW_CFA_offset r0 */
-	.uleb128 ((OFF_TRA+4)-(OFF_R0+(0*4)))>>2
-	.byte	0x80+1			/* DW_CFA_offset r1 */
-	.uleb128 ((OFF_TRA+4)-(OFF_R0+(1*4)))>>2
-	.byte	0x80+2			/* DW_CFA_offset r2 */
-	.uleb128 ((OFF_TRA+4)-(OFF_R0+(2*4)))>>2
-	.byte	0x80+3			/* DW_CFA_offset r3 */
-	.uleb128 ((OFF_TRA+4)-(OFF_R0+(3*4)))>>2
-	.byte	0x80+4			/* DW_CFA_offset r4 */
-	.uleb128 ((OFF_TRA+4)-(OFF_R0+(4*4)))>>2
-	.byte	0x80+5			/* DW_CFA_offset r5 */
-	.uleb128 ((OFF_TRA+4)-(OFF_R0+(5*4)))>>2
-	.byte	0x80+6			/* DW_CFA_offset r6 */
-	.uleb128 ((OFF_TRA+4)-(OFF_R0+(6*4)))>>2
-	.byte	0x80+7			/* DW_CFA_offset r7 */
-	.uleb128 ((OFF_TRA+4)-(OFF_R0+(7*4)))>>2
-	.byte	0x80+8			/* DW_CFA_offset r8 */
-	.uleb128 ((OFF_TRA+4)-(OFF_R0+(8*4)))>>2
-	.byte	0x80+9			/* DW_CFA_offset r9 */
-	.uleb128 ((OFF_TRA+4)-(OFF_R0+(9*4)))>>2
-	.byte	0x80+10			/* DW_CFA_offset r10 */
-	.uleb128 ((OFF_TRA+4)-(OFF_R0+(10*4)))>>2
-	.byte	0x80+11			/* DW_CFA_offset r11 */
-	.uleb128 ((OFF_TRA+4)-(OFF_R0+(11*4)))>>2
-	.byte	0x80+12			/* DW_CFA_offset r12 */
-	.uleb128 ((OFF_TRA+4)-(OFF_R0+(12*4)))>>2
-	.byte	0x80+13			/* DW_CFA_offset r13 */
-	.uleb128 ((OFF_TRA+4)-(OFF_R0+(13*4)))>>2
-	.byte	0x80+14			/* DW_CFA_offset r14 */
-	.uleb128 ((OFF_TRA+4)-(OFF_R0+(14*4)))>>2
-	.byte	0x80+15			/* DW_CFA_offset r15 */
-	.uleb128 ((OFF_TRA+4)-OFF_SP)>>2
-	.byte	0x80+16			/* DW_CFA_offset r16=pc */
-	.uleb128 ((OFF_TRA+4)-OFF_PC)>>2
-	.byte	0x80+17			/* DW_CFA_offset r17=pr */
-	.uleb128 ((OFF_TRA+4)-OFF_PR)>>2
-	.align 2
-.LFDE_end:
-
-	.previous

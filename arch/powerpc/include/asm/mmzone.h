@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Written by Kanoj Sarcar (kanoj@sgi.com) Aug 99
  *
@@ -30,19 +31,20 @@ extern struct pglist_data *node_data[];
  */
 
 extern int numa_cpu_lookup_table[];
-extern cpumask_t numa_cpumask_lookup_table[];
+extern cpumask_var_t node_to_cpumask_map[];
 #ifdef CONFIG_MEMORY_HOTPLUG
 extern unsigned long max_pfn;
+u64 memory_hotplug_max(void);
+#else
+#define memory_hotplug_max() memblock_end_of_DRAM()
 #endif
 
-/*
- * Following are macros that each numa implmentation must define.
- */
-
-#define node_start_pfn(nid)	(NODE_DATA(nid)->node_start_pfn)
-#define node_end_pfn(nid)	(NODE_DATA(nid)->node_end_pfn)
-
+#else
+#define memory_hotplug_max() memblock_end_of_DRAM()
 #endif /* CONFIG_NEED_MULTIPLE_NODES */
+#ifdef CONFIG_FA_DUMP
+#define __HAVE_ARCH_RESERVED_KERNEL_PAGES
+#endif
 
 #endif /* __KERNEL__ */
 #endif /* _ASM_MMZONE_H_ */

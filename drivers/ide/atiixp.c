@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  Copyright (C) 2003 ATI Inc. <hyu@ati.com>
  *  Copyright (C) 2004,2007 Bartlomiej Zolnierkiewicz
@@ -19,12 +20,12 @@
 #define ATIIXP_IDE_UDMA_CONTROL		0x54
 #define ATIIXP_IDE_UDMA_MODE		0x56
 
-typedef struct {
+struct atiixp_ide_timing {
 	u8 command_width;
 	u8 recover_width;
-} atiixp_ide_timing;
+};
 
-static atiixp_ide_timing pio_timing[] = {
+static struct atiixp_ide_timing pio_timing[] = {
 	{ 0x05, 0x0d },
 	{ 0x04, 0x07 },
 	{ 0x03, 0x04 },
@@ -32,7 +33,7 @@ static atiixp_ide_timing pio_timing[] = {
 	{ 0x02, 0x00 },
 };
 
-static atiixp_ide_timing mdma_timing[] = {
+static struct atiixp_ide_timing mdma_timing[] = {
 	{ 0x07, 0x07 },
 	{ 0x02, 0x01 },
 	{ 0x02, 0x00 },
@@ -42,19 +43,20 @@ static DEFINE_SPINLOCK(atiixp_lock);
 
 /**
  *	atiixp_set_pio_mode	-	set host controller for PIO mode
+ *	@hwif: port
  *	@drive: drive
- *	@pio: PIO mode number
  *
  *	Set the interface PIO mode.
  */
 
-static void atiixp_set_pio_mode(ide_drive_t *drive, const u8 pio)
+static void atiixp_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
-	struct pci_dev *dev = to_pci_dev(drive->hwif->dev);
+	struct pci_dev *dev = to_pci_dev(hwif->dev);
 	unsigned long flags;
 	int timing_shift = (drive->dn ^ 1) * 8;
 	u32 pio_timing_data;
 	u16 pio_mode_data;
+	const u8 pio = drive->pio_mode - XFER_PIO_0;
 
 	spin_lock_irqsave(&atiixp_lock, flags);
 
@@ -74,21 +76,22 @@ static void atiixp_set_pio_mode(ide_drive_t *drive, const u8 pio)
 
 /**
  *	atiixp_set_dma_mode	-	set host controller for DMA mode
+ *	@hwif: port
  *	@drive: drive
- *	@speed: DMA mode
  *
  *	Set a ATIIXP host controller to the desired DMA mode.  This involves
  *	programming the right timing data into the PCI configuration space.
  */
 
-static void atiixp_set_dma_mode(ide_drive_t *drive, const u8 speed)
+static void atiixp_set_dma_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
-	struct pci_dev *dev = to_pci_dev(drive->hwif->dev);
+	struct pci_dev *dev = to_pci_dev(hwif->dev);
 	unsigned long flags;
 	int timing_shift = (drive->dn ^ 1) * 8;
 	u32 tmp32;
 	u16 tmp16;
 	u16 udma_ctl = 0;
+	const u8 speed = drive->dma_mode;
 
 	spin_lock_irqsave(&atiixp_lock, flags);
 
@@ -137,7 +140,7 @@ static const struct ide_port_ops atiixp_port_ops = {
 	.cable_detect		= atiixp_cable_detect,
 };
 
-static const struct ide_port_info atiixp_pci_info[] __devinitdata = {
+static const struct ide_port_info atiixp_pci_info[] = {
 	{	/* 0: IXP200/300/400/700 */
 		.name		= DRV_NAME,
 		.enablebits	= {{0x48,0x01,0x00}, {0x48,0x08,0x00}},
@@ -166,7 +169,7 @@ static const struct ide_port_info atiixp_pci_info[] __devinitdata = {
  *	finds a device matching our IDE device tables.
  */
 
-static int __devinit atiixp_init_one(struct pci_dev *dev, const struct pci_device_id *id)
+static int atiixp_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 {
 	return ide_pci_init_one(dev, &atiixp_pci_info[id->driver_data], NULL);
 }

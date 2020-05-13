@@ -1,14 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Signal trampoline for 64 bits processes in a ppc64 kernel for
  * use in the vDSO
  *
  * Copyright (C) 2004 Benjamin Herrenschmuidt (benh@kernel.crashing.org), IBM Corp.
  * Copyright (C) 2004 Alan Modra (amodra@au.ibm.com)), IBM Corp.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 #include <asm/processor.h>
 #include <asm/ppc_asm.h>
@@ -20,7 +16,7 @@
 
 /* The nop here is a hack.  The dwarf2 unwind routines subtract 1 from
    the return address to get an address in the middle of the presumed
-   call instruction.  Since we don't have a call here, we artifically
+   call instruction.  Since we don't have a call here, we artificially
    extend the range covered by the unwind info by padding before the
    real start.  */
 	nop
@@ -142,6 +138,13 @@ V_FUNCTION_END(__kernel_sigtramp_rt64)
 /* Size of CR reg in DWARF unwind info. */
 #define CRSIZE	4
 
+/* Offset of CR reg within a full word. */
+#ifdef __LITTLE_ENDIAN__
+#define CROFF 0
+#else
+#define CROFF (RSIZE - CRSIZE)
+#endif
+
 /* This is the offset of the VMX reg pointer.  */
 #define VREGS	48*RSIZE+33*8
 
@@ -181,7 +184,14 @@ V_FUNCTION_END(__kernel_sigtramp_rt64)
   rsave (31, 31*RSIZE);							\
   rsave (67, 32*RSIZE);		/* ap, used as temp for nip */		\
   rsave (65, 36*RSIZE);		/* lr */				\
-  rsave (70, 38*RSIZE + (RSIZE - CRSIZE)) /* cr */
+  rsave (68, 38*RSIZE + CROFF);	/* cr fields */				\
+  rsave (69, 38*RSIZE + CROFF);						\
+  rsave (70, 38*RSIZE + CROFF);						\
+  rsave (71, 38*RSIZE + CROFF);						\
+  rsave (72, 38*RSIZE + CROFF);						\
+  rsave (73, 38*RSIZE + CROFF);						\
+  rsave (74, 38*RSIZE + CROFF);						\
+  rsave (75, 38*RSIZE + CROFF)
 
 /* Describe where the FP regs are saved.  */
 #define EH_FRAME_FP \

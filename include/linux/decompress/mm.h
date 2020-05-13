@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * linux/compr_mm.h
  *
@@ -16,7 +17,7 @@
 
 /*
  * Some architectures want to ensure there is no local data in their
- * pre-boot environment, so that data can arbitarily relocated (via
+ * pre-boot environment, so that data can arbitrarily relocated (via
  * GOT references).  This is achieved by defining STATIC_RW_DATA to
  * be null.
  */
@@ -35,7 +36,7 @@ static void *malloc(int size)
 	void *p;
 
 	if (size < 0)
-		error("Malloc error");
+		return NULL;
 	if (!malloc_ptr)
 		malloc_ptr = free_mem_ptr;
 
@@ -45,7 +46,7 @@ static void *malloc(int size)
 	malloc_ptr += size;
 
 	if (free_mem_end_ptr && malloc_ptr >= free_mem_end_ptr)
-		error("Out of memory");
+		return NULL;
 
 	malloc_count++;
 	return p;
@@ -61,7 +62,7 @@ static void free(void *where)
 #define large_malloc(a) malloc(a)
 #define large_free(a) free(a)
 
-#define set_error_fn(x)
+#define INIT
 
 #else /* STATIC */
 
@@ -70,6 +71,7 @@ static void free(void *where)
 #include <linux/kernel.h>
 #include <linux/fs.h>
 #include <linux/string.h>
+#include <linux/slab.h>
 #include <linux/vmalloc.h>
 
 /* Use defines rather than static inline in order to avoid spurious
@@ -82,9 +84,7 @@ static void free(void *where)
 #define large_malloc(a) vmalloc(a)
 #define large_free(a) vfree(a)
 
-static void(*error)(char *m);
-#define set_error_fn(x) error = x;
-
+#define INIT __init
 #define STATIC
 
 #include <linux/init.h>

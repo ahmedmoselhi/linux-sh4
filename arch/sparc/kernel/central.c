@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /* central.c: Central FHC driver for Sunfire/Starfire/Wildfire.
  *
  * Copyright (C) 1997, 1999, 2008 David S. Miller (davem@davemloft.net)
@@ -5,6 +6,8 @@
 
 #include <linux/kernel.h>
 #include <linux/types.h>
+#include <linux/slab.h>
+#include <linux/export.h>
 #include <linux/string.h>
 #include <linux/init.h>
 #include <linux/of_device.h>
@@ -31,7 +34,7 @@ struct fhc {
 	struct platform_device	leds_pdev;
 };
 
-static int __devinit clock_board_calc_nslots(struct clock_board *p)
+static int clock_board_calc_nslots(struct clock_board *p)
 {
 	u8 reg = upa_readb(p->clock_regs + CLOCK_STAT1) & 0xc0;
 
@@ -58,8 +61,7 @@ static int __devinit clock_board_calc_nslots(struct clock_board *p)
 	}
 }
 
-static int __devinit clock_board_probe(struct of_device *op,
-				       const struct of_device_id *match)
+static int clock_board_probe(struct platform_device *op)
 {
 	struct clock_board *p = kzalloc(sizeof(*p), GFP_KERNEL);
 	int err = -ENOMEM;
@@ -140,23 +142,22 @@ out_free:
 	goto out;
 }
 
-static struct of_device_id __initdata clock_board_match[] = {
+static const struct of_device_id clock_board_match[] = {
 	{
 		.name = "clock-board",
 	},
 	{},
 };
 
-static struct of_platform_driver clock_board_driver = {
-	.match_table	= clock_board_match,
+static struct platform_driver clock_board_driver = {
 	.probe		= clock_board_probe,
-	.driver		= {
-		.name	= "clock_board",
+	.driver = {
+		.name = "clock_board",
+		.of_match_table = clock_board_match,
 	},
 };
 
-static int __devinit fhc_probe(struct of_device *op,
-			       const struct of_device_id *match)
+static int fhc_probe(struct platform_device *op)
 {
 	struct fhc *p = kzalloc(sizeof(*p), GFP_KERNEL);
 	int err = -ENOMEM;
@@ -167,7 +168,7 @@ static int __devinit fhc_probe(struct of_device *op,
 		goto out;
 	}
 
-	if (!strcmp(op->node->parent->name, "central"))
+	if (of_node_name_eq(op->dev.of_node->parent, "central"))
 		p->central = true;
 
 	p->pregs = of_ioremap(&op->resource[0], 0,
@@ -182,7 +183,7 @@ static int __devinit fhc_probe(struct of_device *op,
 		reg = upa_readl(p->pregs + FHC_PREGS_BSR);
 		p->board_num = ((reg >> 16) & 1) | ((reg >> 12) & 0x0e);
 	} else {
-		p->board_num = of_getintprop_default(op->node, "board#", -1);
+		p->board_num = of_getintprop_default(op->dev.of_node, "board#", -1);
 		if (p->board_num == -1) {
 			printk(KERN_ERR "fhc: No board# property\n");
 			goto out_unmap_pregs;
@@ -245,26 +246,26 @@ out_free:
 	goto out;
 }
 
-static struct of_device_id __initdata fhc_match[] = {
+static const struct of_device_id fhc_match[] = {
 	{
 		.name = "fhc",
 	},
 	{},
 };
 
-static struct of_platform_driver fhc_driver = {
-	.match_table	= fhc_match,
+static struct platform_driver fhc_driver = {
 	.probe		= fhc_probe,
-	.driver		= {
-		.name	= "fhc",
+	.driver = {
+		.name = "fhc",
+		.of_match_table = fhc_match,
 	},
 };
 
 static int __init sunfire_init(void)
 {
-	(void) of_register_driver(&fhc_driver, &of_platform_bus_type);
-	(void) of_register_driver(&clock_board_driver, &of_platform_bus_type);
+	(void) platform_driver_register(&fhc_driver);
+	(void) platform_driver_register(&clock_board_driver);
 	return 0;
 }
 
-subsys_initcall(sunfire_init);
+fs_initcall(sunfire_init);

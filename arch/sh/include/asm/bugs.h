@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_SH_BUGS_H
 #define __ASM_SH_BUGS_H
 
@@ -14,10 +15,14 @@
 
 #include <asm/processor.h>
 
+extern void select_idle_routine(void);
+
 static void __init check_bugs(void)
 {
 	extern unsigned long loops_per_jiffy;
 	char *p = &init_utsname()->machine[2]; /* "sh" */
+
+	select_idle_routine();
 
 	current_cpu_data.loops_per_jiffy = loops_per_jiffy;
 

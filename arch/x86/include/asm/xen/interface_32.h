@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /******************************************************************************
  * arch-x86_32.h
  *
@@ -31,6 +32,11 @@
 
 /* And the trap vector is... */
 #define TRAP_INSTR "int $0x82"
+
+#define __MACH2PHYS_VIRT_START 0xF5800000
+#define __MACH2PHYS_VIRT_END   0xF6800000
+
+#define __MACH2PHYS_SHIFT      2
 
 /*
  * Virtual addresses beyond this are not modifiable by guest OSes. The

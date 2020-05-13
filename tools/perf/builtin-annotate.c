@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * builtin-annotate.c
  *
@@ -7,1137 +8,643 @@
  */
 #include "builtin.h"
 
-#include "util/util.h"
-
 #include "util/color.h"
 #include <linux/list.h>
 #include "util/cache.h"
 #include <linux/rbtree.h>
+#include <linux/zalloc.h>
 #include "util/symbol.h"
-#include "util/string.h"
 
 #include "perf.h"
 #include "util/debug.h"
 
-#include "util/parse-options.h"
+#include "util/evlist.h"
+#include "util/evsel.h"
+#include "util/annotate.h"
+#include "util/event.h"
+#include <subcmd/parse-options.h>
 #include "util/parse-events.h"
-#include "util/thread.h"
+#include "util/sort.h"
+#include "util/hist.h"
+#include "util/dso.h"
+#include "util/machine.h"
+#include "util/map.h"
+#include "util/session.h"
+#include "util/tool.h"
+#include "util/data.h"
+#include "arch/common.h"
+#include "util/block-range.h"
+#include "util/map_symbol.h"
+#include "util/branch.h"
 
-static char		const *input_name = "perf.data";
+#include <dlfcn.h>
+#include <errno.h>
+#include <linux/bitmap.h>
+#include <linux/err.h>
 
-static char		default_sort_order[] = "comm,symbol";
-static char		*sort_order = default_sort_order;
-
-static int		force;
-static int		input;
-static int		show_mask = SHOW_KERNEL | SHOW_USER | SHOW_HV;
-
-static int		full_paths;
-
-static int		print_line;
-
-static unsigned long	page_size;
-static unsigned long	mmap_window = 32;
-
-static struct rb_root	threads;
-static struct thread	*last_match;
-
-
-struct sym_ext {
-	struct rb_node	node;
-	double		percent;
-	char		*path;
+struct perf_annotate {
+	struct perf_tool tool;
+	struct perf_session *session;
+	struct annotation_options opts;
+	bool	   use_tui, use_stdio, use_stdio2, use_gtk;
+	bool	   skip_missing;
+	bool	   has_br_stack;
+	bool	   group_set;
+	const char *sym_hist_filter;
+	const char *cpu_list;
+	DECLARE_BITMAP(cpu_bitmap, MAX_NR_CPUS);
 };
 
 /*
- * histogram, sorted on item, collects counts
+ * Given one basic block:
+ *
+ *	from	to		branch_i
+ *	* ----> *
+ *		|
+ *		| block
+ *		v
+ *		* ----> *
+ *		from	to	branch_i+1
+ *
+ * where the horizontal are the branches and the vertical is the executed
+ * block of instructions.
+ *
+ * We count, for each 'instruction', the number of blocks that covered it as
+ * well as count the ratio each branch is taken.
+ *
+ * We can do this without knowing the actual instruction stream by keeping
+ * track of the address ranges. We break down ranges such that there is no
+ * overlap and iterate from the start until the end.
+ *
+ * @acme: once we parse the objdump output _before_ processing the samples,
+ * we can easily fold the branch.cycles IPC bits in.
  */
-
-static struct rb_root hist;
-
-struct hist_entry {
-	struct rb_node	 rb_node;
-
-	struct thread	 *thread;
-	struct map	 *map;
-	struct dso	 *dso;
-	struct symbol	 *sym;
-	u64	 ip;
-	char		 level;
-
-	uint32_t	 count;
-};
-
-/*
- * configurable sorting bits
- */
-
-struct sort_entry {
-	struct list_head list;
-
-	const char *header;
-
-	int64_t (*cmp)(struct hist_entry *, struct hist_entry *);
-	int64_t (*collapse)(struct hist_entry *, struct hist_entry *);
-	size_t	(*print)(FILE *fp, struct hist_entry *);
-};
-
-/* --sort pid */
-
-static int64_t
-sort__thread_cmp(struct hist_entry *left, struct hist_entry *right)
+static void process_basic_block(struct addr_map_symbol *start,
+				struct addr_map_symbol *end,
+				struct branch_flags *flags)
 {
-	return right->thread->pid - left->thread->pid;
+	struct symbol *sym = start->ms.sym;
+	struct annotation *notes = sym ? symbol__annotation(sym) : NULL;
+	struct block_range_iter iter;
+	struct block_range *entry;
+
+	/*
+	 * Sanity; NULL isn't executable and the CPU cannot execute backwards
+	 */
+	if (!start->addr || start->addr > end->addr)
+		return;
+
+	iter = block_range__create(start->addr, end->addr);
+	if (!block_range_iter__valid(&iter))
+		return;
+
+	/*
+	 * First block in range is a branch target.
+	 */
+	entry = block_range_iter(&iter);
+	assert(entry->is_target);
+	entry->entry++;
+
+	do {
+		entry = block_range_iter(&iter);
+
+		entry->coverage++;
+		entry->sym = sym;
+
+		if (notes)
+			notes->max_coverage = max(notes->max_coverage, entry->coverage);
+
+	} while (block_range_iter__next(&iter));
+
+	/*
+	 * Last block in rage is a branch.
+	 */
+	entry = block_range_iter(&iter);
+	assert(entry->is_branch);
+	entry->taken++;
+	if (flags->predicted)
+		entry->pred++;
 }
 
-static size_t
-sort__thread_print(FILE *fp, struct hist_entry *self)
+static void process_branch_stack(struct branch_stack *bs, struct addr_location *al,
+				 struct perf_sample *sample)
 {
-	return fprintf(fp, "%16s:%5d", self->thread->comm ?: "", self->thread->pid);
-}
+	struct addr_map_symbol *prev = NULL;
+	struct branch_info *bi;
+	int i;
 
-static struct sort_entry sort_thread = {
-	.header = "         Command:  Pid",
-	.cmp	= sort__thread_cmp,
-	.print	= sort__thread_print,
-};
+	if (!bs || !bs->nr)
+		return;
 
-/* --sort comm */
+	bi = sample__resolve_bstack(sample, al);
+	if (!bi)
+		return;
 
-static int64_t
-sort__comm_cmp(struct hist_entry *left, struct hist_entry *right)
-{
-	return right->thread->pid - left->thread->pid;
-}
-
-static int64_t
-sort__comm_collapse(struct hist_entry *left, struct hist_entry *right)
-{
-	char *comm_l = left->thread->comm;
-	char *comm_r = right->thread->comm;
-
-	if (!comm_l || !comm_r) {
-		if (!comm_l && !comm_r)
-			return 0;
-		else if (!comm_l)
-			return -1;
-		else
-			return 1;
+	for (i = bs->nr - 1; i >= 0; i--) {
+		/*
+		 * XXX filter against symbol
+		 */
+		if (prev)
+			process_basic_block(prev, &bi[i].from, &bi[i].flags);
+		prev = &bi[i].to;
 	}
 
-	return strcmp(comm_l, comm_r);
+	free(bi);
 }
 
-static size_t
-sort__comm_print(FILE *fp, struct hist_entry *self)
+static int hist_iter__branch_callback(struct hist_entry_iter *iter,
+				      struct addr_location *al __maybe_unused,
+				      bool single __maybe_unused,
+				      void *arg __maybe_unused)
 {
-	return fprintf(fp, "%16s", self->thread->comm);
+	struct hist_entry *he = iter->he;
+	struct branch_info *bi;
+	struct perf_sample *sample = iter->sample;
+	struct evsel *evsel = iter->evsel;
+	int err;
+
+	bi = he->branch_info;
+	err = addr_map_symbol__inc_samples(&bi->from, sample, evsel);
+
+	if (err)
+		goto out;
+
+	err = addr_map_symbol__inc_samples(&bi->to, sample, evsel);
+
+out:
+	return err;
 }
 
-static struct sort_entry sort_comm = {
-	.header		= "         Command",
-	.cmp		= sort__comm_cmp,
-	.collapse	= sort__comm_collapse,
-	.print		= sort__comm_print,
-};
-
-/* --sort dso */
-
-static int64_t
-sort__dso_cmp(struct hist_entry *left, struct hist_entry *right)
+static int process_branch_callback(struct evsel *evsel,
+				   struct perf_sample *sample,
+				   struct addr_location *al __maybe_unused,
+				   struct perf_annotate *ann,
+				   struct machine *machine)
 {
-	struct dso *dso_l = left->dso;
-	struct dso *dso_r = right->dso;
+	struct hist_entry_iter iter = {
+		.evsel		= evsel,
+		.sample		= sample,
+		.add_entry_cb	= hist_iter__branch_callback,
+		.hide_unresolved	= symbol_conf.hide_unresolved,
+		.ops		= &hist_iter_branch,
+	};
 
-	if (!dso_l || !dso_r) {
-		if (!dso_l && !dso_r)
-			return 0;
-		else if (!dso_l)
-			return -1;
-		else
-			return 1;
-	}
+	struct addr_location a;
+	int ret;
 
-	return strcmp(dso_l->name, dso_r->name);
-}
+	if (machine__resolve(machine, &a, sample) < 0)
+		return -1;
 
-static size_t
-sort__dso_print(FILE *fp, struct hist_entry *self)
-{
-	if (self->dso)
-		return fprintf(fp, "%-25s", self->dso->name);
-
-	return fprintf(fp, "%016llx         ", (u64)self->ip);
-}
-
-static struct sort_entry sort_dso = {
-	.header = "Shared Object            ",
-	.cmp	= sort__dso_cmp,
-	.print	= sort__dso_print,
-};
-
-/* --sort symbol */
-
-static int64_t
-sort__sym_cmp(struct hist_entry *left, struct hist_entry *right)
-{
-	u64 ip_l, ip_r;
-
-	if (left->sym == right->sym)
+	if (a.sym == NULL)
 		return 0;
 
-	ip_l = left->sym ? left->sym->start : left->ip;
-	ip_r = right->sym ? right->sym->start : right->ip;
+	if (a.map != NULL)
+		a.map->dso->hit = 1;
 
-	return (int64_t)(ip_r - ip_l);
-}
+	hist__account_cycles(sample->branch_stack, al, sample, false, NULL);
 
-static size_t
-sort__sym_print(FILE *fp, struct hist_entry *self)
-{
-	size_t ret = 0;
-
-	if (verbose)
-		ret += fprintf(fp, "%#018llx  ", (u64)self->ip);
-
-	if (self->sym) {
-		ret += fprintf(fp, "[%c] %s",
-			self->dso == kernel_dso ? 'k' : '.', self->sym->name);
-	} else {
-		ret += fprintf(fp, "%#016llx", (u64)self->ip);
-	}
-
+	ret = hist_entry_iter__add(&iter, &a, PERF_MAX_STACK_DEPTH, ann);
 	return ret;
 }
 
-static struct sort_entry sort_sym = {
-	.header = "Symbol",
-	.cmp	= sort__sym_cmp,
-	.print	= sort__sym_print,
-};
-
-static int sort__need_collapse = 0;
-
-struct sort_dimension {
-	const char		*name;
-	struct sort_entry	*entry;
-	int			taken;
-};
-
-static struct sort_dimension sort_dimensions[] = {
-	{ .name = "pid",	.entry = &sort_thread,	},
-	{ .name = "comm",	.entry = &sort_comm,	},
-	{ .name = "dso",	.entry = &sort_dso,	},
-	{ .name = "symbol",	.entry = &sort_sym,	},
-};
-
-static LIST_HEAD(hist_entry__sort_list);
-
-static int sort_dimension__add(char *tok)
+static bool has_annotation(struct perf_annotate *ann)
 {
-	unsigned int i;
-
-	for (i = 0; i < ARRAY_SIZE(sort_dimensions); i++) {
-		struct sort_dimension *sd = &sort_dimensions[i];
-
-		if (sd->taken)
-			continue;
-
-		if (strncasecmp(tok, sd->name, strlen(tok)))
-			continue;
-
-		if (sd->entry->collapse)
-			sort__need_collapse = 1;
-
-		list_add_tail(&sd->entry->list, &hist_entry__sort_list);
-		sd->taken = 1;
-
-		return 0;
-	}
-
-	return -ESRCH;
+	return ui__has_annotation() || ann->use_stdio2;
 }
 
-static int64_t
-hist_entry__cmp(struct hist_entry *left, struct hist_entry *right)
+static int perf_evsel__add_sample(struct evsel *evsel,
+				  struct perf_sample *sample,
+				  struct addr_location *al,
+				  struct perf_annotate *ann,
+				  struct machine *machine)
 {
-	struct sort_entry *se;
-	int64_t cmp = 0;
-
-	list_for_each_entry(se, &hist_entry__sort_list, list) {
-		cmp = se->cmp(left, right);
-		if (cmp)
-			break;
-	}
-
-	return cmp;
-}
-
-static int64_t
-hist_entry__collapse(struct hist_entry *left, struct hist_entry *right)
-{
-	struct sort_entry *se;
-	int64_t cmp = 0;
-
-	list_for_each_entry(se, &hist_entry__sort_list, list) {
-		int64_t (*f)(struct hist_entry *, struct hist_entry *);
-
-		f = se->collapse ?: se->cmp;
-
-		cmp = f(left, right);
-		if (cmp)
-			break;
-	}
-
-	return cmp;
-}
-
-/*
- * collect histogram counts
- */
-static void hist_hit(struct hist_entry *he, u64 ip)
-{
-	unsigned int sym_size, offset;
-	struct symbol *sym = he->sym;
-
-	he->count++;
-
-	if (!sym || !sym->hist)
-		return;
-
-	sym_size = sym->end - sym->start;
-	offset = ip - sym->start;
-
-	if (offset >= sym_size)
-		return;
-
-	sym->hist_sum++;
-	sym->hist[offset]++;
-
-	if (verbose >= 3)
-		printf("%p %s: count++ [ip: %p, %08Lx] => %Ld\n",
-			(void *)(unsigned long)he->sym->start,
-			he->sym->name,
-			(void *)(unsigned long)ip, ip - he->sym->start,
-			sym->hist[offset]);
-}
-
-static int
-hist_entry__add(struct thread *thread, struct map *map, struct dso *dso,
-		struct symbol *sym, u64 ip, char level)
-{
-	struct rb_node **p = &hist.rb_node;
-	struct rb_node *parent = NULL;
+	struct hists *hists = evsel__hists(evsel);
 	struct hist_entry *he;
-	struct hist_entry entry = {
-		.thread	= thread,
-		.map	= map,
-		.dso	= dso,
-		.sym	= sym,
-		.ip	= ip,
-		.level	= level,
-		.count	= 1,
-	};
-	int cmp;
-
-	while (*p != NULL) {
-		parent = *p;
-		he = rb_entry(parent, struct hist_entry, rb_node);
-
-		cmp = hist_entry__cmp(&entry, he);
-
-		if (!cmp) {
-			hist_hit(he, ip);
-
-			return 0;
-		}
-
-		if (cmp < 0)
-			p = &(*p)->rb_left;
-		else
-			p = &(*p)->rb_right;
-	}
-
-	he = malloc(sizeof(*he));
-	if (!he)
-		return -ENOMEM;
-	*he = entry;
-	rb_link_node(&he->rb_node, parent, p);
-	rb_insert_color(&he->rb_node, &hist);
-
-	return 0;
-}
-
-static void hist_entry__free(struct hist_entry *he)
-{
-	free(he);
-}
-
-/*
- * collapse the histogram
- */
-
-static struct rb_root collapse_hists;
-
-static void collapse__insert_entry(struct hist_entry *he)
-{
-	struct rb_node **p = &collapse_hists.rb_node;
-	struct rb_node *parent = NULL;
-	struct hist_entry *iter;
-	int64_t cmp;
-
-	while (*p != NULL) {
-		parent = *p;
-		iter = rb_entry(parent, struct hist_entry, rb_node);
-
-		cmp = hist_entry__collapse(iter, he);
-
-		if (!cmp) {
-			iter->count += he->count;
-			hist_entry__free(he);
-			return;
-		}
-
-		if (cmp < 0)
-			p = &(*p)->rb_left;
-		else
-			p = &(*p)->rb_right;
-	}
-
-	rb_link_node(&he->rb_node, parent, p);
-	rb_insert_color(&he->rb_node, &collapse_hists);
-}
-
-static void collapse__resort(void)
-{
-	struct rb_node *next;
-	struct hist_entry *n;
-
-	if (!sort__need_collapse)
-		return;
-
-	next = rb_first(&hist);
-	while (next) {
-		n = rb_entry(next, struct hist_entry, rb_node);
-		next = rb_next(&n->rb_node);
-
-		rb_erase(&n->rb_node, &hist);
-		collapse__insert_entry(n);
-	}
-}
-
-/*
- * reverse the map, sort on count.
- */
-
-static struct rb_root output_hists;
-
-static void output__insert_entry(struct hist_entry *he)
-{
-	struct rb_node **p = &output_hists.rb_node;
-	struct rb_node *parent = NULL;
-	struct hist_entry *iter;
-
-	while (*p != NULL) {
-		parent = *p;
-		iter = rb_entry(parent, struct hist_entry, rb_node);
-
-		if (he->count > iter->count)
-			p = &(*p)->rb_left;
-		else
-			p = &(*p)->rb_right;
-	}
-
-	rb_link_node(&he->rb_node, parent, p);
-	rb_insert_color(&he->rb_node, &output_hists);
-}
-
-static void output__resort(void)
-{
-	struct rb_node *next;
-	struct hist_entry *n;
-	struct rb_root *tree = &hist;
-
-	if (sort__need_collapse)
-		tree = &collapse_hists;
-
-	next = rb_first(tree);
-
-	while (next) {
-		n = rb_entry(next, struct hist_entry, rb_node);
-		next = rb_next(&n->rb_node);
-
-		rb_erase(&n->rb_node, tree);
-		output__insert_entry(n);
-	}
-}
-
-static unsigned long total = 0,
-		     total_mmap = 0,
-		     total_comm = 0,
-		     total_fork = 0,
-		     total_unknown = 0;
-
-static int
-process_sample_event(event_t *event, unsigned long offset, unsigned long head)
-{
-	char level;
-	int show = 0;
-	struct dso *dso = NULL;
-	struct thread *thread;
-	u64 ip = event->ip.ip;
-	struct map *map = NULL;
-
-	thread = threads__findnew(event->ip.pid, &threads, &last_match);
-
-	dump_printf("%p [%p]: PERF_EVENT (IP, %d): %d: %p\n",
-		(void *)(offset + head),
-		(void *)(long)(event->header.size),
-		event->header.misc,
-		event->ip.pid,
-		(void *)(long)ip);
-
-	dump_printf(" ... thread: %s:%d\n", thread->comm, thread->pid);
-
-	if (thread == NULL) {
-		fprintf(stderr, "problem processing %d event, skipping it.\n",
-			event->header.type);
-		return -1;
-	}
-
-	if (event->header.misc & PERF_RECORD_MISC_KERNEL) {
-		show = SHOW_KERNEL;
-		level = 'k';
-
-		dso = kernel_dso;
-
-		dump_printf(" ...... dso: %s\n", dso->name);
-
-	} else if (event->header.misc & PERF_RECORD_MISC_USER) {
-
-		show = SHOW_USER;
-		level = '.';
-
-		map = thread__find_map(thread, ip);
-		if (map != NULL) {
-			ip = map->map_ip(map, ip);
-			dso = map->dso;
-		} else {
-			/*
-			 * If this is outside of all known maps,
-			 * and is a negative address, try to look it
-			 * up in the kernel dso, as it might be a
-			 * vsyscall (which executes in user-mode):
-			 */
-			if ((long long)ip < 0)
-				dso = kernel_dso;
-		}
-		dump_printf(" ...... dso: %s\n", dso ? dso->name : "<not found>");
-
-	} else {
-		show = SHOW_HV;
-		level = 'H';
-		dump_printf(" ...... dso: [hypervisor]\n");
-	}
-
-	if (show & show_mask) {
-		struct symbol *sym = NULL;
-
-		if (dso)
-			sym = dso->find_symbol(dso, ip);
-
-		if (hist_entry__add(thread, map, dso, sym, ip, level)) {
-			fprintf(stderr,
-		"problem incrementing symbol count, skipping event\n");
-			return -1;
-		}
-	}
-	total++;
-
-	return 0;
-}
-
-static int
-process_mmap_event(event_t *event, unsigned long offset, unsigned long head)
-{
-	struct thread *thread;
-	struct map *map = map__new(&event->mmap, NULL, 0);
-
-	thread = threads__findnew(event->mmap.pid, &threads, &last_match);
-
-	dump_printf("%p [%p]: PERF_RECORD_MMAP %d: [%p(%p) @ %p]: %s\n",
-		(void *)(offset + head),
-		(void *)(long)(event->header.size),
-		event->mmap.pid,
-		(void *)(long)event->mmap.start,
-		(void *)(long)event->mmap.len,
-		(void *)(long)event->mmap.pgoff,
-		event->mmap.filename);
-
-	if (thread == NULL || map == NULL) {
-		dump_printf("problem processing PERF_RECORD_MMAP, skipping event.\n");
-		return 0;
-	}
-
-	thread__insert_map(thread, map);
-	total_mmap++;
-
-	return 0;
-}
-
-static int
-process_comm_event(event_t *event, unsigned long offset, unsigned long head)
-{
-	struct thread *thread;
-
-	thread = threads__findnew(event->comm.pid, &threads, &last_match);
-	dump_printf("%p [%p]: PERF_RECORD_COMM: %s:%d\n",
-		(void *)(offset + head),
-		(void *)(long)(event->header.size),
-		event->comm.comm, event->comm.pid);
-
-	if (thread == NULL ||
-	    thread__set_comm(thread, event->comm.comm)) {
-		dump_printf("problem processing PERF_RECORD_COMM, skipping event.\n");
-		return -1;
-	}
-	total_comm++;
-
-	return 0;
-}
-
-static int
-process_fork_event(event_t *event, unsigned long offset, unsigned long head)
-{
-	struct thread *thread;
-	struct thread *parent;
-
-	thread = threads__findnew(event->fork.pid, &threads, &last_match);
-	parent = threads__findnew(event->fork.ppid, &threads, &last_match);
-	dump_printf("%p [%p]: PERF_RECORD_FORK: %d:%d\n",
-		(void *)(offset + head),
-		(void *)(long)(event->header.size),
-		event->fork.pid, event->fork.ppid);
-
-	/*
-	 * A thread clone will have the same PID for both
-	 * parent and child.
-	 */
-	if (thread == parent)
-		return 0;
-
-	if (!thread || !parent || thread__fork(thread, parent)) {
-		dump_printf("problem processing PERF_RECORD_FORK, skipping event.\n");
-		return -1;
-	}
-	total_fork++;
-
-	return 0;
-}
-
-static int
-process_event(event_t *event, unsigned long offset, unsigned long head)
-{
-	switch (event->header.type) {
-	case PERF_RECORD_SAMPLE:
-		return process_sample_event(event, offset, head);
-
-	case PERF_RECORD_MMAP:
-		return process_mmap_event(event, offset, head);
-
-	case PERF_RECORD_COMM:
-		return process_comm_event(event, offset, head);
-
-	case PERF_RECORD_FORK:
-		return process_fork_event(event, offset, head);
-	/*
-	 * We dont process them right now but they are fine:
-	 */
-
-	case PERF_RECORD_THROTTLE:
-	case PERF_RECORD_UNTHROTTLE:
-		return 0;
-
-	default:
-		return -1;
-	}
-
-	return 0;
-}
-
-static int
-parse_line(FILE *file, struct symbol *sym, u64 start, u64 len)
-{
-	char *line = NULL, *tmp, *tmp2;
-	static const char *prev_line;
-	static const char *prev_color;
-	unsigned int offset;
-	size_t line_len;
-	s64 line_ip;
 	int ret;
-	char *c;
 
-	if (getline(&line, &line_len, file) < 0)
-		return -1;
-	if (!line)
-		return -1;
-
-	c = strchr(line, '\n');
-	if (c)
-		*c = 0;
-
-	line_ip = -1;
-	offset = 0;
-	ret = -2;
+	if ((!ann->has_br_stack || !has_annotation(ann)) &&
+	    ann->sym_hist_filter != NULL &&
+	    (al->sym == NULL ||
+	     strcmp(ann->sym_hist_filter, al->sym->name) != 0)) {
+		/* We're only interested in a symbol named sym_hist_filter */
+		/*
+		 * FIXME: why isn't this done in the symbol_filter when loading
+		 * the DSO?
+		 */
+		if (al->sym != NULL) {
+			rb_erase_cached(&al->sym->rb_node,
+				 &al->map->dso->symbols);
+			symbol__delete(al->sym);
+			dso__reset_find_symbol_cache(al->map->dso);
+		}
+		return 0;
+	}
 
 	/*
-	 * Strip leading spaces:
+	 * XXX filtered samples can still have branch entires pointing into our
+	 * symbol and are missed.
 	 */
-	tmp = line;
-	while (*tmp) {
-		if (*tmp != ' ')
-			break;
-		tmp++;
+	process_branch_stack(sample->branch_stack, al, sample);
+
+	if (ann->has_br_stack && has_annotation(ann))
+		return process_branch_callback(evsel, sample, al, ann, machine);
+
+	he = hists__add_entry(hists, al, NULL, NULL, NULL, sample, true);
+	if (he == NULL)
+		return -ENOMEM;
+
+	ret = hist_entry__inc_addr_samples(he, sample, evsel, al->addr);
+	hists__inc_nr_samples(hists, true);
+	return ret;
+}
+
+static int process_sample_event(struct perf_tool *tool,
+				union perf_event *event,
+				struct perf_sample *sample,
+				struct evsel *evsel,
+				struct machine *machine)
+{
+	struct perf_annotate *ann = container_of(tool, struct perf_annotate, tool);
+	struct addr_location al;
+	int ret = 0;
+
+	if (machine__resolve(machine, &al, sample) < 0) {
+		pr_warning("problem processing %d event, skipping it.\n",
+			   event->header.type);
+		return -1;
 	}
 
-	if (*tmp) {
-		/*
-		 * Parse hexa addresses followed by ':'
-		 */
-		line_ip = strtoull(tmp, &tmp2, 16);
-		if (*tmp2 != ':')
-			line_ip = -1;
+	if (ann->cpu_list && !test_bit(sample->cpu, ann->cpu_bitmap))
+		goto out_put;
+
+	if (!al.filtered &&
+	    perf_evsel__add_sample(evsel, sample, &al, ann, machine)) {
+		pr_warning("problem incrementing symbol count, "
+			   "skipping event\n");
+		ret = -1;
 	}
+out_put:
+	addr_location__put(&al);
+	return ret;
+}
 
-	if (line_ip != -1) {
-		const char *path = NULL;
-		unsigned int hits = 0;
-		double percent = 0.0;
-		const char *color;
-		struct sym_ext *sym_ext = sym->priv;
-
-		offset = line_ip - start;
-		if (offset < len)
-			hits = sym->hist[offset];
-
-		if (offset < len && sym_ext) {
-			path = sym_ext[offset].path;
-			percent = sym_ext[offset].percent;
-		} else if (sym->hist_sum)
-			percent = 100.0 * hits / sym->hist_sum;
-
-		color = get_percent_color(percent);
-
-		/*
-		 * Also color the filename and line if needed, with
-		 * the same color than the percentage. Don't print it
-		 * twice for close colored ip with the same filename:line
-		 */
-		if (path) {
-			if (!prev_line || strcmp(prev_line, path)
-				       || color != prev_color) {
-				color_fprintf(stdout, color, " %s", path);
-				prev_line = path;
-				prev_color = color;
-			}
-		}
-
-		color_fprintf(stdout, color, " %7.2f", percent);
-		printf(" :	");
-		color_fprintf(stdout, PERF_COLOR_BLUE, "%s\n", line);
-	} else {
-		if (!*line)
-			printf("         :\n");
-		else
-			printf("         :	%s\n", line);
-	}
-
+static int process_feature_event(struct perf_session *session,
+				 union perf_event *event)
+{
+	if (event->feat.feat_id < HEADER_LAST_FEATURE)
+		return perf_event__process_feature(session, event);
 	return 0;
 }
 
-static struct rb_root root_sym_ext;
-
-static void insert_source_line(struct sym_ext *sym_ext)
+static int hist_entry__tty_annotate(struct hist_entry *he,
+				    struct evsel *evsel,
+				    struct perf_annotate *ann)
 {
-	struct sym_ext *iter;
-	struct rb_node **p = &root_sym_ext.rb_node;
-	struct rb_node *parent = NULL;
+	if (!ann->use_stdio2)
+		return symbol__tty_annotate(&he->ms, evsel, &ann->opts);
 
-	while (*p != NULL) {
-		parent = *p;
-		iter = rb_entry(parent, struct sym_ext, node);
-
-		if (sym_ext->percent > iter->percent)
-			p = &(*p)->rb_left;
-		else
-			p = &(*p)->rb_right;
-	}
-
-	rb_link_node(&sym_ext->node, parent, p);
-	rb_insert_color(&sym_ext->node, &root_sym_ext);
+	return symbol__tty_annotate2(&he->ms, evsel, &ann->opts);
 }
 
-static void free_source_line(struct symbol *sym, int len)
+static void hists__find_annotations(struct hists *hists,
+				    struct evsel *evsel,
+				    struct perf_annotate *ann)
 {
-	struct sym_ext *sym_ext = sym->priv;
-	int i;
+	struct rb_node *nd = rb_first_cached(&hists->entries), *next;
+	int key = K_RIGHT;
 
-	if (!sym_ext)
-		return;
+	while (nd) {
+		struct hist_entry *he = rb_entry(nd, struct hist_entry, rb_node);
+		struct annotation *notes;
 
-	for (i = 0; i < len; i++)
-		free(sym_ext[i].path);
-	free(sym_ext);
+		if (he->ms.sym == NULL || he->ms.map->dso->annotate_warned)
+			goto find_next;
 
-	sym->priv = NULL;
-	root_sym_ext = RB_ROOT;
-}
+		if (ann->sym_hist_filter &&
+		    (strcmp(he->ms.sym->name, ann->sym_hist_filter) != 0))
+			goto find_next;
 
-/* Get the filename:line for the colored entries */
-static void
-get_source_line(struct symbol *sym, u64 start, int len, const char *filename)
-{
-	int i;
-	char cmd[PATH_MAX * 2];
-	struct sym_ext *sym_ext;
-
-	if (!sym->hist_sum)
-		return;
-
-	sym->priv = calloc(len, sizeof(struct sym_ext));
-	if (!sym->priv)
-		return;
-
-	sym_ext = sym->priv;
-
-	for (i = 0; i < len; i++) {
-		char *path = NULL;
-		size_t line_len;
-		u64 offset;
-		FILE *fp;
-
-		sym_ext[i].percent = 100.0 * sym->hist[i] / sym->hist_sum;
-		if (sym_ext[i].percent <= 0.5)
+		notes = symbol__annotation(he->ms.sym);
+		if (notes->src == NULL) {
+find_next:
+			if (key == K_LEFT)
+				nd = rb_prev(nd);
+			else
+				nd = rb_next(nd);
 			continue;
+		}
 
-		offset = start + i;
-		sprintf(cmd, "addr2line -e %s %016llx", filename, offset);
-		fp = popen(cmd, "r");
-		if (!fp)
-			continue;
+		if (use_browser == 2) {
+			int ret;
+			int (*annotate)(struct hist_entry *he,
+					struct evsel *evsel,
+					struct hist_browser_timer *hbt);
 
-		if (getline(&path, &line_len, fp) < 0 || !line_len)
-			goto next;
-
-		sym_ext[i].path = malloc(sizeof(char) * line_len + 1);
-		if (!sym_ext[i].path)
-			goto next;
-
-		strcpy(sym_ext[i].path, path);
-		insert_source_line(&sym_ext[i]);
-
-	next:
-		pclose(fp);
-	}
-}
-
-static void print_summary(const char *filename)
-{
-	struct sym_ext *sym_ext;
-	struct rb_node *node;
-
-	printf("\nSorted summary for file %s\n", filename);
-	printf("----------------------------------------------\n\n");
-
-	if (RB_EMPTY_ROOT(&root_sym_ext)) {
-		printf(" Nothing higher than %1.1f%%\n", MIN_GREEN);
-		return;
-	}
-
-	node = rb_first(&root_sym_ext);
-	while (node) {
-		double percent;
-		const char *color;
-		char *path;
-
-		sym_ext = rb_entry(node, struct sym_ext, node);
-		percent = sym_ext->percent;
-		color = get_percent_color(percent);
-		path = sym_ext->path;
-
-		color_fprintf(stdout, color, " %7.2f %s", percent, path);
-		node = rb_next(node);
-	}
-}
-
-static void annotate_sym(struct dso *dso, struct symbol *sym)
-{
-	const char *filename = dso->name, *d_filename;
-	u64 start, end, len;
-	char command[PATH_MAX*2];
-	FILE *file;
-
-	if (!filename)
-		return;
-	if (sym->module)
-		filename = sym->module->path;
-	else if (dso == kernel_dso)
-		filename = vmlinux_name;
-
-	start = sym->obj_start;
-	if (!start)
-		start = sym->start;
-	if (full_paths)
-		d_filename = filename;
-	else
-		d_filename = basename(filename);
-
-	end = start + sym->end - sym->start + 1;
-	len = sym->end - sym->start;
-
-	if (print_line) {
-		get_source_line(sym, start, len, filename);
-		print_summary(filename);
-	}
-
-	printf("\n\n------------------------------------------------\n");
-	printf(" Percent |	Source code & Disassembly of %s\n", d_filename);
-	printf("------------------------------------------------\n");
-
-	if (verbose >= 2)
-		printf("annotating [%p] %30s : [%p] %30s\n", dso, dso->name, sym, sym->name);
-
-	sprintf(command, "objdump --start-address=0x%016Lx --stop-address=0x%016Lx -dS %s|grep -v %s",
-			(u64)start, (u64)end, filename, filename);
-
-	if (verbose >= 3)
-		printf("doing: %s\n", command);
-
-	file = popen(command, "r");
-	if (!file)
-		return;
-
-	while (!feof(file)) {
-		if (parse_line(file, sym, start, len) < 0)
-			break;
-	}
-
-	pclose(file);
-	if (print_line)
-		free_source_line(sym, len);
-}
-
-static void find_annotations(void)
-{
-	struct rb_node *nd;
-	struct dso *dso;
-	int count = 0;
-
-	list_for_each_entry(dso, &dsos, node) {
-
-		for (nd = rb_first(&dso->syms); nd; nd = rb_next(nd)) {
-			struct symbol *sym = rb_entry(nd, struct symbol, rb_node);
-
-			if (sym->hist) {
-				annotate_sym(dso, sym);
-				count++;
+			annotate = dlsym(perf_gtk_handle,
+					 "hist_entry__gtk_annotate");
+			if (annotate == NULL) {
+				ui__error("GTK browser not found!\n");
+				return;
 			}
+
+			ret = annotate(he, evsel, NULL);
+			if (!ret || !ann->skip_missing)
+				return;
+
+			/* skip missing symbols */
+			nd = rb_next(nd);
+		} else if (use_browser == 1) {
+			key = hist_entry__tui_annotate(he, evsel, NULL, &ann->opts);
+
+			switch (key) {
+			case -1:
+				if (!ann->skip_missing)
+					return;
+				/* fall through */
+			case K_RIGHT:
+				next = rb_next(nd);
+				break;
+			case K_LEFT:
+				next = rb_prev(nd);
+				break;
+			default:
+				return;
+			}
+
+			if (next != NULL)
+				nd = next;
+		} else {
+			hist_entry__tty_annotate(he, evsel, ann);
+			nd = rb_next(nd);
+			/*
+			 * Since we have a hist_entry per IP for the same
+			 * symbol, free he->ms.sym->src to signal we already
+			 * processed this symbol.
+			 */
+			zfree(&notes->src->cycles_hist);
+			zfree(&notes->src);
+		}
+	}
+}
+
+static int __cmd_annotate(struct perf_annotate *ann)
+{
+	int ret;
+	struct perf_session *session = ann->session;
+	struct evsel *pos;
+	u64 total_nr_samples;
+
+	if (ann->cpu_list) {
+		ret = perf_session__cpu_bitmap(session, ann->cpu_list,
+					       ann->cpu_bitmap);
+		if (ret)
+			goto out;
+	}
+
+	if (!ann->opts.objdump_path) {
+		ret = perf_env__lookup_objdump(&session->header.env,
+					       &ann->opts.objdump_path);
+		if (ret)
+			goto out;
+	}
+
+	ret = perf_session__process_events(session);
+	if (ret)
+		goto out;
+
+	if (dump_trace) {
+		perf_session__fprintf_nr_events(session, stdout);
+		perf_evlist__fprintf_nr_events(session->evlist, stdout);
+		goto out;
+	}
+
+	if (verbose > 3)
+		perf_session__fprintf(session, stdout);
+
+	if (verbose > 2)
+		perf_session__fprintf_dsos(session, stdout);
+
+	total_nr_samples = 0;
+	evlist__for_each_entry(session->evlist, pos) {
+		struct hists *hists = evsel__hists(pos);
+		u32 nr_samples = hists->stats.nr_events[PERF_RECORD_SAMPLE];
+
+		if (nr_samples > 0) {
+			total_nr_samples += nr_samples;
+			hists__collapse_resort(hists, NULL);
+			/* Don't sort callchain */
+			perf_evsel__reset_sample_bit(pos, CALLCHAIN);
+			perf_evsel__output_resort(pos, NULL);
+
+			if (symbol_conf.event_group &&
+			    !perf_evsel__is_group_leader(pos))
+				continue;
+
+			hists__find_annotations(hists, pos, ann);
 		}
 	}
 
-	if (!count)
-		printf(" Error: symbol '%s' not present amongst the samples.\n", sym_hist_filter);
-}
-
-static int __cmd_annotate(void)
-{
-	int ret, rc = EXIT_FAILURE;
-	unsigned long offset = 0;
-	unsigned long head = 0;
-	struct stat input_stat;
-	event_t *event;
-	uint32_t size;
-	char *buf;
-
-	register_idle_thread(&threads, &last_match);
-
-	input = open(input_name, O_RDONLY);
-	if (input < 0) {
-		perror("failed to open file");
-		exit(-1);
+	if (total_nr_samples == 0) {
+		ui__error("The %s data has no samples!\n", session->data->path);
+		goto out;
 	}
 
-	ret = fstat(input, &input_stat);
-	if (ret < 0) {
-		perror("failed to stat file");
-		exit(-1);
+	if (use_browser == 2) {
+		void (*show_annotations)(void);
+
+		show_annotations = dlsym(perf_gtk_handle,
+					 "perf_gtk__show_annotations");
+		if (show_annotations == NULL) {
+			ui__error("GTK browser not found!\n");
+			goto out;
+		}
+		show_annotations();
 	}
 
-	if (!force && input_stat.st_uid && (input_stat.st_uid != geteuid())) {
-		fprintf(stderr, "file: %s not owned by current user or root\n", input_name);
-		exit(-1);
-	}
-
-	if (!input_stat.st_size) {
-		fprintf(stderr, "zero-sized file, nothing to do!\n");
-		exit(0);
-	}
-
-	if (load_kernel() < 0) {
-		perror("failed to load kernel symbols");
-		return EXIT_FAILURE;
-	}
-
-remap:
-	buf = (char *)mmap(NULL, page_size * mmap_window, PROT_READ,
-			   MAP_SHARED, input, offset);
-	if (buf == MAP_FAILED) {
-		perror("failed to mmap file");
-		exit(-1);
-	}
-
-more:
-	event = (event_t *)(buf + head);
-
-	size = event->header.size;
-	if (!size)
-		size = 8;
-
-	if (head + event->header.size >= page_size * mmap_window) {
-		unsigned long shift = page_size * (head / page_size);
-		int munmap_ret;
-
-		munmap_ret = munmap(buf, page_size * mmap_window);
-		assert(munmap_ret == 0);
-
-		offset += shift;
-		head -= shift;
-		goto remap;
-	}
-
-	size = event->header.size;
-
-	dump_printf("%p [%p]: event: %d\n",
-			(void *)(offset + head),
-			(void *)(long)event->header.size,
-			event->header.type);
-
-	if (!size || process_event(event, offset, head) < 0) {
-
-		dump_printf("%p [%p]: skipping unknown header type: %d\n",
-			(void *)(offset + head),
-			(void *)(long)(event->header.size),
-			event->header.type);
-
-		total_unknown++;
-
-		/*
-		 * assume we lost track of the stream, check alignment, and
-		 * increment a single u64 in the hope to catch on again 'soon'.
-		 */
-
-		if (unlikely(head & 7))
-			head &= ~7ULL;
-
-		size = 8;
-	}
-
-	head += size;
-
-	if (offset + head < (unsigned long)input_stat.st_size)
-		goto more;
-
-	rc = EXIT_SUCCESS;
-	close(input);
-
-	dump_printf("      IP events: %10ld\n", total);
-	dump_printf("    mmap events: %10ld\n", total_mmap);
-	dump_printf("    comm events: %10ld\n", total_comm);
-	dump_printf("    fork events: %10ld\n", total_fork);
-	dump_printf(" unknown events: %10ld\n", total_unknown);
-
-	if (dump_trace)
-		return 0;
-
-	if (verbose >= 3)
-		threads__fprintf(stdout, &threads);
-
-	if (verbose >= 2)
-		dsos__fprintf(stdout);
-
-	collapse__resort();
-	output__resort();
-
-	find_annotations();
-
-	return rc;
+out:
+	return ret;
 }
 
 static const char * const annotate_usage[] = {
-	"perf annotate [<options>] <command>",
+	"perf annotate [<options>]",
 	NULL
 };
 
-static const struct option options[] = {
+int cmd_annotate(int argc, const char **argv)
+{
+	struct perf_annotate annotate = {
+		.tool = {
+			.sample	= process_sample_event,
+			.mmap	= perf_event__process_mmap,
+			.mmap2	= perf_event__process_mmap2,
+			.comm	= perf_event__process_comm,
+			.exit	= perf_event__process_exit,
+			.fork	= perf_event__process_fork,
+			.namespaces = perf_event__process_namespaces,
+			.attr	= perf_event__process_attr,
+			.build_id = perf_event__process_build_id,
+			.tracing_data   = perf_event__process_tracing_data,
+			.feature	= process_feature_event,
+			.ordered_events = true,
+			.ordering_requires_timestamps = true,
+		},
+		.opts = annotation__default_options,
+	};
+	struct perf_data data = {
+		.mode  = PERF_DATA_MODE_READ,
+	};
+	struct option options[] = {
 	OPT_STRING('i', "input", &input_name, "file",
 		    "input file name"),
-	OPT_STRING('s', "symbol", &sym_hist_filter, "symbol",
+	OPT_STRING('d', "dsos", &symbol_conf.dso_list_str, "dso[,dso...]",
+		   "only consider symbols in these dsos"),
+	OPT_STRING('s', "symbol", &annotate.sym_hist_filter, "symbol",
 		    "symbol to annotate"),
-	OPT_BOOLEAN('f', "force", &force, "don't complain, do it"),
-	OPT_BOOLEAN('v', "verbose", &verbose,
+	OPT_BOOLEAN('f', "force", &data.force, "don't complain, do it"),
+	OPT_INCR('v', "verbose", &verbose,
 		    "be more verbose (show symbol address, etc)"),
+	OPT_BOOLEAN('q', "quiet", &quiet, "do now show any message"),
 	OPT_BOOLEAN('D', "dump-raw-trace", &dump_trace,
 		    "dump raw trace in ASCII"),
-	OPT_STRING('k', "vmlinux", &vmlinux_name, "file", "vmlinux pathname"),
-	OPT_BOOLEAN('m', "modules", &modules,
+	OPT_BOOLEAN(0, "gtk", &annotate.use_gtk, "Use the GTK interface"),
+	OPT_BOOLEAN(0, "tui", &annotate.use_tui, "Use the TUI interface"),
+	OPT_BOOLEAN(0, "stdio", &annotate.use_stdio, "Use the stdio interface"),
+	OPT_BOOLEAN(0, "stdio2", &annotate.use_stdio2, "Use the stdio interface"),
+	OPT_BOOLEAN(0, "ignore-vmlinux", &symbol_conf.ignore_vmlinux,
+                    "don't load vmlinux even if found"),
+	OPT_STRING('k', "vmlinux", &symbol_conf.vmlinux_name,
+		   "file", "vmlinux pathname"),
+	OPT_BOOLEAN('m', "modules", &symbol_conf.use_modules,
 		    "load module symbols - WARNING: use only with -k and LIVE kernel"),
-	OPT_BOOLEAN('l', "print-line", &print_line,
+	OPT_BOOLEAN('l', "print-line", &annotate.opts.print_lines,
 		    "print matching source lines (may be slow)"),
-	OPT_BOOLEAN('P', "full-paths", &full_paths,
+	OPT_BOOLEAN('P', "full-paths", &annotate.opts.full_path,
 		    "Don't shorten the displayed pathnames"),
+	OPT_BOOLEAN(0, "skip-missing", &annotate.skip_missing,
+		    "Skip symbols that cannot be annotated"),
+	OPT_BOOLEAN_SET(0, "group", &symbol_conf.event_group,
+			&annotate.group_set,
+			"Show event group information together"),
+	OPT_STRING('C', "cpu", &annotate.cpu_list, "cpu", "list of cpus to profile"),
+	OPT_CALLBACK(0, "symfs", NULL, "directory",
+		     "Look for files with symbols relative to this directory",
+		     symbol__config_symfs),
+	OPT_BOOLEAN(0, "source", &annotate.opts.annotate_src,
+		    "Interleave source code with assembly code (default)"),
+	OPT_BOOLEAN(0, "asm-raw", &annotate.opts.show_asm_raw,
+		    "Display raw encoding of assembly instructions (default)"),
+	OPT_STRING('M', "disassembler-style", &annotate.opts.disassembler_style, "disassembler style",
+		   "Specify disassembler style (e.g. -M intel for intel syntax)"),
+	OPT_STRING(0, "prefix", &annotate.opts.prefix, "prefix",
+		    "Add prefix to source file path names in programs (with --prefix-strip)"),
+	OPT_STRING(0, "prefix-strip", &annotate.opts.prefix_strip, "N",
+		    "Strip first N entries of source file path name in programs (with --prefix)"),
+	OPT_STRING(0, "objdump", &annotate.opts.objdump_path, "path",
+		   "objdump binary to use for disassembly and annotations"),
+	OPT_BOOLEAN(0, "group", &symbol_conf.event_group,
+		    "Show event group information together"),
+	OPT_BOOLEAN(0, "show-total-period", &symbol_conf.show_total_period,
+		    "Show a column with the sum of periods"),
+	OPT_BOOLEAN('n', "show-nr-samples", &symbol_conf.show_nr_samples,
+		    "Show a column with the number of samples"),
+	OPT_CALLBACK_DEFAULT(0, "stdio-color", NULL, "mode",
+			     "'always' (default), 'never' or 'auto' only applicable to --stdio mode",
+			     stdio__config_color, "always"),
+	OPT_CALLBACK(0, "percent-type", &annotate.opts, "local-period",
+		     "Set percent type local/global-period/hits",
+		     annotate_parse_percent_type),
+
 	OPT_END()
-};
+	};
+	int ret;
 
-static void setup_sorting(void)
-{
-	char *tmp, *tok, *str = strdup(sort_order);
+	set_option_flag(options, 0, "show-total-period", PARSE_OPT_EXCLUSIVE);
+	set_option_flag(options, 0, "show-nr-samples", PARSE_OPT_EXCLUSIVE);
 
-	for (tok = strtok_r(str, ", ", &tmp);
-			tok; tok = strtok_r(NULL, ", ", &tmp)) {
-		if (sort_dimension__add(tok) < 0) {
-			error("Unknown --sort key: `%s'", tok);
-			usage_with_options(annotate_usage, options);
-		}
-	}
 
-	free(str);
-}
+	ret = hists__init();
+	if (ret < 0)
+		return ret;
 
-int cmd_annotate(int argc, const char **argv, const char *prefix __used)
-{
-	symbol__init();
-
-	page_size = getpagesize();
+	annotation_config__init(&annotate.opts);
 
 	argc = parse_options(argc, argv, options, annotate_usage, 0);
-
-	setup_sorting();
-
 	if (argc) {
 		/*
-		 * Special case: if there's an argument left then assume tha
+		 * Special case: if there's an argument left then assume that
 		 * it's a symbol filter:
 		 */
 		if (argc > 1)
 			usage_with_options(annotate_usage, options);
 
-		sym_hist_filter = argv[0];
+		annotate.sym_hist_filter = argv[0];
 	}
 
-	if (!sym_hist_filter)
-		usage_with_options(annotate_usage, options);
+	if (annotate_check_args(&annotate.opts) < 0)
+		return -EINVAL;
 
-	setup_pager();
+	if (symbol_conf.show_nr_samples && annotate.use_gtk) {
+		pr_err("--show-nr-samples is not available in --gtk mode at this time\n");
+		return ret;
+	}
 
-	return __cmd_annotate();
+	if (quiet)
+		perf_quiet_option();
+
+	data.path = input_name;
+
+	annotate.session = perf_session__new(&data, false, &annotate.tool);
+	if (IS_ERR(annotate.session))
+		return PTR_ERR(annotate.session);
+
+	annotate.has_br_stack = perf_header__has_feat(&annotate.session->header,
+						      HEADER_BRANCH_STACK);
+
+	if (annotate.group_set)
+		perf_evlist__force_leader(annotate.session->evlist);
+
+	ret = symbol__annotation_init();
+	if (ret < 0)
+		goto out_delete;
+
+	symbol_conf.try_vmlinux_path = true;
+
+	ret = symbol__init(&annotate.session->header.env);
+	if (ret < 0)
+		goto out_delete;
+
+	if (annotate.use_stdio || annotate.use_stdio2)
+		use_browser = 0;
+	else if (annotate.use_tui)
+		use_browser = 1;
+	else if (annotate.use_gtk)
+		use_browser = 2;
+
+	setup_browser(true);
+
+	if ((use_browser == 1 || annotate.use_stdio2) && annotate.has_br_stack) {
+		sort__mode = SORT_MODE__BRANCH;
+		if (setup_sorting(annotate.session->evlist) < 0)
+			usage_with_options(annotate_usage, options);
+	} else {
+		if (setup_sorting(NULL) < 0)
+			usage_with_options(annotate_usage, options);
+	}
+
+	ret = __cmd_annotate(&annotate);
+
+out_delete:
+	/*
+	 * Speed up the exit process, for large files this can
+	 * take quite a while.
+	 *
+	 * XXX Enable this when using valgrind or if we ever
+	 * librarize this command.
+	 *
+	 * Also experiment with obstacks to see how much speed
+	 * up we'll get here.
+	 *
+	 * perf_session__delete(session);
+	 */
+	return ret;
 }

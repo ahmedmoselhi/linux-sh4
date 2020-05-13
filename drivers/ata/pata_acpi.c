@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *	ACPI PATA driver
  *
@@ -7,15 +8,14 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
-#include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <linux/device.h>
-#include <scsi/scsi_host.h>
-#include <acpi/acpi_bus.h>
-
+#include <linux/gfp.h>
+#include <linux/acpi.h>
 #include <linux/libata.h>
 #include <linux/ata.h>
+#include <scsi/scsi_host.h>
 
 #define DRV_NAME	"pata_acpi"
 #define DRV_VERSION	"0.2.3"
@@ -38,7 +38,7 @@ static int pacpi_pre_reset(struct ata_link *link, unsigned long deadline)
 {
 	struct ata_port *ap = link->ap;
 	struct pata_acpi *acpi = ap->private_data;
-	if (ap->acpi_handle == NULL || ata_acpi_gtm(ap, &acpi->gtm) < 0)
+	if (ACPI_HANDLE(&ap->tdev) == NULL || ata_acpi_gtm(ap, &acpi->gtm) < 0)
 		return -ENODEV;
 
 	return ata_sff_prereset(link, deadline);
@@ -100,7 +100,7 @@ static unsigned long pacpi_discover_modes(struct ata_port *ap, struct ata_device
 static unsigned long pacpi_mode_filter(struct ata_device *adev, unsigned long mask)
 {
 	struct pata_acpi *acpi = adev->link->ap->private_data;
-	return ata_bmdma_mode_filter(adev, mask & acpi->mask[adev->devno]);
+	return mask & acpi->mask[adev->devno];
 }
 
 /**
@@ -161,7 +161,7 @@ static void pacpi_set_dmamode(struct ata_port *ap, struct ata_device *adev)
  *
  *	Called when the libata layer is about to issue a command. We wrap
  *	this interface so that we can load the correct ATA timings if
- *	neccessary.
+ *	necessary.
  */
 
 static unsigned int pacpi_qc_issue(struct ata_queued_cmd *qc)
@@ -171,7 +171,7 @@ static unsigned int pacpi_qc_issue(struct ata_queued_cmd *qc)
 	struct pata_acpi *acpi = ap->private_data;
 
 	if (acpi->gtm.flags & 0x10)
-		return ata_sff_qc_issue(qc);
+		return ata_bmdma_qc_issue(qc);
 
 	if (adev != acpi->last) {
 		pacpi_set_piomode(ap, adev);
@@ -179,7 +179,7 @@ static unsigned int pacpi_qc_issue(struct ata_queued_cmd *qc)
 			pacpi_set_dmamode(ap, adev);
 		acpi->last = adev;
 	}
-	return ata_sff_qc_issue(qc);
+	return ata_bmdma_qc_issue(qc);
 }
 
 /**
@@ -194,9 +194,7 @@ static int pacpi_port_start(struct ata_port *ap)
 	struct pci_dev *pdev = to_pci_dev(ap->host->dev);
 	struct pata_acpi *acpi;
 
-	int ret;
-
-	if (ap->acpi_handle == NULL)
+	if (ACPI_HANDLE(&ap->tdev) == NULL)
 		return -ENODEV;
 
 	acpi = ap->private_data = devm_kzalloc(&pdev->dev, sizeof(struct pata_acpi), GFP_KERNEL);
@@ -204,11 +202,7 @@ static int pacpi_port_start(struct ata_port *ap)
 		return -ENOMEM;
 	acpi->mask[0] = pacpi_discover_modes(ap, &ap->link.device[0]);
 	acpi->mask[1] = pacpi_discover_modes(ap, &ap->link.device[1]);
-	ret = ata_sff_port_start(ap);
-	if (ret < 0)
-		return ret;
-
-	return ret;
+	return ata_bmdma_port_start(ap);
 }
 
 static struct scsi_host_template pacpi_sht = {
@@ -244,7 +238,7 @@ static struct ata_port_operations pacpi_ops = {
 static int pacpi_init_one (struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	static const struct ata_port_info info = {
-		.flags		= ATA_FLAG_SLAVE_POSS | ATA_FLAG_SRST,
+		.flags		= ATA_FLAG_SLAVE_POSS,
 
 		.pio_mask	= ATA_PIO4,
 		.mwdma_mask	= ATA_MWDMA2,
@@ -259,7 +253,7 @@ static int pacpi_init_one (struct pci_dev *pdev, const struct pci_device_id *id)
 			return rc;
 		pcim_pin_device(pdev);
 	}
-	return ata_pci_sff_init_one(pdev, ppi, &pacpi_sht, NULL);
+	return ata_pci_bmdma_init_one(pdev, ppi, &pacpi_sht, NULL, 0);
 }
 
 static const struct pci_device_id pacpi_pci_tbl[] = {
@@ -272,28 +266,16 @@ static struct pci_driver pacpi_pci_driver = {
 	.id_table		= pacpi_pci_tbl,
 	.probe			= pacpi_init_one,
 	.remove			= ata_pci_remove_one,
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend		= ata_pci_device_suspend,
 	.resume			= ata_pci_device_resume,
 #endif
 };
 
-static int __init pacpi_init(void)
-{
-	return pci_register_driver(&pacpi_pci_driver);
-}
-
-static void __exit pacpi_exit(void)
-{
-	pci_unregister_driver(&pacpi_pci_driver);
-}
-
-module_init(pacpi_init);
-module_exit(pacpi_exit);
+module_pci_driver(pacpi_pci_driver);
 
 MODULE_AUTHOR("Alan Cox");
 MODULE_DESCRIPTION("SCSI low-level driver for ATA in ACPI mode");
 MODULE_LICENSE("GPL");
 MODULE_DEVICE_TABLE(pci, pacpi_pci_tbl);
 MODULE_VERSION(DRV_VERSION);
-

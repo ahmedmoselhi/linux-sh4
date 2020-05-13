@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * NetLabel Management Support
  *
@@ -5,34 +6,18 @@
  * NetLabel system manages static and dynamic label mappings for network
  * protocols such as CIPSO and RIPSO.
  *
- * Author: Paul Moore <paul.moore@hp.com>
- *
+ * Author: Paul Moore <paul@paul-moore.com>
  */
 
 /*
  * (c) Copyright Hewlett-Packard Development Company, L.P., 2006
- *
- * This program is free software;  you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY;  without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See
- * the GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program;  if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
- *
  */
 
 #ifndef _NETLABEL_MGMT_H
 #define _NETLABEL_MGMT_H
 
 #include <net/netlabel.h>
-#include <asm/atomic.h>
+#include <linux/atomic.h>
 
 /*
  * The following NetLabel payloads are supported by the management interface.
@@ -59,7 +44,10 @@
  *
  *     NLBL_MGMT_A_CV4DOI
  *
- *   If using NETLBL_NLTYPE_UNLABELED no other attributes are required.
+ *   If using NETLBL_NLTYPE_UNLABELED no other attributes are required,
+ *   however the following attribute may optionally be sent:
+ *
+ *     NLBL_MGMT_A_FAMILY
  *
  * o REMOVE:
  *   Sent by an application to remove a domain mapping from the NetLabel
@@ -78,6 +66,7 @@
  *   Required attributes:
  *
  *     NLBL_MGMT_A_DOMAIN
+ *     NLBL_MGMT_A_FAMILY
  *
  *   If the IP address selectors are not used the following attribute is
  *   required:
@@ -109,7 +98,10 @@
  *
  *     NLBL_MGMT_A_CV4DOI
  *
- *   If using NETLBL_NLTYPE_UNLABELED no other attributes are required.
+ *   If using NETLBL_NLTYPE_UNLABELED no other attributes are required,
+ *   however the following attribute may optionally be sent:
+ *
+ *     NLBL_MGMT_A_FAMILY
  *
  * o REMOVEDEF:
  *   Sent by an application to remove the default domain mapping from the
@@ -118,13 +110,17 @@
  * o LISTDEF:
  *   This message can be sent either from an application or by the kernel in
  *   response to an application generated LISTDEF message.  When sent by an
- *   application there is no payload.  On success the kernel should send a
- *   response using the following format.
+ *   application there may be an optional payload.
  *
- *   If the IP address selectors are not used the following attribute is
+ *     NLBL_MGMT_A_FAMILY
+ *
+ *   On success the kernel should send a response using the following format:
+ *
+ *   If the IP address selectors are not used the following attributes are
  *   required:
  *
  *     NLBL_MGMT_A_PROTOCOL
+ *     NLBL_MGMT_A_FAMILY
  *
  *   If the IP address selectors are used then the following attritbute is
  *   required:
@@ -173,7 +169,6 @@ enum {
 	NLBL_MGMT_C_VERSION,
 	__NLBL_MGMT_C_MAX,
 };
-#define NLBL_MGMT_C_MAX (__NLBL_MGMT_C_MAX - 1)
 
 /* NetLabel Management attributes */
 enum {
@@ -211,6 +206,12 @@ enum {
 	/* (NLA_NESTED)
 	 * the selector list, there must be at least one
 	 * NLBL_MGMT_A_ADDRSELECTOR attribute */
+	NLBL_MGMT_A_FAMILY,
+	/* (NLA_U16)
+	 * The address family */
+	NLBL_MGMT_A_CLPDOI,
+	/* (NLA_U32)
+	 * the CALIPSO DOI value */
 	__NLBL_MGMT_A_MAX,
 };
 #define NLBL_MGMT_A_MAX (__NLBL_MGMT_A_MAX - 1)

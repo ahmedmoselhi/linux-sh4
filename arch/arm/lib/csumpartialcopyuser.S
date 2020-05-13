@@ -1,14 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *  linux/arch/arm/lib/csumpartialcopyuser.S
  *
  *  Copyright (C) 1995-1998 Russell King
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  * 27/03/03 Ian Molton Clean up CONFIG_CPU
- *
  */
 #include <linux/linkage.h>
 #include <asm/assembler.h>
@@ -17,6 +13,19 @@
 
 		.text
 
+#ifdef CONFIG_CPU_SW_DOMAIN_PAN
+		.macro	save_regs
+		mrc	p15, 0, ip, c3, c0, 0
+		stmfd	sp!, {r1, r2, r4 - r8, ip, lr}
+		uaccess_enable ip
+		.endm
+
+		.macro	load_regs
+		ldmfd	sp!, {r1, r2, r4 - r8, ip, lr}
+		mcr	p15, 0, ip, c3, c0, 0
+		ret	lr
+		.endm
+#else
 		.macro	save_regs
 		stmfd	sp!, {r1, r2, r4 - r8, lr}
 		.endm
@@ -24,6 +33,7 @@
 		.macro	load_regs
 		ldmfd	sp!, {r1, r2, r4 - r8, pc}
 		.endm
+#endif
 
 		.macro	load1b,	reg1
 		ldrusr	\reg1, r0, 1
@@ -68,16 +78,20 @@
  * so properly, we would have to add in whatever registers were loaded before
  * the fault, which, with the current asm above is not predictable.
  */
-		.section .fixup,"ax"
+		.pushsection .text.fixup,"ax"
 		.align	4
 9001:		mov	r4, #-EFAULT
-		ldr	r5, [fp, #4]		@ *err_ptr
+#ifdef CONFIG_CPU_SW_DOMAIN_PAN
+		ldr	r5, [sp, #9*4]		@ *err_ptr
+#else
+		ldr	r5, [sp, #8*4]		@ *err_ptr
+#endif
 		str	r4, [r5]
 		ldmia	sp, {r1, r2}		@ retrieve dst, len
 		add	r2, r2, r1
 		mov	r0, #0			@ zero the buffer
 9002:		teq	r2, r1
-		strneb	r0, [r1], #1
+		strbne	r0, [r1], #1
 		bne	9002b
 		load_regs
-		.previous
+		.popsection

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  RouterBoard 500 specific prom routines
  *
@@ -6,30 +7,14 @@
  *  Copyright (C) 2007, Gabor Juhos <juhosg@openwrt.org>
  *			Felix Fietkau <nbd@openwrt.org>
  *			Florian Fainelli <florian@openwrt.org>
- *
- *  This program is free software; you can redistribute it and/or
- *  modify it under the terms of the GNU General Public License
- *  as published by the Free Software Foundation; either version 2
- *  of the License, or (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the
- *  Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
- *  Boston, MA  02110-1301, USA.
- *
  */
 
 #include <linux/init.h>
 #include <linux/mm.h>
-#include <linux/module.h>
+#include <linux/export.h>
 #include <linux/string.h>
 #include <linux/console.h>
-#include <linux/bootmem.h>
+#include <linux/memblock.h>
 #include <linux/ioport.h>
 #include <linux/blkdev.h>
 
@@ -69,15 +54,14 @@ static inline unsigned long tag2ul(char *arg, const char *tag)
 
 void __init prom_setup_cmdline(void)
 {
-	static char cmd_line[CL_SIZE] __initdata;
+	static char cmd_line[COMMAND_LINE_SIZE] __initdata;
 	char *cp, *board;
 	int prom_argc;
-	char **prom_argv, **prom_envp;
+	char **prom_argv;
 	int i;
 
 	prom_argc = fw_arg0;
 	prom_argv = (char **) fw_arg1;
-	prom_envp = (char **) fw_arg2;
 
 	cp = cmd_line;
 		/* Note: it is common that parameters start
@@ -115,7 +99,7 @@ void __init prom_setup_cmdline(void)
 		strcpy(cp, arcs_cmdline);
 		cp += strlen(arcs_cmdline);
 	}
-	cmd_line[CL_SIZE-1] = '\0';
+	cmd_line[COMMAND_LINE_SIZE - 1] = '\0';
 
 	strcpy(arcs_cmdline, cmd_line);
 }
@@ -123,10 +107,10 @@ void __init prom_setup_cmdline(void)
 void __init prom_init(void)
 {
 	struct ddr_ram __iomem *ddr;
-	phys_t memsize;
-	phys_t ddrbase;
+	phys_addr_t memsize;
+	phys_addr_t ddrbase;
 
-	ddr = ioremap_nocache(ddr_reg[0].start,
+	ddr = ioremap(ddr_reg[0].start,
 			ddr_reg[0].end - ddr_reg[0].start);
 
 	if (!ddr) {
@@ -134,8 +118,8 @@ void __init prom_init(void)
 		return;
 	}
 
-	ddrbase = (phys_t)&ddr->ddrbase;
-	memsize = (phys_t)&ddr->ddrmask;
+	ddrbase = (phys_addr_t)&ddr->ddrbase;
+	memsize = (phys_addr_t)&ddr->ddrmask;
 	memsize = 0 - memsize;
 
 	prom_setup_cmdline();

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  Copyright (C) 1995-1996  Linus Torvalds & authors (see below)
  */
@@ -105,12 +106,13 @@
 #include <linux/delay.h>
 #include <linux/ide.h>
 #include <linux/init.h>
+#include <linux/module.h>
 
 #include <asm/io.h>
 
 #define DRV_NAME "cmd640"
 
-static int cmd640_vlb;
+static bool cmd640_vlb;
 
 /*
  * CMD640 specific registers definition.
@@ -572,9 +574,10 @@ static void cmd640_set_mode(ide_drive_t *drive, unsigned int index,
 	program_drive_counts(drive, index);
 }
 
-static void cmd640_set_pio_mode(ide_drive_t *drive, const u8 pio)
+static void cmd640_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
 	unsigned int index = 0, cycle_time;
+	const u8 pio = drive->pio_mode - XFER_PIO_0;
 	u8 b;
 
 	switch (pio) {
@@ -605,7 +608,7 @@ static void cmd640_set_pio_mode(ide_drive_t *drive, const u8 pio)
 }
 #endif /* CONFIG_BLK_DEV_CMD640_ENHANCED */
 
-static void cmd640_init_dev(ide_drive_t *drive)
+static void __init cmd640_init_dev(ide_drive_t *drive)
 {
 	unsigned int i = drive->hwif->channel * 2 + (drive->dn & 1);
 
@@ -683,7 +686,7 @@ static int pci_conf2(void)
 	return 0;
 }
 
-static const struct ide_port_info cmd640_port_info __initdata = {
+static const struct ide_port_info cmd640_port_info __initconst = {
 	.chipset		= ide_cmd640,
 	.host_flags		= IDE_HFLAG_SERIALIZE |
 				  IDE_HFLAG_NO_DMA |
@@ -693,7 +696,7 @@ static const struct ide_port_info cmd640_port_info __initdata = {
 	.pio_mask		= ATA_PIO5,
 };
 
-static int cmd640x_init_one(unsigned long base, unsigned long ctl)
+static int __init cmd640x_init_one(unsigned long base, unsigned long ctl)
 {
 	if (!request_region(base, 8, DRV_NAME)) {
 		printk(KERN_ERR "%s: I/O resource 0x%lX-0x%lX not free.\n",

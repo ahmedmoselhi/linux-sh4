@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * linux/arch/alpha/kernel/sys_marvel.c
  *
@@ -13,7 +14,6 @@
 #include <linux/bitops.h>
 
 #include <asm/ptrace.h>
-#include <asm/system.h>
 #include <asm/dma.h>
 #include <asm/irq.h>
 #include <asm/mmu_context.h>
@@ -23,7 +23,6 @@
 #include <asm/hwrpb.h>
 #include <asm/tlbflush.h>
 #include <asm/vga.h>
-#include <asm/rtc.h>
 
 #include "proto.h"
 #include "err_impl.h"
@@ -104,9 +103,10 @@ io7_get_irq_ctl(unsigned int irq, struct io7 **pio7)
 }
 
 static void
-io7_enable_irq(unsigned int irq)
+io7_enable_irq(struct irq_data *d)
 {
 	volatile unsigned long *ctl;
+	unsigned int irq = d->irq;
 	struct io7 *io7;
 
 	ctl = io7_get_irq_ctl(irq, &io7);
@@ -115,18 +115,19 @@ io7_enable_irq(unsigned int irq)
 		       __func__, irq);
 		return;
 	}
-		
-	spin_lock(&io7->irq_lock);
+
+	raw_spin_lock(&io7->irq_lock);
 	*ctl |= 1UL << 24;
 	mb();
 	*ctl;
-	spin_unlock(&io7->irq_lock);
+	raw_spin_unlock(&io7->irq_lock);
 }
 
 static void
-io7_disable_irq(unsigned int irq)
+io7_disable_irq(struct irq_data *d)
 {
 	volatile unsigned long *ctl;
+	unsigned int irq = d->irq;
 	struct io7 *io7;
 
 	ctl = io7_get_irq_ctl(irq, &io7);
@@ -135,68 +136,38 @@ io7_disable_irq(unsigned int irq)
 		       __func__, irq);
 		return;
 	}
-		
-	spin_lock(&io7->irq_lock);
+
+	raw_spin_lock(&io7->irq_lock);
 	*ctl &= ~(1UL << 24);
 	mb();
 	*ctl;
-	spin_unlock(&io7->irq_lock);
-}
-
-static unsigned int
-io7_startup_irq(unsigned int irq)
-{
-	io7_enable_irq(irq);
-	return 0;	/* never anything pending */
+	raw_spin_unlock(&io7->irq_lock);
 }
 
 static void
-io7_end_irq(unsigned int irq)
+marvel_irq_noop(struct irq_data *d)
 {
-	if (!(irq_desc[irq].status & (IRQ_DISABLED|IRQ_INPROGRESS)))
-		io7_enable_irq(irq);
-}
-
-static void
-marvel_irq_noop(unsigned int irq) 
-{ 
-	return; 
-}
-
-static unsigned int
-marvel_irq_noop_return(unsigned int irq) 
-{ 
-	return 0; 
+	return;
 }
 
 static struct irq_chip marvel_legacy_irq_type = {
 	.name		= "LEGACY",
-	.startup	= marvel_irq_noop_return,
-	.shutdown	= marvel_irq_noop,
-	.enable		= marvel_irq_noop,
-	.disable	= marvel_irq_noop,
-	.ack		= marvel_irq_noop,
-	.end		= marvel_irq_noop,
+	.irq_mask	= marvel_irq_noop,
+	.irq_unmask	= marvel_irq_noop,
 };
 
 static struct irq_chip io7_lsi_irq_type = {
 	.name		= "LSI",
-	.startup	= io7_startup_irq,
-	.shutdown	= io7_disable_irq,
-	.enable		= io7_enable_irq,
-	.disable	= io7_disable_irq,
-	.ack		= io7_disable_irq,
-	.end		= io7_end_irq,
+	.irq_unmask	= io7_enable_irq,
+	.irq_mask	= io7_disable_irq,
+	.irq_mask_ack	= io7_disable_irq,
 };
 
 static struct irq_chip io7_msi_irq_type = {
 	.name		= "MSI",
-	.startup	= io7_startup_irq,
-	.shutdown	= io7_disable_irq,
-	.enable		= io7_enable_irq,
-	.disable	= io7_disable_irq,
-	.ack		= marvel_irq_noop,
-	.end		= io7_end_irq,
+	.irq_unmask	= io7_enable_irq,
+	.irq_mask	= io7_disable_irq,
+	.irq_ack	= marvel_irq_noop,
 };
 
 static void
@@ -293,7 +264,7 @@ init_io7_irqs(struct io7 *io7,
 	 */
 	printk("  Interrupts reported to CPU at PE %u\n", boot_cpuid);
 
-	spin_lock(&io7->irq_lock);
+	raw_spin_lock(&io7->irq_lock);
 
 	/* set up the error irqs */
 	io7_redirect_irq(io7, &io7->csrs->HLT_CTL.csr, boot_cpuid);
@@ -304,8 +275,8 @@ init_io7_irqs(struct io7 *io7,
 
 	/* Set up the lsi irqs.  */
 	for (i = 0; i < 128; ++i) {
-		irq_desc[base + i].status = IRQ_DISABLED | IRQ_LEVEL;
-		irq_desc[base + i].chip = lsi_ops;
+		irq_set_chip_and_handler(base + i, lsi_ops, handle_level_irq);
+		irq_set_status_flags(i, IRQ_LEVEL);
 	}
 
 	/* Disable the implemented irqs in hardware.  */
@@ -318,14 +289,14 @@ init_io7_irqs(struct io7 *io7,
 
 	/* Set up the msi irqs.  */
 	for (i = 128; i < (128 + 512); ++i) {
-		irq_desc[base + i].status = IRQ_DISABLED | IRQ_LEVEL;
-		irq_desc[base + i].chip = msi_ops;
+		irq_set_chip_and_handler(base + i, msi_ops, handle_level_irq);
+		irq_set_status_flags(i, IRQ_LEVEL);
 	}
 
 	for (i = 0; i < 16; ++i)
 		init_one_io7_msi(io7, i, boot_cpuid);
 
-	spin_unlock(&io7->irq_lock);
+	raw_spin_unlock(&io7->irq_lock);
 }
 
 static void __init
@@ -336,8 +307,8 @@ marvel_init_irq(void)
 
 	/* Reserve the legacy irqs.  */
 	for (i = 0; i < 16; ++i) {
-		irq_desc[i].status = IRQ_DISABLED;
-		irq_desc[i].chip = &marvel_legacy_irq_type;
+		irq_set_chip_and_handler(i, &marvel_legacy_irq_type,
+					 handle_level_irq);
 	}
 
 	/* Init the io7 irqs.  */
@@ -346,8 +317,9 @@ marvel_init_irq(void)
 }
 
 static int 
-marvel_map_irq(struct pci_dev *dev, u8 slot, u8 pin)
+marvel_map_irq(const struct pci_dev *cdev, u8 slot, u8 pin)
 {
+	struct pci_dev *dev = (struct pci_dev *)cdev;
 	struct pci_controller *hose = dev->sysdata;
 	struct io7_port *io7_port = hose->sysdata;
 	struct io7 *io7 = io7_port->io7;
@@ -360,7 +332,7 @@ marvel_map_irq(struct pci_dev *dev, u8 slot, u8 pin)
 	pci_read_config_byte(dev, PCI_INTERRUPT_LINE, &intline);
 	irq = intline;
 
-	msi_loc = pci_find_capability(dev, PCI_CAP_ID_MSI);
+	msi_loc = dev->msi_cap;
 	msg_ctl = 0;
 	if (msi_loc) 
 		pci_read_config_word(dev, msi_loc + PCI_MSI_FLAGS, &msg_ctl);
@@ -412,7 +384,8 @@ marvel_init_pci(void)
 
 	marvel_register_error_handlers();
 
-	pci_probe_only = 1;
+	/* Indicate that we trust the console to configure things properly */
+	pci_set_flags(PCI_PROBE_ONLY);
 	common_init_pci();
 	locate_and_init_vga(NULL);
 
@@ -424,58 +397,7 @@ marvel_init_pci(void)
 static void __init
 marvel_init_rtc(void)
 {
-	init_rtc_irq();
-}
-
-struct marvel_rtc_time {
-	struct rtc_time *time;
-	int retval;
-};
-
-#ifdef CONFIG_SMP
-static void
-smp_get_rtc_time(void *data)
-{
-	struct marvel_rtc_time *mrt = data;
-	mrt->retval = __get_rtc_time(mrt->time);
-}
-
-static void
-smp_set_rtc_time(void *data)
-{
-	struct marvel_rtc_time *mrt = data;
-	mrt->retval = __set_rtc_time(mrt->time);
-}
-#endif
-
-static unsigned int
-marvel_get_rtc_time(struct rtc_time *time)
-{
-#ifdef CONFIG_SMP
-	struct marvel_rtc_time mrt;
-
-	if (smp_processor_id() != boot_cpuid) {
-		mrt.time = time;
-		smp_call_function_single(boot_cpuid, smp_get_rtc_time, &mrt, 1);
-		return mrt.retval;
-	}
-#endif
-	return __get_rtc_time(time);
-}
-
-static int
-marvel_set_rtc_time(struct rtc_time *time)
-{
-#ifdef CONFIG_SMP
-	struct marvel_rtc_time mrt;
-
-	if (smp_processor_id() != boot_cpuid) {
-		mrt.time = time;
-		smp_call_function_single(boot_cpuid, smp_set_rtc_time, &mrt, 1);
-		return mrt.retval;
-	}
-#endif
-	return __set_rtc_time(time);
+	init_rtc_irq(NULL);
 }
 
 static void
@@ -519,8 +441,7 @@ struct alpha_machine_vector marvel_ev7_mv __initmv = {
 	.vector_name		= "MARVEL/EV7",
 	DO_EV7_MMU,
 	.rtc_port		= 0x70,
-	.rtc_get_time		= marvel_get_rtc_time,
-	.rtc_set_time		= marvel_set_rtc_time,
+	.rtc_boot_cpu_only	= 1,
 	DO_MARVEL_IO,
 	.machine_check		= marvel_machine_check,
 	.max_isa_dma_address	= ALPHA_MAX_ISA_DMA_ADDRESS,

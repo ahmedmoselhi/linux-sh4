@@ -1,11 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2008-2009 Michal Simek <monstr@monstr.eu>
  * Copyright (C) 2008-2009 PetaLogix
  * Copyright (C) 2006 Atmark Techno, Inc.
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License. See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 
 #ifndef _ASM_MICROBLAZE_PGTABLE_H
@@ -13,8 +10,9 @@
 
 #include <asm/setup.h>
 
-#define io_remap_pfn_range(vma, vaddr, pfn, size, prot)		\
-		remap_pfn_range(vma, vaddr, pfn, size, prot)
+#ifndef __ASSEMBLY__
+extern int mem_init_done;
+#endif
 
 #ifndef CONFIG_MMU
 
@@ -32,6 +30,8 @@
 #define PAGE_KERNEL		__pgprot(0) /* these mean nothing to non MMU */
 
 #define pgprot_noncached(x)	(x)
+#define pgprot_writecombine	pgprot_noncached
+#define pgprot_device		pgprot_noncached
 
 #define __swp_type(x)		(0)
 #define __swp_offset(x)		(0)
@@ -39,21 +39,24 @@
 #define __pte_to_swp_entry(pte)	((swp_entry_t) { pte_val(pte) })
 #define __swp_entry_to_pte(x)	((pte_t) { (x).val })
 
-#ifndef __ASSEMBLY__
-static inline int pte_file(pte_t pte) { return 0; }
-#endif /* __ASSEMBLY__ */
-
 #define ZERO_PAGE(vaddr)	({ BUG(); NULL; })
 
 #define swapper_pg_dir ((pgd_t *) NULL)
 
-#define pgtable_cache_init()	do {} while (0)
-
 #define arch_enter_lazy_cpu_mode()	do {} while (0)
+
+#define pgprot_noncached_wc(prot)	prot
+
+/*
+ * All 32bit addresses are effectively valid for vmalloc...
+ * Sort of meaningless for non-VM targets.
+ */
+#define	VMALLOC_START	0
+#define	VMALLOC_END	0xffffffff
 
 #else /* CONFIG_MMU */
 
-#include <asm-generic/4level-fixup.h>
+#include <asm-generic/pgtable-nopmd.h>
 
 #ifdef __KERNEL__
 #ifndef __ASSEMBLY__
@@ -64,30 +67,38 @@ static inline int pte_file(pte_t pte) { return 0; }
 #include <asm/mmu.h>
 #include <asm/page.h>
 
-#define FIRST_USER_ADDRESS	0
+#define FIRST_USER_ADDRESS	0UL
 
 extern unsigned long va_to_phys(unsigned long address);
 extern pte_t *va_to_pte(unsigned long address);
-extern unsigned long ioremap_bot, ioremap_base;
 
 /*
  * The following only work if pte_present() is true.
  * Undefined behaviour if not..
  */
 
-static inline int pte_special(pte_t pte)	{ return 0; }
-
-static inline pte_t pte_mkspecial(pte_t pte)	{ return pte; }
-
 /* Start and end of the vmalloc area. */
 /* Make sure to map the vmalloc area above the pinned kernel memory area
    of 32Mb.  */
-#define VMALLOC_START	(CONFIG_KERNEL_START + \
-				max(32 * 1024 * 1024UL, memory_size))
+#define VMALLOC_START	(CONFIG_KERNEL_START + CONFIG_LOWMEM_SIZE)
 #define VMALLOC_END	ioremap_bot
-#define VMALLOC_VMADDR(x) ((unsigned long)(x))
 
 #endif /* __ASSEMBLY__ */
+
+/*
+ * Macro to mark a page protection value as "uncacheable".
+ */
+
+#define _PAGE_CACHE_CTL	(_PAGE_GUARDED | _PAGE_NO_CACHE | \
+							_PAGE_WRITETHRU)
+
+#define pgprot_noncached(prot) \
+			(__pgprot((pgprot_val(prot) & ~_PAGE_CACHE_CTL) | \
+					_PAGE_NO_CACHE | _PAGE_GUARDED))
+
+#define pgprot_noncached_wc(prot) \
+			 (__pgprot((pgprot_val(prot) & ~_PAGE_CACHE_CTL) | \
+							_PAGE_NO_CACHE))
 
 /*
  * The MicroBlaze MMU is identical to the PPC-40x MMU, and uses a hash
@@ -118,13 +129,8 @@ static inline pte_t pte_mkspecial(pte_t pte)	{ return pte; }
  *
  */
 
-/* PMD_SHIFT determines the size of the area mapped by the PTE pages */
-#define PMD_SHIFT	(PAGE_SHIFT + PTE_SHIFT)
-#define PMD_SIZE	(1UL << PMD_SHIFT)
-#define PMD_MASK	(~(PMD_SIZE-1))
-
 /* PGDIR_SHIFT determines what a top-level page table entry can map */
-#define PGDIR_SHIFT	PMD_SHIFT
+#define PGDIR_SHIFT	(PAGE_SHIFT + PTE_SHIFT)
 #define PGDIR_SIZE	(1UL << PGDIR_SHIFT)
 #define PGDIR_MASK	(~(PGDIR_SIZE-1))
 
@@ -145,9 +151,6 @@ static inline pte_t pte_mkspecial(pte_t pte)	{ return pte; }
 #define pte_ERROR(e) \
 	printk(KERN_ERR "%s:%d: bad pte "PTE_FMT".\n", \
 		__FILE__, __LINE__, pte_val(e))
-#define pmd_ERROR(e) \
-	printk(KERN_ERR "%s:%d: bad pmd %08lx.\n", \
-		__FILE__, __LINE__, pmd_val(e))
 #define pgd_ERROR(e) \
 	printk(KERN_ERR "%s:%d: bad pgd %08lx.\n", \
 		__FILE__, __LINE__, pgd_val(e))
@@ -178,14 +181,13 @@ static inline pte_t pte_mkspecial(pte_t pte)	{ return pte; }
  * is cleared in the TLB miss handler before the TLB entry is loaded.
  * - All other bits of the PTE are loaded into TLBLO without
  *  * modification, leaving us only the bits 20, 21, 24, 25, 26, 30 for
- * software PTE bits.  We actually use use bits 21, 24, 25, and
+ * software PTE bits.  We actually use bits 21, 24, 25, and
  * 30 respectively for the software bits: ACCESSED, DIRTY, RW, and
  * PRESENT.
  */
 
 /* Definitions for MicroBlaze. */
 #define	_PAGE_GUARDED	0x001	/* G: page is guarded from prefetch */
-#define _PAGE_FILE	0x001	/* when !present: nonlinear file mapping */
 #define _PAGE_PRESENT	0x002	/* software: PTE contains a translation */
 #define	_PAGE_NO_CACHE	0x004	/* I: caching is inhibited */
 #define	_PAGE_WRITETHRU	0x008	/* W: caching is write-through */
@@ -208,12 +210,6 @@ static inline pte_t pte_mkspecial(pte_t pte)	{ return pte; }
 #endif
 #ifndef _PAGE_SHARED
 #define _PAGE_SHARED	0
-#endif
-#ifndef _PAGE_HWWRITE
-#define _PAGE_HWWRITE	0
-#endif
-#ifndef _PAGE_HWEXEC
-#define _PAGE_HWEXEC	0
 #endif
 #ifndef _PAGE_EXEC
 #define _PAGE_EXEC	0
@@ -301,18 +297,6 @@ extern unsigned long empty_zero_page[1024];
 
 #ifndef __ASSEMBLY__
 /*
- * The "pgd_xxx()" functions here are trivial for a folded two-level
- * setup: the pgd is never bad, and a pmd always exists (as it's folded
- * into the pgd entry)
- */
-static inline int pgd_none(pgd_t pgd)		{ return 0; }
-static inline int pgd_bad(pgd_t pgd)		{ return 0; }
-static inline int pgd_present(pgd_t pgd)	{ return 1; }
-#define pgd_clear(xp)				do { } while (0)
-#define pgd_page(pgd) \
-	((unsigned long) __va(pgd_val(pgd) & PAGE_MASK))
-
-/*
  * The following only work if pte_present() is true.
  * Undefined behaviour if not..
  */
@@ -321,7 +305,6 @@ static inline int pte_write(pte_t pte) { return pte_val(pte) & _PAGE_RW; }
 static inline int pte_exec(pte_t pte)  { return pte_val(pte) & _PAGE_EXEC; }
 static inline int pte_dirty(pte_t pte) { return pte_val(pte) & _PAGE_DIRTY; }
 static inline int pte_young(pte_t pte) { return pte_val(pte) & _PAGE_ACCESSED; }
-static inline int pte_file(pte_t pte)  { return pte_val(pte) & _PAGE_FILE; }
 
 static inline void pte_uncache(pte_t pte) { pte_val(pte) |= _PAGE_NO_CACHE; }
 static inline void pte_cache(pte_t pte)   { pte_val(pte) &= ~_PAGE_NO_CACHE; }
@@ -385,20 +368,19 @@ static inline pte_t pte_modify(pte_t pte, pgprot_t newprot)
 static inline unsigned long pte_update(pte_t *p, unsigned long clr,
 				unsigned long set)
 {
-	unsigned long old, tmp, msr;
+	unsigned long flags, old, tmp;
 
-	__asm__ __volatile__("\
-	msrclr	%2, 0x2\n\
-	nop\n\
-	lw	%0, %4, r0\n\
-	andn	%1, %0, %5\n\
-	or	%1, %1, %6\n\
-	sw	%1, %4, r0\n\
-	mts     rmsr, %2\n\
-	nop"
-	: "=&r" (old), "=&r" (tmp), "=&r" (msr), "=m" (*p)
-	: "r" ((unsigned long)(p+1) - 4), "r" (clr), "r" (set), "m" (*p)
-	: "cc");
+	raw_local_irq_save(flags);
+
+	__asm__ __volatile__(	"lw	%0, %2, r0	\n"
+				"andn	%1, %0, %3	\n"
+				"or	%1, %1, %4	\n"
+				"sw	%1, %2, r0	\n"
+			: "=&r" (old), "=&r" (tmp)
+			: "r" ((unsigned long)(p + 1) - 4), "r" (clr), "r" (set)
+			: "cc");
+
+	raw_local_irq_restore(flags);
 
 	return old;
 }
@@ -418,8 +400,9 @@ static inline void set_pte_at(struct mm_struct *mm, unsigned long addr,
 	*ptep = pte;
 }
 
-static inline int ptep_test_and_clear_young(struct mm_struct *mm,
-		unsigned long addr, pte_t *ptep)
+#define __HAVE_ARCH_PTEP_TEST_AND_CLEAR_YOUNG
+static inline int ptep_test_and_clear_young(struct vm_area_struct *vma,
+		unsigned long address, pte_t *ptep)
 {
 	return (pte_update(ptep, _PAGE_ACCESSED, 0) & _PAGE_ACCESSED) != 0;
 }
@@ -431,6 +414,7 @@ static inline int ptep_test_and_clear_dirty(struct mm_struct *mm,
 		(_PAGE_DIRTY | _PAGE_HWWRITE), 0) & _PAGE_DIRTY) != 0;
 }
 
+#define __HAVE_ARCH_PTEP_GET_AND_CLEAR
 static inline pte_t ptep_get_and_clear(struct mm_struct *mm,
 		unsigned long addr, pte_t *ptep)
 {
@@ -466,40 +450,17 @@ static inline void ptep_mkdirty(struct mm_struct *mm,
 #define pgd_index(address)	 ((address) >> PGDIR_SHIFT)
 #define pgd_offset(mm, address)	 ((mm)->pgd + pgd_index(address))
 
-/* Find an entry in the second-level page table.. */
-static inline pmd_t *pmd_offset(pgd_t *dir, unsigned long address)
-{
-	return (pmd_t *) dir;
-}
-
 /* Find an entry in the third-level page table.. */
 #define pte_index(address)		\
 	(((address) >> PAGE_SHIFT) & (PTRS_PER_PTE - 1))
 #define pte_offset_kernel(dir, addr)	\
 	((pte_t *) pmd_page_kernel(*(dir)) + pte_index(addr))
 #define pte_offset_map(dir, addr)		\
-	((pte_t *) kmap_atomic(pmd_page(*(dir)), KM_PTE0) + pte_index(addr))
-#define pte_offset_map_nested(dir, addr)	\
-	((pte_t *) kmap_atomic(pmd_page(*(dir)), KM_PTE1) + pte_index(addr))
+	((pte_t *) kmap_atomic(pmd_page(*(dir))) + pte_index(addr))
 
-#define pte_unmap(pte)		kunmap_atomic(pte, KM_PTE0)
-#define pte_unmap_nested(pte)	kunmap_atomic(pte, KM_PTE1)
-
-/* Encode and decode a nonlinear file mapping entry */
-#define PTE_FILE_MAX_BITS	29
-#define pte_to_pgoff(pte)	(pte_val(pte) >> 3)
-#define pgoff_to_pte(off)	((pte_t) { ((off) << 3) | _PAGE_FILE })
+#define pte_unmap(pte)		kunmap_atomic(pte)
 
 extern pgd_t swapper_pg_dir[PTRS_PER_PGD];
-
-/*
- * When flushing the tlb entry for a page, we also need to flush the hash
- * table entry.  flush_hash_page is assembler (for speed) in hashtable.S.
- */
-extern int flush_hash_page(unsigned context, unsigned long va, pte_t *ptep);
-
-/* Add an HPTE to the hash table */
-extern void add_hash_page(unsigned context, unsigned long va, pte_t *ptep);
 
 /*
  * Encode and decode a swap entry.
@@ -514,15 +475,7 @@ extern void add_hash_page(unsigned context, unsigned long va, pte_t *ptep);
 #define __pte_to_swp_entry(pte)	((swp_entry_t) { pte_val(pte) >> 2 })
 #define __swp_entry_to_pte(x)	((pte_t) { (x).val << 2 })
 
-
-/* CONFIG_APUS */
-/* For virtual address to physical address conversion */
-extern void cache_clear(__u32 addr, int length);
-extern void cache_push(__u32 addr, int length);
-extern int mm_end_of_chunk(unsigned long addr, int len);
 extern unsigned long iopa(unsigned long addr);
-/* extern unsigned long mm_ptov(unsigned long addr) \
-	__attribute__ ((const)); TBD */
 
 /* Values for nocacheflag and cmode */
 /* These are not used by the APUS kernel_map, but prevents
@@ -533,51 +486,21 @@ extern unsigned long iopa(unsigned long addr);
 #define	IOMAP_NOCACHE_NONSER	2
 #define	IOMAP_NO_COPYBACK	3
 
-/*
- * Map some physical address range into the kernel address space.
- */
-extern unsigned long kernel_map(unsigned long paddr, unsigned long size,
-				int nocacheflag, unsigned long *memavailp);
-
-/*
- * Set cache mode of (kernel space) address range.
- */
-extern void kernel_set_cachemode(unsigned long address, unsigned long size,
-				unsigned int cmode);
-
 /* Needs to be defined here and not in linux/mm.h, as it is arch dependent */
 #define kern_addr_valid(addr)	(1)
-
-#define io_remap_page_range remap_page_range
-
-/*
- * No page table caches to initialise
- */
-#define pgtable_cache_init()	do { } while (0)
 
 void do_page_fault(struct pt_regs *regs, unsigned long address,
 		   unsigned long error_code);
 
-void __init io_block_mapping(unsigned long virt, phys_addr_t phys,
-			     unsigned int size, int flags);
-
-void __init adjust_total_lowmem(void);
 void mapin_ram(void);
 int map_page(unsigned long va, phys_addr_t pa, int flags);
 
 extern int mem_init_done;
-extern unsigned long ioremap_base;
-extern unsigned long ioremap_bot;
 
 asmlinkage void __init mmu_init(void);
 
 void __init *early_get_page(void);
 
-void *consistent_alloc(int gfp, size_t size, dma_addr_t *dma_handle);
-void consistent_free(void *vaddr);
-void consistent_sync(void *vaddr, size_t size, int direction);
-void consistent_sync_page(struct page *page, unsigned long offset,
-	size_t size, int direction);
 #endif /* __ASSEMBLY__ */
 #endif /* __KERNEL__ */
 
@@ -585,6 +508,8 @@ void consistent_sync_page(struct page *page, unsigned long offset,
 
 #ifndef __ASSEMBLY__
 #include <asm-generic/pgtable.h>
+
+extern unsigned long ioremap_bot, ioremap_base;
 
 void setup_memory(void);
 #endif /* __ASSEMBLY__ */

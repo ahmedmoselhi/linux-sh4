@@ -28,9 +28,10 @@
 #include <linux/irq.h>
 #include <linux/gpio.h>
 
-#include <mach/gumstix.h>
-#include <mach/mfp-pxa25x.h>
-#include <mach/pxafb.h>
+#include "gumstix.h"
+#include "mfp-pxa25x.h"
+#include <mach/irqs.h>
+#include <linux/platform_data/video-pxafb.h>
 
 #include "generic.h"
 
@@ -125,10 +126,7 @@ static int am300_init_gpio_regs(struct broadsheetfb_par *par)
 		if (err) {
 			dev_err(&am300_device->dev, "failed requesting "
 				"gpio %d, err=%d\n", i, err);
-			while (i >= DB0_GPIO_PIN)
-				gpio_free(i--);
-			i = ARRAY_SIZE(gpios) - 1;
-			goto err_req_gpio;
+			goto err_req_gpio2;
 		}
 	}
 
@@ -159,9 +157,13 @@ static int am300_init_gpio_regs(struct broadsheetfb_par *par)
 
 	return 0;
 
+err_req_gpio2:
+	while (--i >= DB0_GPIO_PIN)
+		gpio_free(i);
+	i = ARRAY_SIZE(gpios);
 err_req_gpio:
-	while (i > 0)
-		gpio_free(gpios[i--]);
+	while (--i >= 0)
+		gpio_free(gpios[i]);
 
 	return err;
 }
@@ -175,7 +177,7 @@ static void am300_cleanup(struct broadsheetfb_par *par)
 {
 	int i;
 
-	free_irq(IRQ_GPIO(RDY_GPIO_PIN), par);
+	free_irq(PXA_GPIO_TO_IRQ(RDY_GPIO_PIN), par);
 
 	for (i = 0; i < ARRAY_SIZE(gpios); i++)
 		gpio_free(gpios[i]);
@@ -239,9 +241,8 @@ static int am300_setup_irq(struct fb_info *info)
 	int ret;
 	struct broadsheetfb_par *par = info->par;
 
-	ret = request_irq(IRQ_GPIO(RDY_GPIO_PIN), am300_handle_irq,
-				IRQF_DISABLED|IRQF_TRIGGER_RISING,
-				"AM300", par);
+	ret = request_irq(PXA_GPIO_TO_IRQ(RDY_GPIO_PIN), am300_handle_irq,
+				IRQF_TRIGGER_RISING, "AM300", par);
 	if (ret)
 		dev_err(&am300_device->dev, "request_irq failed: %d\n", ret);
 
@@ -288,7 +289,7 @@ int __init am300_init(void)
 }
 
 module_param(panel_type, uint, 0);
-MODULE_PARM_DESC(panel_type, "Select the panel type: 6, 8, 97");
+MODULE_PARM_DESC(panel_type, "Select the panel type: 37, 6, 97");
 
 MODULE_DESCRIPTION("board driver for am300 epd kit");
 MODULE_AUTHOR("Jaya Kumar");

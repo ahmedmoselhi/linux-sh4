@@ -1,16 +1,17 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * i2sbus driver -- pcm routines
  *
  * Copyright 2006 Johannes Berg <johannes@sipsolutions.net>
- *
- * GPL v2, can be found in COPYING.
  */
 
-#include <asm/io.h>
+#include <linux/io.h>
 #include <linux/delay.h>
+#include <linux/slab.h>
 #include <sound/core.h>
 #include <asm/macio.h>
 #include <linux/pci.h>
+#include <linux/module.h>
 #include "../soundbus.h"
 #include "i2sbus.h"
 
@@ -177,7 +178,7 @@ static int i2sbus_pcm_open(struct i2sbus_dev *i2sdev, int in)
 	 */
 	if (other->active) {
 		/* FIXME: is this guaranteed by the alsa api? */
-		hw->formats &= (1ULL << i2sdev->format);
+		hw->formats &= pcm_format_to_bits(i2sdev->format);
 		/* see above, restrict rates to the one we already have */
 		hw->rate_min = i2sdev->rate;
 		hw->rate_max = i2sdev->rate;
@@ -293,12 +294,6 @@ void i2sbus_wait_for_stop_both(struct i2sbus_dev *i2sdev)
 }
 #endif
 
-static int i2sbus_hw_params(struct snd_pcm_substream *substream,
-			    struct snd_pcm_hw_params *params)
-{
-	return snd_pcm_lib_malloc_pages(substream, params_buffer_bytes(params));
-}
-
 static inline int i2sbus_hw_free(struct snd_pcm_substream *substream, int in)
 {
 	struct i2sbus_dev *i2sdev = snd_pcm_substream_chip(substream);
@@ -307,7 +302,6 @@ static inline int i2sbus_hw_free(struct snd_pcm_substream *substream, int in)
 	get_pcm_info(i2sdev, in, &pi, NULL);
 	if (pi->dbdma_ring.stopping)
 		i2sbus_wait_for_stop(i2sdev, pi);
-	snd_pcm_lib_free_pages(substream);
 	return 0;
 }
 
@@ -776,11 +770,9 @@ static snd_pcm_uframes_t i2sbus_playback_pointer(struct snd_pcm_substream
 	return i2sbus_pcm_pointer(i2sdev, 0);
 }
 
-static struct snd_pcm_ops i2sbus_playback_ops = {
+static const struct snd_pcm_ops i2sbus_playback_ops = {
 	.open =		i2sbus_playback_open,
 	.close =	i2sbus_playback_close,
-	.ioctl =	snd_pcm_lib_ioctl,
-	.hw_params =	i2sbus_hw_params,
 	.hw_free =	i2sbus_playback_hw_free,
 	.prepare =	i2sbus_playback_prepare,
 	.trigger =	i2sbus_playback_trigger,
@@ -846,11 +838,9 @@ static snd_pcm_uframes_t i2sbus_record_pointer(struct snd_pcm_substream
 	return i2sbus_pcm_pointer(i2sdev, 1);
 }
 
-static struct snd_pcm_ops i2sbus_record_ops = {
+static const struct snd_pcm_ops i2sbus_record_ops = {
 	.open =		i2sbus_record_open,
 	.close =	i2sbus_record_close,
-	.ioctl =	snd_pcm_lib_ioctl,
-	.hw_params =	i2sbus_hw_params,
 	.hw_free =	i2sbus_record_hw_free,
 	.prepare =	i2sbus_record_prepare,
 	.trigger =	i2sbus_record_trigger,
@@ -966,7 +956,6 @@ i2sbus_attach_codec(struct soundbus_dev *dev, struct snd_card *card,
 			printk(KERN_DEBUG "i2sbus: failed to create pcm\n");
 			goto out_put_ci_module;
 		}
-		dev->pcm->dev = &dev->ofdev.dev;
 	}
 
 	/* ALSA yet again sucks.
@@ -986,6 +975,8 @@ i2sbus_attach_codec(struct soundbus_dev *dev, struct snd_card *card,
 			goto out_put_ci_module;
 		snd_pcm_set_ops(dev->pcm, SNDRV_PCM_STREAM_PLAYBACK,
 				&i2sbus_playback_ops);
+		dev->pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].dev.parent =
+			&dev->ofdev.dev;
 		i2sdev->out.created = 1;
 	}
 
@@ -1001,6 +992,8 @@ i2sbus_attach_codec(struct soundbus_dev *dev, struct snd_card *card,
 			goto out_put_ci_module;
 		snd_pcm_set_ops(dev->pcm, SNDRV_PCM_STREAM_CAPTURE,
 				&i2sbus_record_ops);
+		dev->pcm->streams[SNDRV_PCM_STREAM_CAPTURE].dev.parent =
+			&dev->ofdev.dev;
 		i2sdev->in.created = 1;
 	}
 
@@ -1022,9 +1015,9 @@ i2sbus_attach_codec(struct soundbus_dev *dev, struct snd_card *card,
 	dev->pcm->private_free = i2sbus_private_free;
 
 	/* well, we really should support scatter/gather DMA */
-	snd_pcm_lib_preallocate_pages_for_all(
+	snd_pcm_set_managed_buffer_all(
 		dev->pcm, SNDRV_DMA_TYPE_DEV,
-		snd_dma_pci_data(macio_get_pci_dev(i2sdev->macio)),
+		&macio_get_pci_dev(i2sdev->macio)->dev,
 		64 * 1024, 64 * 1024);
 
 	return 0;

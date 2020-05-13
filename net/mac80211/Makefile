@@ -1,29 +1,39 @@
+# SPDX-License-Identifier: GPL-2.0
 obj-$(CONFIG_MAC80211) += mac80211.o
 
 # mac80211 objects
 mac80211-y := \
-	main.o \
+	main.o status.o \
+	driver-ops.o \
 	sta_info.o \
 	wep.o \
+	aead_api.o \
 	wpa.o \
-	scan.o \
+	scan.o offchannel.o \
 	ht.o agg-tx.o agg-rx.o \
+	vht.o \
+	he.o \
 	ibss.o \
-	mlme.o \
 	iface.o \
 	rate.o \
 	michael.o \
 	tkip.o \
-	aes_ccm.o \
 	aes_cmac.o \
+	aes_gmac.o \
+	fils_aead.o \
 	cfg.o \
+	ethtool.o \
 	rx.o \
 	spectmgmt.o \
 	tx.o \
 	key.o \
 	util.o \
 	wme.o \
-	event.o
+	chan.o \
+	trace.o mlme.o \
+	tdls.o \
+	ocb.o \
+	airtime.o
 
 mac80211-$(CONFIG_MAC80211_LEDS) += led.o
 mac80211-$(CONFIG_MAC80211_DEBUGFS) += \
@@ -36,21 +46,22 @@ mac80211-$(CONFIG_MAC80211_MESH) += \
 	mesh.o \
 	mesh_pathtbl.o \
 	mesh_plink.o \
-	mesh_hwmp.o
+	mesh_hwmp.o \
+	mesh_sync.o \
+	mesh_ps.o
 
 mac80211-$(CONFIG_PM) += pm.o
 
-mac80211-$(CONFIG_MAC80211_DRIVER_API_TRACER) += driver-trace.o
-CFLAGS_driver-trace.o := -I$(src)
+CFLAGS_trace.o := -I$(src)
 
-# objects for PID algorithm
-rc80211_pid-y := rc80211_pid_algo.o
-rc80211_pid-$(CONFIG_MAC80211_DEBUGFS) += rc80211_pid_debugfs.o
+rc80211_minstrel-y := \
+	rc80211_minstrel.o \
+	rc80211_minstrel_ht.o
 
-rc80211_minstrel-y := rc80211_minstrel.o
-rc80211_minstrel-$(CONFIG_MAC80211_DEBUGFS) += rc80211_minstrel_debugfs.o
+rc80211_minstrel-$(CONFIG_MAC80211_DEBUGFS) += \
+	rc80211_minstrel_debugfs.o \
+	rc80211_minstrel_ht_debugfs.o
 
-mac80211-$(CONFIG_MAC80211_RC_PID) += $(rc80211_pid-y)
 mac80211-$(CONFIG_MAC80211_RC_MINSTREL) += $(rc80211_minstrel-y)
 
-ccflags-y += -D__CHECK_ENDIAN__
+ccflags-y += -DDEBUG

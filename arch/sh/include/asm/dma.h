@@ -1,11 +1,8 @@
-/*
+/* SPDX-License-Identifier: GPL-2.0
+ *
  * include/asm-sh/dma.h
  *
  * Copyright (C) 2003, 2004  Paul Mundt
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 #ifndef __ASM_SH_DMA_H
 #define __ASM_SH_DMA_H
@@ -14,15 +11,8 @@
 #include <linux/spinlock.h>
 #include <linux/wait.h>
 #include <linux/sched.h>
-#include <linux/sysdev.h>
-#include <cpu/dma.h>
+#include <linux/device.h>
 #include <asm-generic/dma.h>
-
-#ifdef CONFIG_NR_DMA_CHANNELS
-#  define MAX_DMA_CHANNELS   (CONFIG_NR_DMA_CHANNELS)
-#else
-#  define MAX_DMA_CHANNELS   (CONFIG_NR_ONCHIP_DMA_CHANNELS)
-#endif
 
 /*
  * Read and write modes can mean drastically different things depending on the
@@ -65,18 +55,13 @@ struct dma_ops {
 	void (*free)(struct dma_channel *chan);
 
 	int (*get_residue)(struct dma_channel *chan);
-	int (*xfer)(struct dma_channel *chan, unsigned long sar,
-		    unsigned long dar, size_t count, unsigned int mode);
+	int (*xfer)(struct dma_channel *chan);
 	int (*configure)(struct dma_channel *chan, unsigned long flags);
 	int (*extend)(struct dma_channel *chan, unsigned long op, void *param);
 };
 
-struct dma_info;
-
 struct dma_channel {
 	char dev_id[16];		/* unique name per DMAC of channel */
-
-	struct dma_info *info;	/* SIM: can this be simply dma_ops? */
 
 	unsigned int chan;		/* DMAC channel number */
 	unsigned int vchan;		/* Virtual channel number */
@@ -94,7 +79,7 @@ struct dma_channel {
 
 	wait_queue_head_t wait_queue;
 
-	struct sys_device dev;
+	struct device dev;
 	void *priv_data;
 };
 
@@ -157,10 +142,6 @@ extern void dma_remove_sysfs_files(struct dma_channel *, struct dma_info *);
 extern int isa_dma_bridge_buggy;
 #else
 #define isa_dma_bridge_buggy	(0)
-#endif
-
-#ifdef CONFIG_STM_DMA
-#define DMA_REQ_ANY_CHANNEL 0xf0f0f0f0
 #endif
 
 #endif /* __KERNEL__ */

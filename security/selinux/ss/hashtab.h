@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * A hash table (hashtab) maintains associations between
  * key values and datum values.  The type of the key values
@@ -5,7 +6,7 @@
  * functions for hash computation and key comparison are
  * provided by the creator of the table.
  *
- * Author : Stephen Smalley, <sds@epoch.ncsc.mil>
+ * Author : Stephen Smalley, <sds@tycho.nsa.gov>
  */
 #ifndef _SS_HASHTAB_H_
 #define _SS_HASHTAB_H_
@@ -41,7 +42,7 @@ struct hashtab_info {
  */
 struct hashtab *hashtab_create(u32 (*hash_value)(struct hashtab *h, const void *key),
 			       int (*keycmp)(struct hashtab *h, const void *key1, const void *key2),
-			       u32 size);
+			       u32 nel_hint);
 
 /*
  * Inserts the specified (key, datum) pair into the specified hash table.

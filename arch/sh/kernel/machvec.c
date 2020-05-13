@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * arch/sh/kernel/machvec.c
  *
@@ -5,10 +6,6 @@
  *
  *  Copyright (C) 1999  Niibe Yutaka
  *  Copyright (C) 2002 - 2007 Paul Mundt
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 #include <linux/init.h>
 #include <linux/string.h>
@@ -118,22 +115,7 @@ void __init sh_mv_setup(void)
 		sh_mv.mv_##elem = generic_##elem; \
 } while (0)
 
-	mv_set(inb);	mv_set(inw);	mv_set(inl);
-	mv_set(outb);	mv_set(outw);	mv_set(outl);
-
-	mv_set(inb_p);	mv_set(inw_p);	mv_set(inl_p);
-	mv_set(outb_p);	mv_set(outw_p);	mv_set(outl_p);
-
-	mv_set(insb);	mv_set(insw);	mv_set(insl);
-	mv_set(outsb);	mv_set(outsw);	mv_set(outsl);
-
-	mv_set(ioport_map);
-	mv_set(ioport_unmap);
 	mv_set(irq_demux);
 	mv_set(mode_pins);
-
-	if (!sh_mv.mv_nr_irqs)
-		sh_mv.mv_nr_irqs = NR_IRQS;
-
-	__set_io_port_base(P2SEG);
+	mv_set(mem_init);
 }

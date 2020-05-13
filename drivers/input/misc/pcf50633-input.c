@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /* NXP PCF50633 Input Driver
  *
  * (C) 2006-2008 by Openmoko, Inc.
@@ -6,20 +7,14 @@
  *
  * Broken down from monstrous PCF50633 driver mainly by
  * Harald Welte, Andy Green and Werner Almesberger
- *
- *  This program is free software; you can redistribute  it and/or modify it
- *  under  the terms of  the GNU General  Public License as published by the
- *  Free Software Foundation;  either version 2 of the  License, or (at your
- *  option) any later version.
- *
  */
 
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/init.h>
 #include <linux/device.h>
 #include <linux/platform_device.h>
 #include <linux/input.h>
+#include <linux/slab.h>
 
 #include <linux/mfd/pcf50633/core.h>
 
@@ -52,10 +47,9 @@ pcf50633_input_irq(int irq, void *data)
 	input_sync(input->input_dev);
 }
 
-static int __devinit pcf50633_input_probe(struct platform_device *pdev)
+static int pcf50633_input_probe(struct platform_device *pdev)
 {
 	struct pcf50633_input *input;
-	struct pcf50633_subdev_pdata *pdata = pdev->dev.platform_data;
 	struct input_dev *input_dev;
 	int ret;
 
@@ -71,7 +65,7 @@ static int __devinit pcf50633_input_probe(struct platform_device *pdev)
 	}
 
 	platform_set_drvdata(pdev, input);
-	input->pcf = pdata->pcf;
+	input->pcf = dev_to_pcf50633(pdev->dev.parent);
 	input->input_dev = input_dev;
 
 	input_dev->name = "PCF50633 PMU events";
@@ -85,15 +79,15 @@ static int __devinit pcf50633_input_probe(struct platform_device *pdev)
 		kfree(input);
 		return ret;
 	}
-	pcf50633_register_irq(pdata->pcf, PCF50633_IRQ_ONKEYR,
+	pcf50633_register_irq(input->pcf, PCF50633_IRQ_ONKEYR,
 				pcf50633_input_irq, input);
-	pcf50633_register_irq(pdata->pcf, PCF50633_IRQ_ONKEYF,
+	pcf50633_register_irq(input->pcf, PCF50633_IRQ_ONKEYF,
 				pcf50633_input_irq, input);
 
 	return 0;
 }
 
-static int __devexit pcf50633_input_remove(struct platform_device *pdev)
+static int pcf50633_input_remove(struct platform_device *pdev)
 {
 	struct pcf50633_input *input  = platform_get_drvdata(pdev);
 
@@ -111,20 +105,9 @@ static struct platform_driver pcf50633_input_driver = {
 		.name = "pcf50633-input",
 	},
 	.probe = pcf50633_input_probe,
-	.remove = __devexit_p(pcf50633_input_remove),
+	.remove = pcf50633_input_remove,
 };
-
-static int __init pcf50633_input_init(void)
-{
-	return platform_driver_register(&pcf50633_input_driver);
-}
-module_init(pcf50633_input_init);
-
-static void __exit pcf50633_input_exit(void)
-{
-	platform_driver_unregister(&pcf50633_input_driver);
-}
-module_exit(pcf50633_input_exit);
+module_platform_driver(pcf50633_input_driver);
 
 MODULE_AUTHOR("Balaji Rao <balajirrao@openmoko.org>");
 MODULE_DESCRIPTION("PCF50633 input driver");

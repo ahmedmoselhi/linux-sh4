@@ -1,24 +1,12 @@
-include include/asm-generic/Kbuild.asm
+# SPDX-License-Identifier: GPL-2.0
 
-header-y += boot.h
-header-y += bootparam.h
-header-y += debugreg.h
-header-y += ldt.h
-header-y += msr-index.h
-header-y += prctl.h
-header-y += ptrace-abi.h
-header-y += sigcontext32.h
-header-y += ucontext.h
-header-y += processor-flags.h
 
-unifdef-y += e820.h
-unifdef-y += ist.h
-unifdef-y += mce.h
-unifdef-y += msr.h
-unifdef-y += mtrr.h
-unifdef-y += posix_types_32.h
-unifdef-y += posix_types_64.h
-unifdef-y += unistd_32.h
-unifdef-y += unistd_64.h
-unifdef-y += vm86.h
-unifdef-y += vsyscall.h
+generated-y += syscalls_32.h
+generated-y += syscalls_64.h
+generated-y += unistd_32_ia32.h
+generated-y += unistd_64_x32.h
+generated-y += xen-hypercalls.h
+
+generic-y += early_ioremap.h
+generic-y += export.h
+generic-y += mcs_spinlock.h

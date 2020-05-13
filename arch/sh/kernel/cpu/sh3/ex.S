@@ -1,14 +1,11 @@
-/*
+/* SPDX-License-Identifier: GPL-2.0
+ *
  *  arch/sh/kernel/cpu/sh3/ex.S
  *
  *  The SH-3 and SH-4 exception vector table.
-
+ *
  *  Copyright (C) 1999, 2000, 2002  Niibe Yutaka
  *  Copyright (C) 2003 - 2008  Paul Mundt
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 #include <linux/linkage.h>
 
@@ -49,7 +46,7 @@ ENTRY(exception_handling_table)
 	.long	exception_error	! reserved_instruction (filled by trap_init) /* 180 */
 	.long	exception_error	! illegal_slot_instruction (filled by trap_init) /*1A0*/
 	.long	nmi_trap_handler	/* 1C0 */	! Allow trap to debugger
-	.long	break_point_trap	/* 1E0 */
+	.long	breakpoint_trap_handler	/* 1E0 */
 
 	/*
 	 * Pad the remainder of the table out, exceptions residing in far

@@ -29,7 +29,6 @@
  */
 #include <linux/module.h>
 #include <linux/pci.h>
-#include <linux/init.h>
 #include <linux/pagemap.h>
 #include <linux/miscdevice.h>
 #include <linux/pm.h>
@@ -38,8 +37,11 @@
 #include <linux/dma-mapping.h>
 #include <linux/mm.h>
 #include <linux/sched.h>
+#include <linux/slab.h>
 #include <asm/io.h>
-#include <asm/cacheflush.h>
+#ifdef CONFIG_X86
+#include <asm/set_memory.h>
+#endif
 #include <asm/pgtable.h>
 #include "agp.h"
 
@@ -80,13 +82,6 @@ static int agp_get_key(void)
 	return -1;
 }
 
-void agp_flush_chipset(struct agp_bridge_data *bridge)
-{
-	if (bridge->driver->chipset_flush)
-		bridge->driver->chipset_flush(bridge);
-}
-EXPORT_SYMBOL(agp_flush_chipset);
-
 /*
  * Use kmalloc if possible for the page list. Otherwise fall back to
  * vmalloc. This speeds things up and also saves memory for small AGP
@@ -95,28 +90,9 @@ EXPORT_SYMBOL(agp_flush_chipset);
 
 void agp_alloc_page_array(size_t size, struct agp_memory *mem)
 {
-	mem->pages = NULL;
-	mem->vmalloc_flag = false;
-
-	if (size <= 2*PAGE_SIZE)
-		mem->pages = kmalloc(size, GFP_KERNEL | __GFP_NORETRY);
-	if (mem->pages == NULL) {
-		mem->pages = vmalloc(size);
-		mem->vmalloc_flag = true;
-	}
+	mem->pages = kvmalloc(size, GFP_KERNEL);
 }
 EXPORT_SYMBOL(agp_alloc_page_array);
-
-void agp_free_page_array(struct agp_memory *mem)
-{
-	if (mem->vmalloc_flag) {
-		vfree(mem->pages);
-	} else {
-		kfree(mem->pages);
-	}
-}
-EXPORT_SYMBOL(agp_free_page_array);
-
 
 static struct agp_memory *agp_create_user_memory(unsigned long num_agp_pages)
 {
@@ -231,6 +207,7 @@ EXPORT_SYMBOL(agp_free_memory);
 /**
  *	agp_allocate_memory  -  allocate a group of pages of a certain type.
  *
+ *	@bridge: an agp_bridge_data struct allocated for the AGP host bridge.
  *	@page_count:	size_t argument of the number of pages
  *	@type:	u32 argument of the type of memory to be allocated.
  *
@@ -379,6 +356,7 @@ EXPORT_SYMBOL_GPL(agp_num_entries);
 /**
  *	agp_copy_info  -  copy bridge state information
  *
+ *	@bridge: an agp_bridge_data struct allocated for the AGP host bridge.
  *	@info:		agp_kern_info pointer.  The caller should insure that this pointer is valid.
  *
  *	This function copies information about the agp bridge device and the state of
@@ -444,11 +422,6 @@ int agp_bind_memory(struct agp_memory *curr, off_t pg_start)
 		curr->is_flushed = true;
 	}
 
-	if (curr->bridge->driver->agp_map_memory) {
-		ret_val = curr->bridge->driver->agp_map_memory(curr);
-		if (ret_val)
-			return ret_val;
-	}
 	ret_val = curr->bridge->driver->insert_memory(curr, pg_start, curr->type);
 
 	if (ret_val != 0)
@@ -490,9 +463,6 @@ int agp_unbind_memory(struct agp_memory *curr)
 	if (ret_val != 0)
 		return ret_val;
 
-	if (curr->bridge->driver->agp_unmap_memory)
-		curr->bridge->driver->agp_unmap_memory(curr);
-
 	curr->is_bound = false;
 	curr->pg_start = 0;
 	spin_lock(&curr->bridge->mapped_lock);
@@ -502,26 +472,6 @@ int agp_unbind_memory(struct agp_memory *curr)
 }
 EXPORT_SYMBOL(agp_unbind_memory);
 
-/**
- *	agp_rebind_emmory  -  Rewrite the entire GATT, useful on resume
- */
-int agp_rebind_memory(void)
-{
-	struct agp_memory *curr;
-	int ret_val = 0;
-
-	spin_lock(&agp_bridge->mapped_lock);
-	list_for_each_entry(curr, &agp_bridge->mapped_list, mapped_list) {
-		ret_val = curr->bridge->driver->insert_memory(curr,
-							      curr->pg_start,
-							      curr->type);
-		if (ret_val != 0)
-			break;
-	}
-	spin_unlock(&agp_bridge->mapped_lock);
-	return ret_val;
-}
-EXPORT_SYMBOL(agp_rebind_memory);
 
 /* End - Routines for handling swapping of agp_memory into the GATT */
 
@@ -550,12 +500,12 @@ static void agp_v2_parse_one(u32 *requested_mode, u32 *bridge_agpstat, u32 *vga_
 	switch (*bridge_agpstat & 7) {
 	case 4:
 		*bridge_agpstat |= (AGPSTAT2_2X | AGPSTAT2_1X);
-		printk(KERN_INFO PFX "BIOS bug. AGP bridge claims to only support x4 rate"
+		printk(KERN_INFO PFX "BIOS bug. AGP bridge claims to only support x4 rate. "
 			"Fixing up support for x2 & x1\n");
 		break;
 	case 2:
 		*bridge_agpstat |= AGPSTAT2_1X;
-		printk(KERN_INFO PFX "BIOS bug. AGP bridge claims to only support x2 rate"
+		printk(KERN_INFO PFX "BIOS bug. AGP bridge claims to only support x2 rate. "
 			"Fixing up support for x1\n");
 		break;
 	default:
@@ -729,7 +679,7 @@ static void agp_v3_parse_one(u32 *requested_mode, u32 *bridge_agpstat, u32 *vga_
 			*bridge_agpstat &= ~(AGPSTAT3_4X | AGPSTAT3_RSVD);
 			*vga_agpstat &= ~(AGPSTAT3_4X | AGPSTAT3_RSVD);
 		} else {
-			printk(KERN_INFO PFX "Fell back to AGPx4 mode because");
+			printk(KERN_INFO PFX "Fell back to AGPx4 mode because ");
 			if (!(*bridge_agpstat & AGPSTAT3_8X)) {
 				printk(KERN_INFO PFX "bridge couldn't do x8. bridge_agpstat:%x (orig=%x)\n",
 					*bridge_agpstat, origbridge);
@@ -902,7 +852,6 @@ int agp_generic_create_gatt_table(struct agp_bridge_data *bridge)
 {
 	char *table;
 	char *table_end;
-	int size;
 	int page_order;
 	int num_entries;
 	int i;
@@ -916,25 +865,22 @@ int agp_generic_create_gatt_table(struct agp_bridge_data *bridge)
 	table = NULL;
 	i = bridge->aperture_size_idx;
 	temp = bridge->current_size;
-	size = page_order = num_entries = 0;
+	page_order = num_entries = 0;
 
 	if (bridge->driver->size_type != FIXED_APER_SIZE) {
 		do {
 			switch (bridge->driver->size_type) {
 			case U8_APER_SIZE:
-				size = A_SIZE_8(temp)->size;
 				page_order =
 				    A_SIZE_8(temp)->page_order;
 				num_entries =
 				    A_SIZE_8(temp)->num_entries;
 				break;
 			case U16_APER_SIZE:
-				size = A_SIZE_16(temp)->size;
 				page_order = A_SIZE_16(temp)->page_order;
 				num_entries = A_SIZE_16(temp)->num_entries;
 				break;
 			case U32_APER_SIZE:
-				size = A_SIZE_32(temp)->size;
 				page_order = A_SIZE_32(temp)->page_order;
 				num_entries = A_SIZE_32(temp)->num_entries;
 				break;
@@ -942,7 +888,7 @@ int agp_generic_create_gatt_table(struct agp_bridge_data *bridge)
 			case FIXED_APER_SIZE:
 			case LVL2_APER_SIZE:
 			default:
-				size = page_order = num_entries = 0;
+				page_order = num_entries = 0;
 				break;
 			}
 
@@ -972,7 +918,6 @@ int agp_generic_create_gatt_table(struct agp_bridge_data *bridge)
 			}
 		} while (!table && (i < bridge->driver->num_aperture_sizes));
 	} else {
-		size = ((struct aper_size_info_fixed *) temp)->size;
 		page_order = ((struct aper_size_info_fixed *) temp)->page_order;
 		num_entries = ((struct aper_size_info_fixed *) temp)->num_entries;
 		table = alloc_gatt_pages(page_order);
@@ -991,10 +936,12 @@ int agp_generic_create_gatt_table(struct agp_bridge_data *bridge)
 
 	bridge->driver->cache_flush();
 #ifdef CONFIG_X86
-	set_memory_uc((unsigned long)table, 1 << page_order);
-	bridge->gatt_table = (void *)table;
+	if (set_memory_uc((unsigned long)table, 1 << page_order))
+		printk(KERN_WARNING "Could not set GATT table memory to UC!\n");
+
+	bridge->gatt_table = (u32 __iomem *)table;
 #else
-	bridge->gatt_table = ioremap_nocache(virt_to_phys(table),
+	bridge->gatt_table = ioremap(virt_to_phys(table),
 					(PAGE_SIZE * (1 << page_order)));
 	bridge->driver->cache_flush();
 #endif
@@ -1044,7 +991,6 @@ int agp_generic_free_gatt_table(struct agp_bridge_data *bridge)
 	case LVL2_APER_SIZE:
 		/* The generic routines can't deal with 2 level gatt's */
 		return -EINVAL;
-		break;
 	default:
 		page_order = 0;
 		break;
@@ -1111,7 +1057,6 @@ int agp_generic_insert_memory(struct agp_memory * mem, off_t pg_start, int type)
 	case LVL2_APER_SIZE:
 		/* The generic routines can't deal with 2 level gatt's */
 		return -EINVAL;
-		break;
 	default:
 		num_entries = 0;
 		break;
@@ -1224,7 +1169,7 @@ struct agp_memory *agp_generic_alloc_user(size_t page_count, int type)
 		return NULL;
 
 	for (i = 0; i < page_count; i++)
-		new->pages[i] = 0;
+		new->pages[i] = NULL;
 	new->page_count = 0;
 	new->type = type;
 	new->num_scratch_pages = pages;
@@ -1334,6 +1279,7 @@ EXPORT_SYMBOL(agp_generic_destroy_page);
 /**
  * agp_enable  -  initialise the agp point-to-point connection.
  *
+ * @bridge: an agp_bridge_data struct allocated for the AGP host bridge.
  * @mode:	agp mode register value to configure with.
  */
 void agp_enable(struct agp_bridge_data *bridge, u32 mode)
@@ -1363,8 +1309,7 @@ static void ipi_handler(void *null)
 
 void global_cache_flush(void)
 {
-	if (on_each_cpu(ipi_handler, NULL, 1) != 0)
-		panic(PFX "timed out waiting for the other CPUs!\n");
+	on_each_cpu(ipi_handler, NULL, 1);
 }
 EXPORT_SYMBOL(global_cache_flush);
 
@@ -1432,8 +1377,8 @@ int agp3_generic_configure(void)
 
 	current_size = A_SIZE_16(agp_bridge->current_size);
 
-	pci_read_config_dword(agp_bridge->dev, AGP_APBASE, &temp);
-	agp_bridge->gart_bus_addr = (temp & PCI_BASE_ADDRESS_MEM_MASK);
+	agp_bridge->gart_bus_addr = pci_bus_address(agp_bridge->dev,
+						    AGP_APERTURE_BAR);
 
 	/* set aperture size */
 	pci_write_config_word(agp_bridge->dev, agp_bridge->capndx+AGPAPSIZE, current_size->size_value);

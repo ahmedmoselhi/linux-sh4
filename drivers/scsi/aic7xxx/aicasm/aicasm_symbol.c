@@ -1,5 +1,5 @@
 /*
- * Aic7xxx SCSI host adapter firmware asssembler symbol table implementation
+ * Aic7xxx SCSI host adapter firmware assembler symbol table implementation
  *
  * Copyright (c) 1997 Justin T. Gibbs.
  * Copyright (c) 2002 Adaptec Inc.
@@ -44,11 +44,7 @@
 
 #include <sys/types.h>
 
-#ifdef __linux__
 #include "aicdb.h"
-#else
-#include <db.h>
-#endif
 #include <fcntl.h>
 #include <inttypes.h>
 #include <regex.h>

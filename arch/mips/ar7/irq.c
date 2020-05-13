@@ -1,24 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (C) 2006,2007 Felix Fietkau <nbd@openwrt.org>
  * Copyright (C) 2006,2007 Eugene Konev <ejka@openwrt.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/irq.h>
 
 #include <asm/irq_cpu.h>
 #include <asm/mipsregs.h>
@@ -48,56 +36,51 @@
 
 static int ar7_irq_base;
 
-static void ar7_unmask_irq(unsigned int irq)
+static void ar7_unmask_irq(struct irq_data *d)
 {
-	writel(1 << ((irq - ar7_irq_base) % 32),
-	       REG(ESR_OFFSET(irq - ar7_irq_base)));
+	writel(1 << ((d->irq - ar7_irq_base) % 32),
+	       REG(ESR_OFFSET(d->irq - ar7_irq_base)));
 }
 
-static void ar7_mask_irq(unsigned int irq)
+static void ar7_mask_irq(struct irq_data *d)
 {
-	writel(1 << ((irq - ar7_irq_base) % 32),
-	       REG(ECR_OFFSET(irq - ar7_irq_base)));
+	writel(1 << ((d->irq - ar7_irq_base) % 32),
+	       REG(ECR_OFFSET(d->irq - ar7_irq_base)));
 }
 
-static void ar7_ack_irq(unsigned int irq)
+static void ar7_ack_irq(struct irq_data *d)
 {
-	writel(1 << ((irq - ar7_irq_base) % 32),
-	       REG(CR_OFFSET(irq - ar7_irq_base)));
+	writel(1 << ((d->irq - ar7_irq_base) % 32),
+	       REG(CR_OFFSET(d->irq - ar7_irq_base)));
 }
 
-static void ar7_unmask_sec_irq(unsigned int irq)
+static void ar7_unmask_sec_irq(struct irq_data *d)
 {
-	writel(1 << (irq - ar7_irq_base - 40), REG(SEC_ESR_OFFSET));
+	writel(1 << (d->irq - ar7_irq_base - 40), REG(SEC_ESR_OFFSET));
 }
 
-static void ar7_mask_sec_irq(unsigned int irq)
+static void ar7_mask_sec_irq(struct irq_data *d)
 {
-	writel(1 << (irq - ar7_irq_base - 40), REG(SEC_ECR_OFFSET));
+	writel(1 << (d->irq - ar7_irq_base - 40), REG(SEC_ECR_OFFSET));
 }
 
-static void ar7_ack_sec_irq(unsigned int irq)
+static void ar7_ack_sec_irq(struct irq_data *d)
 {
-	writel(1 << (irq - ar7_irq_base - 40), REG(SEC_CR_OFFSET));
+	writel(1 << (d->irq - ar7_irq_base - 40), REG(SEC_CR_OFFSET));
 }
 
 static struct irq_chip ar7_irq_type = {
 	.name = "AR7",
-	.unmask = ar7_unmask_irq,
-	.mask = ar7_mask_irq,
-	.ack = ar7_ack_irq
+	.irq_unmask = ar7_unmask_irq,
+	.irq_mask = ar7_mask_irq,
+	.irq_ack = ar7_ack_irq
 };
 
 static struct irq_chip ar7_sec_irq_type = {
 	.name = "AR7",
-	.unmask = ar7_unmask_sec_irq,
-	.mask = ar7_mask_sec_irq,
-	.ack = ar7_ack_sec_irq,
-};
-
-static struct irqaction ar7_cascade_action = {
-	.handler = no_action,
-	.name = "AR7 cascade interrupt"
+	.irq_unmask = ar7_unmask_sec_irq,
+	.irq_mask = ar7_mask_sec_irq,
+	.irq_ack = ar7_ack_sec_irq,
 };
 
 static void __init ar7_irq_init(int base)
@@ -118,17 +101,23 @@ static void __init ar7_irq_init(int base)
 	for (i = 0; i < 40; i++) {
 		writel(i, REG(CHNL_OFFSET(i)));
 		/* Primary IRQ's */
-		set_irq_chip_and_handler(base + i, &ar7_irq_type,
+		irq_set_chip_and_handler(base + i, &ar7_irq_type,
 					 handle_level_irq);
 		/* Secondary IRQ's */
 		if (i < 32)
-			set_irq_chip_and_handler(base + i + 40,
+			irq_set_chip_and_handler(base + i + 40,
 						 &ar7_sec_irq_type,
 						 handle_level_irq);
 	}
 
-	setup_irq(2, &ar7_cascade_action);
-	setup_irq(ar7_irq_base, &ar7_cascade_action);
+	if (request_irq(2, no_action, IRQF_NO_THREAD, "AR7 cascade interrupt",
+			NULL))
+		pr_err("Failed to request irq 2 (AR7 cascade interrupt)\n");
+	if (request_irq(ar7_irq_base, no_action, IRQF_NO_THREAD,
+			"AR7 cascade interrupt", NULL)) {
+		pr_err("Failed to request irq %d (AR7 cascade interrupt)\n",
+		       ar7_irq_base);
+	}
 	set_c0_status(IE_IRQ0);
 }
 

@@ -1,18 +1,15 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Userland implementation of gettimeofday() for 32 bits processes in a
  * ppc64 kernel for use in the vDSO
  *
  * Copyright (C) 2004 Benjamin Herrenschmuidt (benh@kernel.crashing.org,
  *                    IBM Corp.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 #include <asm/processor.h>
 #include <asm/ppc_asm.h>
 #include <asm/vdso.h>
+#include <asm/vdso_datapage.h>
 #include <asm/asm-offsets.h>
 #include <asm/unistd.h>
 
@@ -35,48 +32,26 @@ V_FUNCTION_BEGIN(__kernel_gettimeofday)
 	mflr	r12
   .cfi_register lr,r12
 
-	mr	r10,r3			/* r10 saves tv */
+	mr.	r10,r3			/* r10 saves tv */
 	mr	r11,r4			/* r11 saves tz */
-	bl	__get_datapage@local	/* get data page */
-	mr	r9, r3			/* datapage ptr in r9 */
-	cmplwi	r10,0			/* check if tv is NULL */
+	get_datapage	r9, r0
 	beq	3f
-	bl	__do_get_xsec@local	/* get xsec from tb & kernel */
-	bne-	2f			/* out of line -> do syscall */
-
-	/* seconds are xsec >> 20 */
-	rlwinm	r5,r4,12,20,31
-	rlwimi	r5,r3,12,0,19
-	stw	r5,TVAL32_TV_SEC(r10)
-
-	/* get remaining xsec and convert to usec. we scale
-	 * up remaining xsec by 12 bits and get the top 32 bits
-	 * of the multiplication
-	 */
-	rlwinm	r5,r4,12,0,19
-	lis	r6,1000000@h
-	ori	r6,r6,1000000@l
-	mulhwu	r5,r5,r6
-	stw	r5,TVAL32_TV_USEC(r10)
+	LOAD_REG_IMMEDIATE(r7, 1000000)	/* load up USEC_PER_SEC */
+	bl	__do_get_tspec@local	/* get sec/usec from tb & kernel */
+	stw	r3,TVAL32_TV_SEC(r10)
+	stw	r4,TVAL32_TV_USEC(r10)
 
 3:	cmplwi	r11,0			/* check if tz is NULL */
-	beq	1f
+	mtlr	r12
+	crclr	cr0*4+so
+	li	r3,0
+	beqlr
+
 	lwz	r4,CFG_TZ_MINUTEWEST(r9)/* fill tz */
 	lwz	r5,CFG_TZ_DSTTIME(r9)
 	stw	r4,TZONE_TZ_MINWEST(r11)
 	stw	r5,TZONE_TZ_DSTTIME(r11)
 
-1:	mtlr	r12
-	crclr	cr0*4+so
-	li	r3,0
-	blr
-
-2:
-	mtlr	r12
-	mr	r3,r10
-	mr	r4,r11
-	li	r0,__NR_gettimeofday
-	sc
 	blr
   .cfi_endproc
 V_FUNCTION_END(__kernel_gettimeofday)
@@ -93,16 +68,23 @@ V_FUNCTION_BEGIN(__kernel_clock_gettime)
 	cmpli	cr0,r3,CLOCK_REALTIME
 	cmpli	cr1,r3,CLOCK_MONOTONIC
 	cror	cr0*4+eq,cr0*4+eq,cr1*4+eq
-	bne	cr0,99f
+
+	cmpli	cr5,r3,CLOCK_REALTIME_COARSE
+	cmpli	cr6,r3,CLOCK_MONOTONIC_COARSE
+	cror	cr5*4+eq,cr5*4+eq,cr6*4+eq
+
+	cror	cr0*4+eq,cr0*4+eq,cr5*4+eq
+	bne	cr0, .Lgettime_fallback
 
 	mflr	r12			/* r12 saves lr */
   .cfi_register lr,r12
 	mr	r11,r4			/* r11 saves tp */
-	bl	__get_datapage@local	/* get data page */
-	mr	r9,r3			/* datapage ptr in r9 */
-
-50:	bl	__do_get_tspec@local	/* get sec/nsec from tb & kernel */
-	bne	cr1,80f			/* not monotonic -> all done */
+	get_datapage	r9, r0
+	LOAD_REG_IMMEDIATE(r7, NSEC_PER_SEC)	/* load up NSEC_PER_SEC */
+	beq	cr5, .Lcoarse_clocks
+.Lprecise_clocks:
+	bl	__do_get_tspec@local	/* get sec/nsec from tb & kernel */
+	bne	cr1, .Lfinish		/* not monotonic -> all done */
 
 	/*
 	 * CLOCK_MONOTONIC
@@ -115,7 +97,7 @@ V_FUNCTION_BEGIN(__kernel_clock_gettime)
 	 * can be used, r7 contains NSEC_PER_SEC.
 	 */
 
-	lwz	r5,WTOM_CLOCK_SEC(r9)
+	lwz	r5,(WTOM_CLOCK_SEC+LOPART)(r9)
 	lwz	r6,WTOM_CLOCK_NSEC(r9)
 
 	/* We now have our offset in r5,r6. We create a fake dependency
@@ -126,12 +108,53 @@ V_FUNCTION_BEGIN(__kernel_clock_gettime)
 	add	r9,r9,r0
 	lwz	r0,(CFG_TB_UPDATE_COUNT+LOPART)(r9)
         cmpl    cr0,r8,r0		/* check if updated */
-	bne-	50b
+	bne-	.Lprecise_clocks
+	b	.Lfinish_monotonic
+
+	/*
+	 * For coarse clocks we get data directly from the vdso data page, so
+	 * we don't need to call __do_get_tspec, but we still need to do the
+	 * counter trick.
+	 */
+.Lcoarse_clocks:
+	lwz	r8,(CFG_TB_UPDATE_COUNT+LOPART)(r9)
+	andi.	r0,r8,1                 /* pending update ? loop */
+	bne-	.Lcoarse_clocks
+	add	r9,r9,r0		/* r0 is already 0 */
+
+	/*
+	 * CLOCK_REALTIME_COARSE, below values are needed for MONOTONIC_COARSE
+	 * too
+	 */
+	lwz	r3,STAMP_XTIME_SEC+LOPART(r9)
+	lwz	r4,STAMP_XTIME_NSEC+LOPART(r9)
+	bne	cr6,1f
+
+	/* CLOCK_MONOTONIC_COARSE */
+	lwz	r5,(WTOM_CLOCK_SEC+LOPART)(r9)
+	lwz	r6,WTOM_CLOCK_NSEC(r9)
+
+	/* check if counter has updated */
+	or	r0,r6,r5
+1:	or	r0,r0,r3
+	or	r0,r0,r4
+	xor	r0,r0,r0
+	add	r3,r3,r0
+	lwz	r0,CFG_TB_UPDATE_COUNT+LOPART(r9)
+	cmpl	cr0,r0,r8               /* check if updated */
+	bne-	.Lcoarse_clocks
+
+	/* Counter has not updated, so continue calculating proper values for
+	 * sec and nsec if monotonic coarse, or just return with the proper
+	 * values for realtime.
+	 */
+	bne	cr6, .Lfinish
 
 	/* Calculate and store result. Note that this mimics the C code,
 	 * which may cause funny results if nsec goes negative... is that
 	 * possible at all ?
 	 */
+.Lfinish_monotonic:
 	add	r3,r3,r5
 	add	r4,r4,r6
 	cmpw	cr0,r4,r7
@@ -139,11 +162,12 @@ V_FUNCTION_BEGIN(__kernel_clock_gettime)
 	blt	1f
 	subf	r4,r7,r4
 	addi	r3,r3,1
-1:	bge	cr1,80f
+1:	bge	cr1, .Lfinish
 	addi	r3,r3,-1
 	add	r4,r4,r7
 
-80:	stw	r3,TSPC32_TV_SEC(r11)
+.Lfinish:
+	stw	r3,TSPC32_TV_SEC(r11)
 	stw	r4,TSPC32_TV_NSEC(r11)
 
 	mtlr	r12
@@ -154,8 +178,9 @@ V_FUNCTION_BEGIN(__kernel_clock_gettime)
 	/*
 	 * syscall fallback
 	 */
-99:
+.Lgettime_fallback:
 	li	r0,__NR_clock_gettime
+  .cfi_restore lr
 	sc
 	blr
   .cfi_endproc
@@ -171,110 +196,70 @@ V_FUNCTION_END(__kernel_clock_gettime)
 V_FUNCTION_BEGIN(__kernel_clock_getres)
   .cfi_startproc
 	/* Check for supported clock IDs */
-	cmpwi	cr0,r3,CLOCK_REALTIME
-	cmpwi	cr1,r3,CLOCK_MONOTONIC
-	cror	cr0*4+eq,cr0*4+eq,cr1*4+eq
-	bne	cr0,99f
+	cmplwi	cr0, r3, CLOCK_MAX
+	cmpwi	cr1, r3, CLOCK_REALTIME_COARSE
+	cmpwi	cr7, r3, CLOCK_MONOTONIC_COARSE
+	bgt	cr0, 99f
+	LOAD_REG_IMMEDIATE(r5, KTIME_LOW_RES)
+	beq	cr1, 1f
+	beq	cr7, 1f
 
-	li	r3,0
+	mflr	r12
+  .cfi_register lr,r12
+	get_datapage	r3, r0
+	lwz	r5, CLOCK_HRTIMER_RES(r3)
+	mtlr	r12
+1:	li	r3,0
 	cmpli	cr0,r4,0
 	crclr	cr0*4+so
 	beqlr
-	lis	r5,CLOCK_REALTIME_RES@h
-	ori	r5,r5,CLOCK_REALTIME_RES@l
 	stw	r3,TSPC32_TV_SEC(r4)
 	stw	r5,TSPC32_TV_NSEC(r4)
 	blr
 
 	/*
-	 * syscall fallback
+	 * invalid clock
 	 */
 99:
-	li	r0,__NR_clock_getres
-	sc
+	li	r3, EINVAL
+	crset	so
 	blr
   .cfi_endproc
 V_FUNCTION_END(__kernel_clock_getres)
 
 
 /*
- * This is the core of gettimeofday() & friends, it returns the xsec
- * value in r3 & r4 and expects the datapage ptr (non clobbered)
- * in r9. clobbers r0,r4,r5,r6,r7,r8.
- * When returning, r8 contains the counter value that can be reused
- * by the monotonic clock implementation
+ * Exact prototype of time()
+ *
+ * time_t time(time *t);
+ *
  */
-__do_get_xsec:
+V_FUNCTION_BEGIN(__kernel_time)
   .cfi_startproc
-	/* Check for update count & load values. We use the low
-	 * order 32 bits of the update count
-	 */
-1:	lwz	r8,(CFG_TB_UPDATE_COUNT+LOPART)(r9)
-	andi.	r0,r8,1			/* pending update ? loop */
-	bne-	1b
-	xor	r0,r8,r8		/* create dependency */
-	add	r9,r9,r0
+	mflr	r12
+  .cfi_register lr,r12
 
-	/* Load orig stamp (offset to TB) */
-	lwz	r5,CFG_TB_ORIG_STAMP(r9)
-	lwz	r6,(CFG_TB_ORIG_STAMP+4)(r9)
+	mr	r11,r3			/* r11 holds t */
+	get_datapage	r9, r0
 
-	/* Get a stable TB value */
-2:	mftbu	r3
-	mftbl	r4
-	mftbu	r0
-	cmpl	cr0,r3,r0
-	bne-	2b
+	lwz	r3,STAMP_XTIME_SEC+LOPART(r9)
 
-	/* Substract tb orig stamp. If the high part is non-zero, we jump to
-	 * the slow path which call the syscall.
-	 * If it's ok, then we have our 32 bits tb_ticks value in r7
-	 */
-	subfc	r7,r6,r4
-	subfe.	r0,r5,r3
-	bne-	3f
-
-	/* Load scale factor & do multiplication */
-	lwz	r5,CFG_TB_TO_XS(r9)	/* load values */
-	lwz	r6,(CFG_TB_TO_XS+4)(r9)
-	mulhwu	r4,r7,r5
-	mulhwu	r6,r7,r6
-	mullw	r0,r7,r5
-	addc	r6,r6,r0
-
-	/* At this point, we have the scaled xsec value in r4 + XER:CA
-	 * we load & add the stamp since epoch
-	 */
-	lwz	r5,CFG_STAMP_XSEC(r9)
-	lwz	r6,(CFG_STAMP_XSEC+4)(r9)
-	adde	r4,r4,r6
-	addze	r3,r5
-
-	/* We now have our result in r3,r4. We create a fake dependency
-	 * on that result and re-check the counter
-	 */
-	or	r6,r4,r3
-	xor	r0,r6,r6
-	add	r9,r9,r0
-	lwz	r0,(CFG_TB_UPDATE_COUNT+LOPART)(r9)
-        cmpl    cr0,r8,r0		/* check if updated */
-	bne-	1b
-
-	/* Warning ! The caller expects CR:EQ to be set to indicate a
-	 * successful calculation (so it won't fallback to the syscall
-	 * method). We have overriden that CR bit in the counter check,
-	 * but fortunately, the loop exit condition _is_ CR:EQ set, so
-	 * we can exit safely here. If you change this code, be careful
-	 * of that side effect.
-	 */
-3:	blr
+	cmplwi	r11,0			/* check if t is NULL */
+	mtlr	r12
+	crclr	cr0*4+so
+	beqlr
+	stw	r3,0(r11)		/* store result at *t */
+	blr
   .cfi_endproc
+V_FUNCTION_END(__kernel_time)
 
 /*
- * This is the core of clock_gettime(), it returns the current
- * time in seconds and nanoseconds in r3 and r4.
+ * This is the core of clock_gettime() and gettimeofday(),
+ * it returns the current time in r3 (seconds) and r4.
+ * On entry, r7 gives the resolution of r4, either USEC_PER_SEC
+ * or NSEC_PER_SEC, giving r4 in microseconds or nanoseconds.
  * It expects the datapage ptr in r9 and doesn't clobber it.
- * It clobbers r0, r5, r6, r10 and returns NSEC_PER_SEC in r7.
+ * It clobbers r0, r5 and r6.
  * On return, r8 contains the counter value that can be reused.
  * This clobbers cr0 but not any other cr field.
  */
@@ -294,73 +279,61 @@ __do_get_tspec:
 	lwz	r6,(CFG_TB_ORIG_STAMP+4)(r9)
 
 	/* Get a stable TB value */
-2:	mftbu	r3
-	mftbl	r4
-	mftbu	r0
-	cmpl	cr0,r3,r0
+2:	MFTBU(r3)
+	MFTBL(r4)
+	MFTBU(r0)
+	cmplw	cr0,r3,r0
 	bne-	2b
 
 	/* Subtract tb orig stamp and shift left 12 bits.
 	 */
-	subfc	r7,r6,r4
+	subfc	r4,r6,r4
 	subfe	r0,r5,r3
 	slwi	r0,r0,12
-	rlwimi.	r0,r7,12,20,31
-	slwi	r7,r7,12
+	rlwimi.	r0,r4,12,20,31
+	slwi	r4,r4,12
 
-	/* Load scale factor & do multiplication */
+	/*
+	 * Load scale factor & do multiplication.
+	 * We only use the high 32 bits of the tb_to_xs value.
+	 * Even with a 1GHz timebase clock, the high 32 bits of
+	 * tb_to_xs will be at least 4 million, so the error from
+	 * ignoring the low 32 bits will be no more than 0.25ppm.
+	 * The error will just make the clock run very very slightly
+	 * slow until the next time the kernel updates the VDSO data,
+	 * at which point the clock will catch up to the kernel's value,
+	 * so there is no long-term error accumulation.
+	 */
 	lwz	r5,CFG_TB_TO_XS(r9)	/* load values */
-	lwz	r6,(CFG_TB_TO_XS+4)(r9)
-	mulhwu	r3,r7,r6
-	mullw	r10,r7,r5
-	mulhwu	r4,r7,r5
-	addc	r10,r3,r10
+	mulhwu	r4,r4,r5
 	li	r3,0
 
 	beq+	4f			/* skip high part computation if 0 */
 	mulhwu	r3,r0,r5
-	mullw	r7,r0,r5
-	mulhwu	r5,r0,r6
-	mullw	r6,r0,r6
-	adde	r4,r4,r7
-	addze	r3,r3
+	mullw	r5,r0,r5
 	addc	r4,r4,r5
 	addze	r3,r3
-	addc	r10,r10,r6
-
-4:	addze	r4,r4			/* add in carry */
-	lis	r7,NSEC_PER_SEC@h
-	ori	r7,r7,NSEC_PER_SEC@l
-	mulhwu	r4,r4,r7		/* convert to nanoseconds */
-
-	/* At this point, we have seconds & nanoseconds since the xtime
-	 * stamp in r3+CA and r4.  Load & add the xtime stamp.
+4:
+	/* At this point, we have seconds since the xtime stamp
+	 * as a 32.32 fixed-point number in r3 and r4.
+	 * Load & add the xtime stamp.
 	 */
-#ifdef CONFIG_PPC64
-	lwz	r5,STAMP_XTIME+TSPC64_TV_SEC+LOPART(r9)
-	lwz	r6,STAMP_XTIME+TSPC64_TV_NSEC+LOPART(r9)
-#else
-	lwz	r5,STAMP_XTIME+TSPC32_TV_SEC(r9)
-	lwz	r6,STAMP_XTIME+TSPC32_TV_NSEC(r9)
-#endif
-	add	r4,r4,r6
+	lwz	r5,STAMP_XTIME_SEC+LOPART(r9)
+	lwz	r6,STAMP_SEC_FRAC(r9)
+	addc	r4,r4,r6
 	adde	r3,r3,r5
 
-	/* We now have our result in r3,r4. We create a fake dependency
-	 * on that result and re-check the counter
+	/* We create a fake dependency on the result in r3/r4
+	 * and re-check the counter
 	 */
 	or	r6,r4,r3
 	xor	r0,r6,r6
 	add	r9,r9,r0
 	lwz	r0,(CFG_TB_UPDATE_COUNT+LOPART)(r9)
-        cmpl    cr0,r8,r0		/* check if updated */
+        cmplw	cr0,r8,r0		/* check if updated */
 	bne-	1b
 
-	/* check for nanosecond overflow and adjust if necessary */
-	cmpw	r4,r7
-	bltlr				/* all done if no overflow */
-	subf	r4,r7,r4		/* adjust if overflow */
-	addi	r3,r3,1
+	mulhwu	r4,r4,r7		/* convert to micro or nanoseconds */
 
 	blr
   .cfi_endproc

@@ -1,13 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * audio.h  --  Audio Driver for Wolfson WM8350 PMIC
  *
  * Copyright 2007, 2008 Wolfson Microelectronics PLC
- *
- *  This program is free software; you can redistribute  it and/or modify it
- *  under  the terms of  the GNU General  Public License as published by the
- *  Free Software Foundation;  either version 2 of the  License, or (at your
- *  option) any later version.
- *
  */
 
 #ifndef __LINUX_MFD_WM8350_AUDIO_H_
@@ -492,6 +487,8 @@
  */
 #define WM8350_JACK_L_LVL			0x0800
 #define WM8350_JACK_R_LVL                       0x0400
+#define WM8350_JACK_MICSCD_LVL			0x0200
+#define WM8350_JACK_MICSD_LVL			0x0100
 
 /*
  * WM8350 Platform setup
@@ -519,9 +516,6 @@
 #define WM8350_MCLK_SEL_PLL_ADC			2
 #define WM8350_MCLK_SEL_PLL_32K			3
 #define WM8350_MCLK_SEL_MCLK			5
-
-#define WM8350_MCLK_DIR_OUT			0
-#define WM8350_MCLK_DIR_IN			1
 
 /* clock divider id's */
 #define WM8350_ADC_CLKDIV			0
@@ -618,11 +612,8 @@ struct wm8350_audio_platform_data {
 	u32 codec_current_charge:2;	/* codec current @ vmid charge */
 };
 
-struct snd_soc_codec;
-
 struct wm8350_codec {
 	struct platform_device *pdev;
-	struct snd_soc_codec *codec;
 	struct wm8350_audio_platform_data *platform_data;
 };
 

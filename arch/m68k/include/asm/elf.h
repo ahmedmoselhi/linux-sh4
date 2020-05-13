@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASMm68k_ELF_H
 #define __ASMm68k_ELF_H
 
@@ -59,11 +60,10 @@ typedef struct user_m68kfp_struct elf_fpregset_t;
    is actually used on ASV.  */
 #define ELF_PLAT_INIT(_r, load_addr)	_r->a1 = 0
 
-#define USE_ELF_CORE_DUMP
-#ifndef CONFIG_SUN3
-#define ELF_EXEC_PAGESIZE	4096
-#else
+#if defined(CONFIG_SUN3) || defined(CONFIG_COLDFIRE)
 #define ELF_EXEC_PAGESIZE	8192
+#else
+#define ELF_EXEC_PAGESIZE	4096
 #endif
 
 /* This is the location that an ET_DYN program is loaded if exec'ed.  Typical
@@ -113,7 +113,5 @@ typedef struct user_m68kfp_struct elf_fpregset_t;
    intent than poking at uname or /proc/cpuinfo.  */
 
 #define ELF_PLATFORM  (NULL)
-
-#define SET_PERSONALITY(ex) set_personality(PER_LINUX)
 
 #endif

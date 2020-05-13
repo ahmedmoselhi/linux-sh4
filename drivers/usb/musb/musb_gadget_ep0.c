@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * MUSB OTG peripheral driver ep0 handling
  *
@@ -5,39 +6,12 @@
  * Copyright (C) 2005-2006 by Texas Instruments
  * Copyright (C) 2006-2007 Nokia Corporation
  * Copyright (C) 2008-2009 MontaVista Software, Inc. <source@mvista.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
- *
- * THIS SOFTWARE IS PROVIDED "AS IS" AND ANY EXPRESS OR IMPLIED
- * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
- * MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.  IN
- * NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
- * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF
- * USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
- * ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
- * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
  */
 
 #include <linux/kernel.h>
 #include <linux/list.h>
 #include <linux/timer.h>
 #include <linux/spinlock.h>
-#include <linux/init.h>
 #include <linux/device.h>
 #include <linux/interrupt.h>
 
@@ -86,9 +60,8 @@ static int service_tx_status_request(
 
 	switch (recip) {
 	case USB_RECIP_DEVICE:
-		result[0] = musb->is_self_powered << USB_DEVICE_SELF_POWERED;
+		result[0] = musb->g.is_selfpowered << USB_DEVICE_SELF_POWERED;
 		result[0] |= musb->may_wakeup << USB_DEVICE_REMOTE_WAKEUP;
-#ifdef CONFIG_USB_MUSB_OTG
 		if (musb->g.is_otg) {
 			result[0] |= musb->g.b_hnp_enable
 				<< USB_DEVICE_B_HNP_ENABLE;
@@ -97,7 +70,6 @@ static int service_tx_status_request(
 			result[0] |= musb->g.a_hnp_support
 				<< USB_DEVICE_A_HNP_SUPPORT;
 		}
-#endif
 		break;
 
 	case USB_RECIP_INTERFACE:
@@ -117,15 +89,19 @@ static int service_tx_status_request(
 		}
 
 		is_in = epnum & USB_DIR_IN;
-		if (is_in) {
-			epnum &= 0x0f;
-			ep = &musb->endpoints[epnum].ep_in;
-		} else {
-			ep = &musb->endpoints[epnum].ep_out;
+		epnum &= 0x0f;
+		if (epnum >= MUSB_C_NUM_EPS) {
+			handled = -EINVAL;
+			break;
 		}
+
+		if (is_in)
+			ep = &musb->endpoints[epnum].ep_in;
+		else
+			ep = &musb->endpoints[epnum].ep_out;
 		regs = musb->endpoints[epnum].regs;
 
-		if (epnum >= MUSB_C_NUM_EPS || !ep->desc) {
+		if (!ep->desc) {
 			handled = -EINVAL;
 			break;
 		}
@@ -209,7 +185,7 @@ static inline void musb_try_b_hnp_enable(struct musb *musb)
 	void __iomem	*mbase = musb->mregs;
 	u8		devctl;
 
-	DBG(1, "HNP: Setting HR\n");
+	musb_dbg(musb, "HNP: Setting HR");
 	devctl = musb_readb(mbase, MUSB_DEVCTL);
 	musb_writeb(mbase, MUSB_DEVCTL, devctl | MUSB_DEVCTL_HR);
 }
@@ -257,30 +233,61 @@ __acquires(musb->lock)
 			case USB_RECIP_INTERFACE:
 				break;
 			case USB_RECIP_ENDPOINT:{
-				const u8 num = ctrlrequest->wIndex & 0x0f;
-				struct musb_ep *musb_ep;
+				const u8		epnum =
+					ctrlrequest->wIndex & 0x0f;
+				struct musb_ep		*musb_ep;
+				struct musb_hw_ep	*ep;
+				struct musb_request	*request;
+				void __iomem		*regs;
+				int			is_in;
+				u16			csr;
 
-				if (num == 0
-						|| num >= MUSB_C_NUM_EPS
-						|| ctrlrequest->wValue
-							!= USB_ENDPOINT_HALT)
+				if (epnum == 0 || epnum >= MUSB_C_NUM_EPS ||
+				    ctrlrequest->wValue != USB_ENDPOINT_HALT)
 					break;
 
-				if (ctrlrequest->wIndex & USB_DIR_IN)
-					musb_ep = &musb->endpoints[num].ep_in;
+				ep = musb->endpoints + epnum;
+				regs = ep->regs;
+				is_in = ctrlrequest->wIndex & USB_DIR_IN;
+				if (is_in)
+					musb_ep = &ep->ep_in;
 				else
-					musb_ep = &musb->endpoints[num].ep_out;
+					musb_ep = &ep->ep_out;
 				if (!musb_ep->desc)
 					break;
 
-				/* REVISIT do it directly, no locking games */
-				spin_unlock(&musb->lock);
-				musb_gadget_set_halt(&musb_ep->end_point, 0);
-				spin_lock(&musb->lock);
+				handled = 1;
+				/* Ignore request if endpoint is wedged */
+				if (musb_ep->wedged)
+					break;
+
+				musb_ep_select(mbase, epnum);
+				if (is_in) {
+					csr  = musb_readw(regs, MUSB_TXCSR);
+					csr |= MUSB_TXCSR_CLRDATATOG |
+					       MUSB_TXCSR_P_WZC_BITS;
+					csr &= ~(MUSB_TXCSR_P_SENDSTALL |
+						 MUSB_TXCSR_P_SENTSTALL |
+						 MUSB_TXCSR_TXPKTRDY);
+					musb_writew(regs, MUSB_TXCSR, csr);
+				} else {
+					csr  = musb_readw(regs, MUSB_RXCSR);
+					csr |= MUSB_RXCSR_CLRDATATOG |
+					       MUSB_RXCSR_P_WZC_BITS;
+					csr &= ~(MUSB_RXCSR_P_SENDSTALL |
+						 MUSB_RXCSR_P_SENTSTALL);
+					musb_writew(regs, MUSB_RXCSR, csr);
+				}
+
+				/* Maybe start the first request in the queue */
+				request = next_request(musb_ep);
+				if (!musb_ep->busy && request) {
+					musb_dbg(musb, "restarting the request");
+					musb_ep_restart(musb, request);
+				}
 
 				/* select ep0 again */
 				musb_ep_select(mbase, 0);
-				handled = 1;
 				} break;
 			default:
 				/* class, vendor, etc ... delegate */
@@ -328,6 +335,31 @@ __acquires(musb->lock)
 						musb->test_mode_nr =
 							MUSB_TEST_PACKET;
 						break;
+
+					case 0xc0:
+						/* TEST_FORCE_HS */
+						pr_debug("TEST_FORCE_HS\n");
+						musb->test_mode_nr =
+							MUSB_TEST_FORCE_HS;
+						break;
+					case 0xc1:
+						/* TEST_FORCE_FS */
+						pr_debug("TEST_FORCE_FS\n");
+						musb->test_mode_nr =
+							MUSB_TEST_FORCE_FS;
+						break;
+					case 0xc2:
+						/* TEST_FIFO_ACCESS */
+						pr_debug("TEST_FIFO_ACCESS\n");
+						musb->test_mode_nr =
+							MUSB_TEST_FIFO_ACCESS;
+						break;
+					case 0xc3:
+						/* TEST_FORCE_HOST */
+						pr_debug("TEST_FORCE_HOST\n");
+						musb->test_mode_nr =
+							MUSB_TEST_FORCE_HOST;
+						break;
 					default:
 						goto stall;
 					}
@@ -336,7 +368,6 @@ __acquires(musb->lock)
 					if (handled > 0)
 						musb->test_mode = true;
 					break;
-#ifdef CONFIG_USB_MUSB_OTG
 				case USB_DEVICE_B_HNP_ENABLE:
 					if (!musb->g.is_otg)
 						goto stall;
@@ -353,7 +384,9 @@ __acquires(musb->lock)
 						goto stall;
 					musb->g.a_alt_hnp_support = 1;
 					break;
-#endif
+				case USB_DEVICE_DEBUG_MODE:
+					handled = 0;
+					break;
 stall:
 				default:
 					handled = -EINVAL;
@@ -369,15 +402,12 @@ stall:
 					ctrlrequest->wIndex & 0x0f;
 				struct musb_ep		*musb_ep;
 				struct musb_hw_ep	*ep;
-				struct musb_request	*request;
 				void __iomem		*regs;
 				int			is_in;
 				u16			csr;
 
-				if (epnum == 0
-						|| epnum >= MUSB_C_NUM_EPS
-						|| ctrlrequest->wValue
-							!= USB_ENDPOINT_HALT)
+				if (epnum == 0 || epnum >= MUSB_C_NUM_EPS ||
+				    ctrlrequest->wValue	!= USB_ENDPOINT_HALT)
 					break;
 
 				ep = musb->endpoints + epnum;
@@ -392,32 +422,20 @@ stall:
 
 				musb_ep_select(mbase, epnum);
 				if (is_in) {
-					csr = musb_readw(regs,
-							MUSB_TXCSR);
+					csr = musb_readw(regs, MUSB_TXCSR);
 					if (csr & MUSB_TXCSR_FIFONOTEMPTY)
 						csr |= MUSB_TXCSR_FLUSHFIFO;
 					csr |= MUSB_TXCSR_P_SENDSTALL
 						| MUSB_TXCSR_CLRDATATOG
 						| MUSB_TXCSR_P_WZC_BITS;
-					musb_writew(regs, MUSB_TXCSR,
-							csr);
+					musb_writew(regs, MUSB_TXCSR, csr);
 				} else {
-					csr = musb_readw(regs,
-							MUSB_RXCSR);
+					csr = musb_readw(regs, MUSB_RXCSR);
 					csr |= MUSB_RXCSR_P_SENDSTALL
 						| MUSB_RXCSR_FLUSHFIFO
 						| MUSB_RXCSR_CLRDATATOG
 						| MUSB_RXCSR_P_WZC_BITS;
-					musb_writew(regs, MUSB_RXCSR,
-							csr);
-				}
-
-				/* Maybe start the first request in the queue */
-				request = to_musb_request(
-						next_request(musb_ep));
-				if (!musb_ep->busy && request) {
-					DBG(3, "restarting the request\n");
-					musb_ep_restart(musb, request);
+					musb_writew(regs, MUSB_RXCSR, csr);
 				}
 
 				/* select ep0 again */
@@ -446,10 +464,12 @@ stall:
 static void ep0_rxstate(struct musb *musb)
 {
 	void __iomem		*regs = musb->control_ep->regs;
+	struct musb_request	*request;
 	struct usb_request	*req;
 	u16			count, csr;
 
-	req = next_ep0_request(musb);
+	request = next_ep0_request(musb);
+	req = &request->request;
 
 	/* read packet and ack; or stall because of gadget driver bug:
 	 * should have provided the rx buffer before setup() returned.
@@ -464,8 +484,10 @@ static void ep0_rxstate(struct musb *musb)
 			req->status = -EOVERFLOW;
 			count = len;
 		}
-		musb_read_fifo(&musb->endpoints[0], count, buf);
-		req->actual += count;
+		if (count > 0) {
+			musb_read_fifo(&musb->endpoints[0], count, buf);
+			req->actual += count;
+		}
 		csr = MUSB_CSR0_P_SVDRXPKTRDY;
 		if (count < 64 || req->actual == req->length) {
 			musb->ep0_state = MUSB_EP0_STAGE_STATUSIN;
@@ -499,16 +521,19 @@ static void ep0_rxstate(struct musb *musb)
 static void ep0_txstate(struct musb *musb)
 {
 	void __iomem		*regs = musb->control_ep->regs;
-	struct usb_request	*request = next_ep0_request(musb);
+	struct musb_request	*req = next_ep0_request(musb);
+	struct usb_request	*request;
 	u16			csr = MUSB_CSR0_TXPKTRDY;
 	u8			*fifo_src;
 	u8			fifo_count;
 
-	if (!request) {
+	if (!req) {
 		/* WARN_ON(1); */
-		DBG(2, "odd; csr0 %04x\n", musb_readw(regs, MUSB_CSR0));
+		musb_dbg(musb, "odd; csr0 %04x", musb_readw(regs, MUSB_CSR0));
 		return;
 	}
+
+	request = &req->request;
 
 	/* load the data */
 	fifo_src = (u8 *) request->buf + request->actual;
@@ -553,7 +578,7 @@ static void ep0_txstate(struct musb *musb)
 static void
 musb_read_setup(struct musb *musb, struct usb_ctrlrequest *req)
 {
-	struct usb_request	*r;
+	struct musb_request	*r;
 	void __iomem		*regs = musb->control_ep->regs;
 
 	musb_read_fifo(&musb->endpoints[0], sizeof *req, (u8 *)req);
@@ -561,7 +586,7 @@ musb_read_setup(struct musb *musb, struct usb_ctrlrequest *req)
 	/* NOTE:  earlier 2.6 versions changed setup packets to host
 	 * order, but now USB packets always stay in USB byte order.
 	 */
-	DBG(3, "SETUP req%02x.%02x v%04x i%04x l%d\n",
+	musb_dbg(musb, "SETUP req%02x.%02x v%04x i%04x l%d",
 		req->bRequestType,
 		req->bRequest,
 		le16_to_cpu(req->wValue),
@@ -571,7 +596,7 @@ musb_read_setup(struct musb *musb, struct usb_ctrlrequest *req)
 	/* clean up any leftover transfers */
 	r = next_ep0_request(musb);
 	if (r)
-		musb_g_ep0_giveback(musb, r);
+		musb_g_ep0_giveback(musb, &r->request);
 
 	/* For zero-data requests we want to delay the STATUS stage to
 	 * avoid SETUPEND errors.  If we read data (OUT), delay accepting
@@ -629,10 +654,16 @@ irqreturn_t musb_g_ep0_irq(struct musb *musb)
 	csr = musb_readw(regs, MUSB_CSR0);
 	len = musb_readb(regs, MUSB_COUNT0);
 
-	DBG(4, "csr %04x, count %d, myaddr %d, ep0stage %s\n",
-			csr, len,
-			musb_readb(mbase, MUSB_FADDR),
-			decode_ep0stage(musb->ep0_state));
+	musb_dbg(musb, "csr %04x, count %d, ep0stage %s",
+			csr, len, decode_ep0stage(musb->ep0_state));
+
+	if (csr & MUSB_CSR0_P_DATAEND) {
+		/*
+		 * If DATAEND is set we should not call the callback,
+		 * hence the status stage is not complete.
+		 */
+		return IRQ_HANDLED;
+	}
 
 	/* I sent a stall.. need to acknowledge it now.. */
 	if (csr & MUSB_CSR0_P_SENTSTALL) {
@@ -700,7 +731,7 @@ irqreturn_t musb_g_ep0_irq(struct musb *musb)
 
 		/* enter test mode if needed (exit by reset) */
 		else if (musb->test_mode) {
-			DBG(1, "entering TESTMODE\n");
+			musb_dbg(musb, "entering TESTMODE");
 
 			if (MUSB_TEST_PACKET == musb->test_mode_nr)
 				musb_load_testpacket(musb);
@@ -713,11 +744,11 @@ irqreturn_t musb_g_ep0_irq(struct musb *musb)
 	case MUSB_EP0_STAGE_STATUSOUT:
 		/* end of sequence #1: write to host (TX state) */
 		{
-			struct usb_request	*req;
+			struct musb_request	*req;
 
 			req = next_ep0_request(musb);
 			if (req)
-				musb_g_ep0_giveback(musb, req);
+				musb_g_ep0_giveback(musb, &req->request);
 		}
 
 		/*
@@ -812,7 +843,7 @@ setup:
 				break;
 			}
 
-			DBG(3, "handled %d, csr %04x, ep0stage %s\n",
+			musb_dbg(musb, "handled %d, csr %04x, ep0stage %s",
 				handled, csr,
 				decode_ep0stage(musb->ep0_state));
 
@@ -829,7 +860,7 @@ setup:
 			if (handled < 0) {
 				musb_ep_select(mbase, 0);
 stall:
-				DBG(3, "stall (%d)\n", handled);
+				musb_dbg(musb, "stall (%d)", handled);
 				musb->ackpend |= MUSB_CSR0_P_SENDSTALL;
 				musb->ep0_state = MUSB_EP0_STAGE_IDLE;
 finish:
@@ -909,16 +940,16 @@ musb_g_ep0_queue(struct usb_ep *e, struct usb_request *r, gfp_t gfp_flags)
 		status = 0;
 		break;
 	default:
-		DBG(1, "ep0 request queued in state %d\n",
+		musb_dbg(musb, "ep0 request queued in state %d",
 				musb->ep0_state);
 		status = -EINVAL;
 		goto cleanup;
 	}
 
 	/* add request to the list */
-	list_add_tail(&(req->request.list), &(ep->req_list));
+	list_add_tail(&req->list, &ep->req_list);
 
-	DBG(3, "queue to %s (%s), length=%d\n",
+	musb_dbg(musb, "queue to %s (%s), length=%d",
 			ep->name, ep->is_in ? "IN/TX" : "OUT/RX",
 			req->request.length);
 
@@ -1011,7 +1042,7 @@ static int musb_g_ep0_halt(struct usb_ep *e, int value)
 		musb->ackpend = 0;
 		break;
 	default:
-		DBG(1, "ep0 can't halt in state %d\n", musb->ep0_state);
+		musb_dbg(musb, "ep0 can't halt in state %d", musb->ep0_state);
 		status = -EINVAL;
 	}
 

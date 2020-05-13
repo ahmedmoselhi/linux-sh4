@@ -1,15 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Transparent proxy support for Linux/iptables
  *
  * Copyright (C) 2007-2008 BalaBit IT Ltd.
  * Author: Krisztian Kovacs
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  */
-
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 #include <linux/module.h>
 #include <linux/skbuff.h>
 #include <linux/netfilter/x_tables.h>
@@ -19,171 +15,205 @@
 #include <net/icmp.h>
 #include <net/sock.h>
 #include <net/inet_sock.h>
-#include <net/netfilter/nf_tproxy_core.h>
 #include <net/netfilter/ipv4/nf_defrag_ipv4.h>
 
+#if IS_ENABLED(CONFIG_IP6_NF_IPTABLES)
+#include <linux/netfilter_ipv6/ip6_tables.h>
+#include <net/inet6_hashtables.h>
+#include <net/netfilter/ipv6/nf_defrag_ipv6.h>
+#endif
+
+#include <net/netfilter/nf_socket.h>
 #include <linux/netfilter/xt_socket.h>
 
-#if defined(CONFIG_NF_CONNTRACK) || defined(CONFIG_NF_CONNTRACK_MODULE)
-#define XT_SOCKET_HAVE_CONNTRACK 1
-#include <net/netfilter/nf_conntrack.h>
-#endif
-
-static int
-extract_icmp_fields(const struct sk_buff *skb,
-		    u8 *protocol,
-		    __be32 *raddr,
-		    __be32 *laddr,
-		    __be16 *rport,
-		    __be16 *lport)
-{
-	unsigned int outside_hdrlen = ip_hdrlen(skb);
-	struct iphdr *inside_iph, _inside_iph;
-	struct icmphdr *icmph, _icmph;
-	__be16 *ports, _ports[2];
-
-	icmph = skb_header_pointer(skb, outside_hdrlen,
-				   sizeof(_icmph), &_icmph);
-	if (icmph == NULL)
-		return 1;
-
-	switch (icmph->type) {
-	case ICMP_DEST_UNREACH:
-	case ICMP_SOURCE_QUENCH:
-	case ICMP_REDIRECT:
-	case ICMP_TIME_EXCEEDED:
-	case ICMP_PARAMETERPROB:
-		break;
-	default:
-		return 1;
-	}
-
-	inside_iph = skb_header_pointer(skb, outside_hdrlen +
-					sizeof(struct icmphdr),
-					sizeof(_inside_iph), &_inside_iph);
-	if (inside_iph == NULL)
-		return 1;
-
-	if (inside_iph->protocol != IPPROTO_TCP &&
-	    inside_iph->protocol != IPPROTO_UDP)
-		return 1;
-
-	ports = skb_header_pointer(skb, outside_hdrlen +
-				   sizeof(struct icmphdr) +
-				   (inside_iph->ihl << 2),
-				   sizeof(_ports), &_ports);
-	if (ports == NULL)
-		return 1;
-
-	/* the inside IP packet is the one quoted from our side, thus
-	 * its saddr is the local address */
-	*protocol = inside_iph->protocol;
-	*laddr = inside_iph->saddr;
-	*lport = ports[0];
-	*raddr = inside_iph->daddr;
-	*rport = ports[1];
-
-	return 0;
-}
-
-
+/* "socket" match based redirection (no specific rule)
+ * ===================================================
+ *
+ * There are connections with dynamic endpoints (e.g. FTP data
+ * connection) that the user is unable to add explicit rules
+ * for. These are taken care of by a generic "socket" rule. It is
+ * assumed that the proxy application is trusted to open such
+ * connections without explicit iptables rule (except of course the
+ * generic 'socket' rule). In this case the following sockets are
+ * matched in preference order:
+ *
+ *   - match: if there's a fully established connection matching the
+ *     _packet_ tuple
+ *
+ *   - match: if there's a non-zero bound listener (possibly with a
+ *     non-local address) We don't accept zero-bound listeners, since
+ *     then local services could intercept traffic going through the
+ *     box.
+ */
 static bool
-socket_match(const struct sk_buff *skb, const struct xt_match_param *par,
+socket_match(const struct sk_buff *skb, struct xt_action_param *par,
 	     const struct xt_socket_mtinfo1 *info)
 {
-	const struct iphdr *iph = ip_hdr(skb);
-	struct udphdr _hdr, *hp = NULL;
-	struct sock *sk;
-	__be32 daddr, saddr;
-	__be16 dport, sport;
-	u8 protocol;
-#ifdef XT_SOCKET_HAVE_CONNTRACK
-	struct nf_conn const *ct;
-	enum ip_conntrack_info ctinfo;
-#endif
+	struct sk_buff *pskb = (struct sk_buff *)skb;
+	struct sock *sk = skb->sk;
 
-	if (iph->protocol == IPPROTO_UDP || iph->protocol == IPPROTO_TCP) {
-		hp = skb_header_pointer(skb, ip_hdrlen(skb),
-					sizeof(_hdr), &_hdr);
-		if (hp == NULL)
-			return false;
+	if (sk && !net_eq(xt_net(par), sock_net(sk)))
+		sk = NULL;
 
-		protocol = iph->protocol;
-		saddr = iph->saddr;
-		sport = hp->source;
-		daddr = iph->daddr;
-		dport = hp->dest;
+	if (!sk)
+		sk = nf_sk_lookup_slow_v4(xt_net(par), skb, xt_in(par));
 
-	} else if (iph->protocol == IPPROTO_ICMP) {
-		if (extract_icmp_fields(skb, &protocol, &saddr, &daddr,
-					&sport, &dport))
-			return false;
-	} else {
-		return false;
-	}
-
-#ifdef XT_SOCKET_HAVE_CONNTRACK
-	/* Do the lookup with the original socket address in case this is a
-	 * reply packet of an established SNAT-ted connection. */
-
-	ct = nf_ct_get(skb, &ctinfo);
-	if (ct && (ct != &nf_conntrack_untracked) &&
-	    ((iph->protocol != IPPROTO_ICMP &&
-	      ctinfo == IP_CT_IS_REPLY + IP_CT_ESTABLISHED) ||
-	     (iph->protocol == IPPROTO_ICMP &&
-	      ctinfo == IP_CT_IS_REPLY + IP_CT_RELATED)) &&
-	    (ct->status & IPS_SRC_NAT_DONE)) {
-
-		daddr = ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple.src.u3.ip;
-		dport = (iph->protocol == IPPROTO_TCP) ?
-			ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple.src.u.tcp.port :
-			ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple.src.u.udp.port;
-	}
-#endif
-
-	sk = nf_tproxy_get_sock_v4(dev_net(skb->dev), protocol,
-				   saddr, daddr, sport, dport, par->in, false);
-	if (sk != NULL) {
+	if (sk) {
 		bool wildcard;
 		bool transparent = true;
 
-		/* Ignore sockets listening on INADDR_ANY */
-		wildcard = (sk->sk_state != TCP_TIME_WAIT &&
-			    inet_sk(sk)->rcv_saddr == 0);
+		/* Ignore sockets listening on INADDR_ANY,
+		 * unless XT_SOCKET_NOWILDCARD is set
+		 */
+		wildcard = (!(info->flags & XT_SOCKET_NOWILDCARD) &&
+			    sk_fullsock(sk) &&
+			    inet_sk(sk)->inet_rcv_saddr == 0);
 
 		/* Ignore non-transparent sockets,
-		   if XT_SOCKET_TRANSPARENT is used */
-		if (info && info->flags & XT_SOCKET_TRANSPARENT)
-			transparent = ((sk->sk_state != TCP_TIME_WAIT &&
-					inet_sk(sk)->transparent) ||
-				       (sk->sk_state == TCP_TIME_WAIT &&
-					inet_twsk(sk)->tw_transparent));
+		 * if XT_SOCKET_TRANSPARENT is used
+		 */
+		if (info->flags & XT_SOCKET_TRANSPARENT)
+			transparent = inet_sk_transparent(sk);
 
-		nf_tproxy_put_sock(sk);
+		if (info->flags & XT_SOCKET_RESTORESKMARK && !wildcard &&
+		    transparent && sk_fullsock(sk))
+			pskb->mark = sk->sk_mark;
+
+		if (sk != skb->sk)
+			sock_gen_put(sk);
 
 		if (wildcard || !transparent)
 			sk = NULL;
 	}
 
-	pr_debug("socket match: proto %u %08x:%u -> %08x:%u "
-		 "(orig %08x:%u) sock %p\n",
-		 protocol, ntohl(saddr), ntohs(sport),
-		 ntohl(daddr), ntohs(dport),
-		 ntohl(iph->daddr), hp ? ntohs(hp->dest) : 0, sk);
-
-	return (sk != NULL);
+	return sk != NULL;
 }
 
 static bool
-socket_mt_v0(const struct sk_buff *skb, const struct xt_match_param *par)
+socket_mt4_v0(const struct sk_buff *skb, struct xt_action_param *par)
 {
-	return socket_match(skb, par, NULL);
+	static struct xt_socket_mtinfo1 xt_info_v0 = {
+		.flags = 0,
+	};
+
+	return socket_match(skb, par, &xt_info_v0);
 }
 
 static bool
-socket_mt_v1(const struct sk_buff *skb, const struct xt_match_param *par)
+socket_mt4_v1_v2_v3(const struct sk_buff *skb, struct xt_action_param *par)
 {
 	return socket_match(skb, par, par->matchinfo);
+}
+
+#if IS_ENABLED(CONFIG_IP6_NF_IPTABLES)
+static bool
+socket_mt6_v1_v2_v3(const struct sk_buff *skb, struct xt_action_param *par)
+{
+	const struct xt_socket_mtinfo1 *info = (struct xt_socket_mtinfo1 *) par->matchinfo;
+	struct sk_buff *pskb = (struct sk_buff *)skb;
+	struct sock *sk = skb->sk;
+
+	if (sk && !net_eq(xt_net(par), sock_net(sk)))
+		sk = NULL;
+
+	if (!sk)
+		sk = nf_sk_lookup_slow_v6(xt_net(par), skb, xt_in(par));
+
+	if (sk) {
+		bool wildcard;
+		bool transparent = true;
+
+		/* Ignore sockets listening on INADDR_ANY
+		 * unless XT_SOCKET_NOWILDCARD is set
+		 */
+		wildcard = (!(info->flags & XT_SOCKET_NOWILDCARD) &&
+			    sk_fullsock(sk) &&
+			    ipv6_addr_any(&sk->sk_v6_rcv_saddr));
+
+		/* Ignore non-transparent sockets,
+		 * if XT_SOCKET_TRANSPARENT is used
+		 */
+		if (info->flags & XT_SOCKET_TRANSPARENT)
+			transparent = inet_sk_transparent(sk);
+
+		if (info->flags & XT_SOCKET_RESTORESKMARK && !wildcard &&
+		    transparent && sk_fullsock(sk))
+			pskb->mark = sk->sk_mark;
+
+		if (sk != skb->sk)
+			sock_gen_put(sk);
+
+		if (wildcard || !transparent)
+			sk = NULL;
+	}
+
+	return sk != NULL;
+}
+#endif
+
+static int socket_mt_enable_defrag(struct net *net, int family)
+{
+	switch (family) {
+	case NFPROTO_IPV4:
+		return nf_defrag_ipv4_enable(net);
+#if IS_ENABLED(CONFIG_IP6_NF_IPTABLES)
+	case NFPROTO_IPV6:
+		return nf_defrag_ipv6_enable(net);
+#endif
+	}
+	WARN_ONCE(1, "Unknown family %d\n", family);
+	return 0;
+}
+
+static int socket_mt_v1_check(const struct xt_mtchk_param *par)
+{
+	const struct xt_socket_mtinfo1 *info = (struct xt_socket_mtinfo1 *) par->matchinfo;
+	int err;
+
+	err = socket_mt_enable_defrag(par->net, par->family);
+	if (err)
+		return err;
+
+	if (info->flags & ~XT_SOCKET_FLAGS_V1) {
+		pr_info_ratelimited("unknown flags 0x%x\n",
+				    info->flags & ~XT_SOCKET_FLAGS_V1);
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static int socket_mt_v2_check(const struct xt_mtchk_param *par)
+{
+	const struct xt_socket_mtinfo2 *info = (struct xt_socket_mtinfo2 *) par->matchinfo;
+	int err;
+
+	err = socket_mt_enable_defrag(par->net, par->family);
+	if (err)
+		return err;
+
+	if (info->flags & ~XT_SOCKET_FLAGS_V2) {
+		pr_info_ratelimited("unknown flags 0x%x\n",
+				    info->flags & ~XT_SOCKET_FLAGS_V2);
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static int socket_mt_v3_check(const struct xt_mtchk_param *par)
+{
+	const struct xt_socket_mtinfo3 *info =
+				    (struct xt_socket_mtinfo3 *)par->matchinfo;
+	int err;
+
+	err = socket_mt_enable_defrag(par->net, par->family);
+	if (err)
+		return err;
+	if (info->flags & ~XT_SOCKET_FLAGS_V3) {
+		pr_info_ratelimited("unknown flags 0x%x\n",
+				    info->flags & ~XT_SOCKET_FLAGS_V3);
+		return -EINVAL;
+	}
+	return 0;
 }
 
 static struct xt_match socket_mt_reg[] __read_mostly = {
@@ -191,24 +221,87 @@ static struct xt_match socket_mt_reg[] __read_mostly = {
 		.name		= "socket",
 		.revision	= 0,
 		.family		= NFPROTO_IPV4,
-		.match		= socket_mt_v0,
-		.hooks		= 1 << NF_INET_PRE_ROUTING,
+		.match		= socket_mt4_v0,
+		.hooks		= (1 << NF_INET_PRE_ROUTING) |
+				  (1 << NF_INET_LOCAL_IN),
 		.me		= THIS_MODULE,
 	},
 	{
 		.name		= "socket",
 		.revision	= 1,
 		.family		= NFPROTO_IPV4,
-		.match		= socket_mt_v1,
+		.match		= socket_mt4_v1_v2_v3,
+		.checkentry	= socket_mt_v1_check,
 		.matchsize	= sizeof(struct xt_socket_mtinfo1),
-		.hooks		= 1 << NF_INET_PRE_ROUTING,
+		.hooks		= (1 << NF_INET_PRE_ROUTING) |
+				  (1 << NF_INET_LOCAL_IN),
 		.me		= THIS_MODULE,
 	},
+#if IS_ENABLED(CONFIG_IP6_NF_IPTABLES)
+	{
+		.name		= "socket",
+		.revision	= 1,
+		.family		= NFPROTO_IPV6,
+		.match		= socket_mt6_v1_v2_v3,
+		.checkentry	= socket_mt_v1_check,
+		.matchsize	= sizeof(struct xt_socket_mtinfo1),
+		.hooks		= (1 << NF_INET_PRE_ROUTING) |
+				  (1 << NF_INET_LOCAL_IN),
+		.me		= THIS_MODULE,
+	},
+#endif
+	{
+		.name		= "socket",
+		.revision	= 2,
+		.family		= NFPROTO_IPV4,
+		.match		= socket_mt4_v1_v2_v3,
+		.checkentry	= socket_mt_v2_check,
+		.matchsize	= sizeof(struct xt_socket_mtinfo1),
+		.hooks		= (1 << NF_INET_PRE_ROUTING) |
+				  (1 << NF_INET_LOCAL_IN),
+		.me		= THIS_MODULE,
+	},
+#if IS_ENABLED(CONFIG_IP6_NF_IPTABLES)
+	{
+		.name		= "socket",
+		.revision	= 2,
+		.family		= NFPROTO_IPV6,
+		.match		= socket_mt6_v1_v2_v3,
+		.checkentry	= socket_mt_v2_check,
+		.matchsize	= sizeof(struct xt_socket_mtinfo1),
+		.hooks		= (1 << NF_INET_PRE_ROUTING) |
+				  (1 << NF_INET_LOCAL_IN),
+		.me		= THIS_MODULE,
+	},
+#endif
+	{
+		.name		= "socket",
+		.revision	= 3,
+		.family		= NFPROTO_IPV4,
+		.match		= socket_mt4_v1_v2_v3,
+		.checkentry	= socket_mt_v3_check,
+		.matchsize	= sizeof(struct xt_socket_mtinfo1),
+		.hooks		= (1 << NF_INET_PRE_ROUTING) |
+				  (1 << NF_INET_LOCAL_IN),
+		.me		= THIS_MODULE,
+	},
+#if IS_ENABLED(CONFIG_IP6_NF_IPTABLES)
+	{
+		.name		= "socket",
+		.revision	= 3,
+		.family		= NFPROTO_IPV6,
+		.match		= socket_mt6_v1_v2_v3,
+		.checkentry	= socket_mt_v3_check,
+		.matchsize	= sizeof(struct xt_socket_mtinfo1),
+		.hooks		= (1 << NF_INET_PRE_ROUTING) |
+				  (1 << NF_INET_LOCAL_IN),
+		.me		= THIS_MODULE,
+	},
+#endif
 };
 
 static int __init socket_mt_init(void)
 {
-	nf_defrag_ipv4_enable();
 	return xt_register_matches(socket_mt_reg, ARRAY_SIZE(socket_mt_reg));
 }
 
@@ -224,3 +317,4 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Krisztian Kovacs, Balazs Scheidler");
 MODULE_DESCRIPTION("x_tables socket match module");
 MODULE_ALIAS("ipt_socket");
+MODULE_ALIAS("ip6t_socket");

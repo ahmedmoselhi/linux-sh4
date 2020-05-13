@@ -1,9 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * wm8900.h  --  WM890 Soc Audio driver
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef _WM8900_H
@@ -51,8 +48,5 @@
 #define WM8900_DAC_CLKDIV_4   0x10
 #define WM8900_DAC_CLKDIV_5_5 0x14
 #define WM8900_DAC_CLKDIV_6   0x18
-
-extern struct snd_soc_dai wm8900_dai;
-extern struct snd_soc_codec_device soc_codec_dev_wm8900;
 
 #endif

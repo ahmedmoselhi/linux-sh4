@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * max7359_keypad.c - MAX7359 Key Switch Controller Driver
  *
@@ -6,16 +7,14 @@
  *
  * Based on pxa27x_keypad.c
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  * Datasheet: http://www.maxim-ic.com/quick_view2.cfm/qv_pk/5456
  */
 
 #include <linux/module.h>
 #include <linux/i2c.h>
+#include <linux/slab.h>
 #include <linux/interrupt.h>
+#include <linux/pm.h>
 #include <linux/input.h>
 #include <linux/input/matrix_keypad.h>
 
@@ -82,26 +81,6 @@ static int max7359_read_reg(struct i2c_client *client, int reg)
 	return ret;
 }
 
-static void max7359_build_keycode(struct max7359_keypad *keypad,
-				const struct matrix_keymap_data *keymap_data)
-{
-	struct input_dev *input_dev = keypad->input_dev;
-	int i;
-
-	for (i = 0; i < keymap_data->keymap_size; i++) {
-		unsigned int key = keymap_data->keymap[i];
-		unsigned int row = KEY_ROW(key);
-		unsigned int col = KEY_COL(key);
-		unsigned int scancode = MATRIX_SCAN_CODE(row, col,
-						MAX7359_ROW_SHIFT);
-		unsigned short keycode = KEY_VAL(key);
-
-		keypad->keycodes[scancode] = keycode;
-		__set_bit(keycode, input_dev->keybit);
-	}
-	__clear_bit(KEY_RESERVED, input_dev->keybit);
-}
-
 /* runs in an IRQ thread -- can (and will!) sleep */
 static irqreturn_t max7359_interrupt(int irq, void *dev_id)
 {
@@ -164,7 +143,6 @@ static void max7359_close(struct input_dev *dev)
 static void max7359_initialize(struct i2c_client *client)
 {
 	max7359_write_reg(client, MAX7359_REG_CONFIG,
-		MAX7359_CFG_INTERRUPT | /* Irq clears after host read */
 		MAX7359_CFG_KEY_RELEASE | /* Key release enable */
 		MAX7359_CFG_WAKEUP); /* Key press wakeup enable */
 
@@ -177,10 +155,11 @@ static void max7359_initialize(struct i2c_client *client)
 	max7359_fall_deepsleep(client);
 }
 
-static int __devinit max7359_probe(struct i2c_client *client,
+static int max7359_probe(struct i2c_client *client,
 					const struct i2c_device_id *id)
 {
-	const struct matrix_keymap_data *keymap_data = client->dev.platform_data;
+	const struct matrix_keymap_data *keymap_data =
+			dev_get_platdata(&client->dev);
 	struct max7359_keypad *keypad;
 	struct input_dev *input_dev;
 	int ret;
@@ -200,12 +179,17 @@ static int __devinit max7359_probe(struct i2c_client *client,
 
 	dev_dbg(&client->dev, "keys FIFO is 0x%02x\n", ret);
 
-	keypad = kzalloc(sizeof(struct max7359_keypad), GFP_KERNEL);
-	input_dev = input_allocate_device();
-	if (!keypad || !input_dev) {
+	keypad = devm_kzalloc(&client->dev, sizeof(struct max7359_keypad),
+			      GFP_KERNEL);
+	if (!keypad) {
 		dev_err(&client->dev, "failed to allocate memory\n");
-		error = -ENOMEM;
-		goto failed_free_mem;
+		return -ENOMEM;
+	}
+
+	input_dev = devm_input_allocate_device(&client->dev);
+	if (!input_dev) {
+		dev_err(&client->dev, "failed to allocate input device\n");
+		return -ENOMEM;
 	}
 
 	keypad->client = client;
@@ -225,54 +209,45 @@ static int __devinit max7359_probe(struct i2c_client *client,
 	input_set_capability(input_dev, EV_MSC, MSC_SCAN);
 	input_set_drvdata(input_dev, keypad);
 
-	max7359_build_keycode(keypad, keymap_data);
+	error = matrix_keypad_build_keymap(keymap_data, NULL,
+					   MAX7359_MAX_KEY_ROWS,
+					   MAX7359_MAX_KEY_COLS,
+					   keypad->keycodes,
+					   input_dev);
+	if (error) {
+		dev_err(&client->dev, "failed to build keymap\n");
+		return error;
+	}
 
-	error = request_threaded_irq(client->irq, NULL, max7359_interrupt,
-				     IRQF_TRIGGER_LOW | IRQF_ONESHOT,
-				     client->name, keypad);
+	error = devm_request_threaded_irq(&client->dev, client->irq, NULL,
+					  max7359_interrupt,
+					  IRQF_TRIGGER_LOW | IRQF_ONESHOT,
+					  client->name, keypad);
 	if (error) {
 		dev_err(&client->dev, "failed to register interrupt\n");
-		goto failed_free_mem;
+		return error;
 	}
 
 	/* Register the input device */
 	error = input_register_device(input_dev);
 	if (error) {
 		dev_err(&client->dev, "failed to register input device\n");
-		goto failed_free_irq;
+		return error;
 	}
 
 	/* Initialize MAX7359 */
 	max7359_initialize(client);
 
-	i2c_set_clientdata(client, keypad);
 	device_init_wakeup(&client->dev, 1);
 
 	return 0;
-
-failed_free_irq:
-	free_irq(client->irq, keypad);
-failed_free_mem:
-	input_free_device(input_dev);
-	kfree(keypad);
-	return error;
 }
 
-static int __devexit max7359_remove(struct i2c_client *client)
+#ifdef CONFIG_PM_SLEEP
+static int max7359_suspend(struct device *dev)
 {
-	struct max7359_keypad *keypad = i2c_get_clientdata(client);
+	struct i2c_client *client = to_i2c_client(dev);
 
-	free_irq(client->irq, keypad);
-	input_unregister_device(keypad->input_dev);
-	i2c_set_clientdata(client, NULL);
-	kfree(keypad);
-
-	return 0;
-}
-
-#ifdef CONFIG_PM
-static int max7359_suspend(struct i2c_client *client, pm_message_t mesg)
-{
 	max7359_fall_deepsleep(client);
 
 	if (device_may_wakeup(&client->dev))
@@ -281,8 +256,10 @@ static int max7359_suspend(struct i2c_client *client, pm_message_t mesg)
 	return 0;
 }
 
-static int max7359_resume(struct i2c_client *client)
+static int max7359_resume(struct device *dev)
 {
+	struct i2c_client *client = to_i2c_client(dev);
+
 	if (device_may_wakeup(&client->dev))
 		disable_irq_wake(client->irq);
 
@@ -291,10 +268,9 @@ static int max7359_resume(struct i2c_client *client)
 
 	return 0;
 }
-#else
-#define max7359_suspend	NULL
-#define max7359_resume	NULL
 #endif
+
+static SIMPLE_DEV_PM_OPS(max7359_pm, max7359_suspend, max7359_resume);
 
 static const struct i2c_device_id max7359_ids[] = {
 	{ "max7359", 0 },
@@ -305,25 +281,13 @@ MODULE_DEVICE_TABLE(i2c, max7359_ids);
 static struct i2c_driver max7359_i2c_driver = {
 	.driver = {
 		.name = "max7359",
+		.pm   = &max7359_pm,
 	},
 	.probe		= max7359_probe,
-	.remove		= __devexit_p(max7359_remove),
-	.suspend	= max7359_suspend,
-	.resume		= max7359_resume,
 	.id_table	= max7359_ids,
 };
 
-static int __init max7359_init(void)
-{
-	return i2c_add_driver(&max7359_i2c_driver);
-}
-module_init(max7359_init);
-
-static void __exit max7359_exit(void)
-{
-	i2c_del_driver(&max7359_i2c_driver);
-}
-module_exit(max7359_exit);
+module_i2c_driver(max7359_i2c_driver);
 
 MODULE_AUTHOR("Kim Kyuwon <q1.kim@samsung.com>");
 MODULE_DESCRIPTION("MAX7359 Key Switch Controller Driver");

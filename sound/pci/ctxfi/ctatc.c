@@ -1,9 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /**
  * Copyright (C) 2008, Creative Technology Ltd. All Rights Reserved.
- *
- * This source file is released under GPL v2 license (no other versions).
- * See the COPYING file included in the main directory of this source
- * distribution for the license terms and conditions.
  *
  * @File    ctatc.c
  *
@@ -18,18 +15,17 @@
 #include "ctatc.h"
 #include "ctpcm.h"
 #include "ctmixer.h"
-#include "cthardware.h"
 #include "ctsrc.h"
 #include "ctamixer.h"
 #include "ctdaio.h"
 #include "cttimer.h"
 #include <linux/delay.h>
+#include <linux/slab.h>
 #include <sound/pcm.h>
 #include <sound/control.h>
 #include <sound/asoundef.h>
 
 #define MONO_SUM_SCALE	0x19a8	/* 2^(-0.5) in 14-bit floating format */
-#define DAIONUM		7
 #define MAX_MULTI_CHN	8
 
 #define IEC958_DEFAULT_CON ((IEC958_AES0_NONAUDIO \
@@ -39,7 +35,7 @@
 			    | (0x10 << 16) \
 			    | ((IEC958_AES3_CON_FS_48000) << 24))
 
-static struct snd_pci_quirk __devinitdata subsys_20k1_list[] = {
+static const struct snd_pci_quirk subsys_20k1_list[] = {
 	SND_PCI_QUIRK(PCI_VENDOR_ID_CREATIVE, 0x0022, "SB055x", CTSB055X),
 	SND_PCI_QUIRK(PCI_VENDOR_ID_CREATIVE, 0x002f, "SB055x", CTSB055X),
 	SND_PCI_QUIRK(PCI_VENDOR_ID_CREATIVE, 0x0029, "SB073x", CTSB073X),
@@ -49,9 +45,11 @@ static struct snd_pci_quirk __devinitdata subsys_20k1_list[] = {
 	{ } /* terminator */
 };
 
-static struct snd_pci_quirk __devinitdata subsys_20k2_list[] = {
+static const struct snd_pci_quirk subsys_20k2_list[] = {
 	SND_PCI_QUIRK(PCI_VENDOR_ID_CREATIVE, PCI_SUBDEVICE_ID_CREATIVE_SB0760,
 		      "SB0760", CTSB0760),
+	SND_PCI_QUIRK(PCI_VENDOR_ID_CREATIVE, PCI_SUBDEVICE_ID_CREATIVE_SB1270,
+		      "SB1270", CTSB1270),
 	SND_PCI_QUIRK(PCI_VENDOR_ID_CREATIVE, PCI_SUBDEVICE_ID_CREATIVE_SB08801,
 		      "SB0880", CTSB0880),
 	SND_PCI_QUIRK(PCI_VENDOR_ID_CREATIVE, PCI_SUBDEVICE_ID_CREATIVE_SB08802,
@@ -74,6 +72,7 @@ static const char *ct_subsys_name[NUM_CTCARDS] = {
 	[CTSB0760]	= "SB076x",
 	[CTHENDRIX]	= "Hendrix",
 	[CTSB0880]	= "SB0880",
+	[CTSB1270]      = "SB1270",
 	[CT20K2_UNKNOWN] = "Unknown",
 };
 
@@ -104,11 +103,11 @@ static struct {
 			    .public_name = "Mixer"}
 };
 
-typedef int (*create_t)(void *, void **);
+typedef int (*create_t)(struct hw *, void **);
 typedef int (*destroy_t)(void *);
 
 static struct {
-	int (*create)(void *hw, void **rmgr);
+	int (*create)(struct hw *hw, void **rmgr);
 	int (*destroy)(void *mgr);
 } rsc_mgr_funcs[NUM_RSCTYP] = {
 	[SRC] 		= { .create 	= (create_t)src_mgr_create,
@@ -169,7 +168,8 @@ static unsigned long atc_get_ptp_phys(struct ct_atc *atc, int index)
 	return atc->vm->get_ptp_phys(atc->vm, index);
 }
 
-static unsigned int convert_format(snd_pcm_format_t snd_format)
+static unsigned int convert_format(snd_pcm_format_t snd_format,
+				   struct snd_card *card)
 {
 	switch (snd_format) {
 	case SNDRV_PCM_FORMAT_U8:
@@ -183,7 +183,7 @@ static unsigned int convert_format(snd_pcm_format_t snd_format)
 	case SNDRV_PCM_FORMAT_FLOAT_LE:
 		return SRC_SF_F32;
 	default:
-		printk(KERN_ERR "ctxfi: not recognized snd format is %d \n",
+		dev_err(card->dev, "not recognized snd format is %d\n",
 			snd_format);
 		return SRC_SF_S16;
 	}
@@ -229,7 +229,7 @@ static int select_rom(unsigned int pitch)
 	} else if (pitch == 0x02000000) {
 		/* pitch == 2 */
 		return 3;
-	} else if (pitch >= 0x0 && pitch <= 0x08000000) {
+	} else if (pitch <= 0x08000000) {
 		/* 0 <= pitch <= 8 */
 		return 0;
 	} else {
@@ -266,12 +266,13 @@ static int atc_pcm_playback_prepare(struct ct_atc *atc, struct ct_atc_pcm *apcm)
 	src = apcm->src;
 	src->ops->set_pitch(src, pitch);
 	src->ops->set_rom(src, select_rom(pitch));
-	src->ops->set_sf(src, convert_format(apcm->substream->runtime->format));
+	src->ops->set_sf(src, convert_format(apcm->substream->runtime->format,
+					     atc->card));
 	src->ops->set_pm(src, (src->ops->next_interleave(src) != NULL));
 
 	/* Get AMIXER resource */
 	n_amixer = (n_amixer < 2) ? 2 : n_amixer;
-	apcm->amixers = kzalloc(sizeof(void *)*n_amixer, GFP_KERNEL);
+	apcm->amixers = kcalloc(n_amixer, sizeof(void *), GFP_KERNEL);
 	if (!apcm->amixers) {
 		err = -ENOMEM;
 		goto error1;
@@ -433,6 +434,13 @@ atc_pcm_playback_position(struct ct_atc *atc, struct ct_atc_pcm *apcm)
 		return 0;
 	position = src->ops->get_ca(src);
 
+	if (position < apcm->vm_block->addr) {
+		dev_dbg(atc->card->dev,
+			"bad ca - ca=0x%08x, vba=0x%08x, vbs=0x%08x\n",
+			position, apcm->vm_block->addr, apcm->vm_block->size);
+		position = apcm->vm_block->addr;
+	}
+
 	size = apcm->vm_block->size;
 	max_cisz = src->multi * src->rsc.msr;
 	max_cisz = 128 * (max_cisz < 8 ? max_cisz : 8);
@@ -458,12 +466,12 @@ static void setup_src_node_conf(struct ct_atc *atc, struct ct_atc_pcm *apcm,
 				apcm->substream->runtime->rate);
 	*n_srcc = 0;
 
-	if (1 == atc->msr) {
+	if (1 == atc->msr) { /* FIXME: do we really need SRC here if pitch==1 */
 		*n_srcc = apcm->substream->runtime->channels;
 		conf[0].pitch = pitch;
 		conf[0].mix_msr = conf[0].imp_msr = conf[0].msr = 1;
 		conf[0].vo = 1;
-	} else if (2 == atc->msr) {
+	} else if (2 <= atc->msr) {
 		if (0x8000000 < pitch) {
 			/* Need two-stage SRCs, SRCIMPs and
 			 * AMIXERs for converting format */
@@ -532,18 +540,18 @@ atc_pcm_capture_get_resources(struct ct_atc *atc, struct ct_atc_pcm *apcm)
 	}
 
 	if (n_srcc) {
-		apcm->srccs = kzalloc(sizeof(void *)*n_srcc, GFP_KERNEL);
+		apcm->srccs = kcalloc(n_srcc, sizeof(void *), GFP_KERNEL);
 		if (!apcm->srccs)
 			return -ENOMEM;
 	}
 	if (n_amixer) {
-		apcm->amixers = kzalloc(sizeof(void *)*n_amixer, GFP_KERNEL);
+		apcm->amixers = kcalloc(n_amixer, sizeof(void *), GFP_KERNEL);
 		if (!apcm->amixers) {
 			err = -ENOMEM;
 			goto error1;
 		}
 	}
-	apcm->srcimps = kzalloc(sizeof(void *)*n_srcimp, GFP_KERNEL);
+	apcm->srcimps = kcalloc(n_srcimp, sizeof(void *), GFP_KERNEL);
 	if (!apcm->srcimps) {
 		err = -ENOMEM;
 		goto error1;
@@ -731,7 +739,8 @@ static int atc_pcm_capture_start(struct ct_atc *atc, struct ct_atc_pcm *apcm)
 
 	/*  Set up recording SRC */
 	src = apcm->src;
-	src->ops->set_sf(src, convert_format(apcm->substream->runtime->format));
+	src->ops->set_sf(src, convert_format(apcm->substream->runtime->format,
+					     atc->card));
 	src->ops->set_sa(src, apcm->vm_block->addr);
 	src->ops->set_la(src, apcm->vm_block->addr + apcm->vm_block->size);
 	src->ops->set_ca(src, apcm->vm_block->addr);
@@ -800,13 +809,14 @@ static int spdif_passthru_playback_get_resources(struct ct_atc *atc,
 	src = apcm->src;
 	src->ops->set_pitch(src, pitch);
 	src->ops->set_rom(src, select_rom(pitch));
-	src->ops->set_sf(src, convert_format(apcm->substream->runtime->format));
+	src->ops->set_sf(src, convert_format(apcm->substream->runtime->format,
+					     atc->card));
 	src->ops->set_pm(src, (src->ops->next_interleave(src) != NULL));
 	src->ops->set_bp(src, 1);
 
 	/* Get AMIXER resource */
 	n_amixer = (n_amixer < 2) ? 2 : n_amixer;
-	apcm->amixers = kzalloc(sizeof(void *)*n_amixer, GFP_KERNEL);
+	apcm->amixers = kcalloc(n_amixer, sizeof(void *), GFP_KERNEL);
 	if (!apcm->amixers) {
 		err = -ENOMEM;
 		goto error1;
@@ -969,11 +979,39 @@ static int atc_select_mic_in(struct ct_atc *atc)
 	return 0;
 }
 
-static int atc_have_digit_io_switch(struct ct_atc *atc)
+static struct capabilities atc_capabilities(struct ct_atc *atc)
 {
 	struct hw *hw = atc->hw;
 
-	return hw->have_digit_io_switch(hw);
+	return hw->capabilities(hw);
+}
+
+static int atc_output_switch_get(struct ct_atc *atc)
+{
+	struct hw *hw = atc->hw;
+
+	return hw->output_switch_get(hw);
+}
+
+static int atc_output_switch_put(struct ct_atc *atc, int position)
+{
+	struct hw *hw = atc->hw;
+
+	return hw->output_switch_put(hw, position);
+}
+
+static int atc_mic_source_switch_get(struct ct_atc *atc)
+{
+	struct hw *hw = atc->hw;
+
+	return hw->mic_source_switch_get(hw);
+}
+
+static int atc_mic_source_switch_put(struct ct_atc *atc, int position)
+{
+	struct hw *hw = atc->hw;
+
+	return hw->mic_source_switch_put(hw, position);
 }
 
 static int atc_select_digit_io(struct ct_atc *atc)
@@ -1044,6 +1082,11 @@ static int atc_line_in_unmute(struct ct_atc *atc, unsigned char state)
 	return atc_daio_unmute(atc, state, LINEIM);
 }
 
+static int atc_mic_unmute(struct ct_atc *atc, unsigned char state)
+{
+	return atc_daio_unmute(atc, state, MIC);
+}
+
 static int atc_spdif_out_unmute(struct ct_atc *atc, unsigned char state)
 {
 	return atc_daio_unmute(atc, state, SPDIFOO);
@@ -1101,7 +1144,6 @@ static int atc_release_resources(struct ct_atc *atc)
 	int i;
 	struct daio_mgr *daio_mgr = NULL;
 	struct dao *dao = NULL;
-	struct dai *dai = NULL;
 	struct daio *daio = NULL;
 	struct sum_mgr *sum_mgr = NULL;
 	struct src_mgr *src_mgr = NULL;
@@ -1128,9 +1170,6 @@ static int atc_release_resources(struct ct_atc *atc)
 				dao = container_of(daio, struct dao, daio);
 				dao->ops->clear_left_input(dao);
 				dao->ops->clear_right_input(dao);
-			} else {
-				dai = container_of(daio, struct dai, daio);
-				/* some thing to do for dai ... */
 			}
 			daio_mgr->put_daio(daio_mgr, daio);
 		}
@@ -1195,7 +1234,7 @@ static int ct_atc_destroy(struct ct_atc *atc)
 	}
 
 	if (atc->hw)
-		destroy_hw_obj((struct hw *)atc->hw);
+		destroy_hw_obj(atc->hw);
 
 	/* Destroy device virtual memory manager object */
 	if (atc->vm) {
@@ -1214,10 +1253,11 @@ static int atc_dev_free(struct snd_device *dev)
 	return ct_atc_destroy(atc);
 }
 
-static int __devinit atc_identify_card(struct ct_atc *atc)
+static int atc_identify_card(struct ct_atc *atc, unsigned int ssid)
 {
 	const struct snd_pci_quirk *p;
 	const struct snd_pci_quirk *list;
+	u16 vendor_id, device_id;
 
 	switch (atc->chip_type) {
 	case ATC20K1:
@@ -1231,13 +1271,19 @@ static int __devinit atc_identify_card(struct ct_atc *atc)
 	default:
 		return -ENOENT;
 	}
-	p = snd_pci_quirk_lookup(atc->pci, list);
+	if (ssid) {
+		vendor_id = ssid >> 16;
+		device_id = ssid & 0xffff;
+	} else {
+		vendor_id = atc->pci->subsystem_vendor;
+		device_id = atc->pci->subsystem_device;
+	}
+	p = snd_pci_quirk_lookup_id(vendor_id, device_id, list);
 	if (p) {
 		if (p->value < 0) {
-			printk(KERN_ERR "ctxfi: "
-			       "Device %04x:%04x is black-listed\n",
-			       atc->pci->subsystem_vendor,
-			       atc->pci->subsystem_device);
+			dev_err(atc->card->dev,
+				"Device %04x:%04x is black-listed\n",
+				vendor_id, device_id);
 			return -ENOENT;
 		}
 		atc->model = p->value;
@@ -1248,14 +1294,13 @@ static int __devinit atc_identify_card(struct ct_atc *atc)
 			atc->model = CT20K2_UNKNOWN;
 	}
 	atc->model_name = ct_subsys_name[atc->model];
-	snd_printd("ctxfi: chip %s model %s (%04x:%04x) is found\n",
+	dev_info(atc->card->dev, "chip %s model %s (%04x:%04x) is found\n",
 		   atc->chip_name, atc->model_name,
-		   atc->pci->subsystem_vendor,
-		   atc->pci->subsystem_device);
+		   vendor_id, device_id);
 	return 0;
 }
 
-int __devinit ct_atc_create_alsa_devs(struct ct_atc *atc)
+int ct_atc_create_alsa_devs(struct ct_atc *atc)
 {
 	enum CTALSADEVS i;
 	int err;
@@ -1269,8 +1314,8 @@ int __devinit ct_atc_create_alsa_devs(struct ct_atc *atc)
 		err = alsa_dev_funcs[i].create(atc, i,
 				alsa_dev_funcs[i].public_name);
 		if (err) {
-			printk(KERN_ERR "ctxfi: "
-			       "Creating alsa device %d failed!\n", i);
+			dev_err(atc->card->dev,
+				"Creating alsa device %d failed!\n", i);
 			return err;
 		}
 	}
@@ -1278,7 +1323,7 @@ int __devinit ct_atc_create_alsa_devs(struct ct_atc *atc)
 	return 0;
 }
 
-static int __devinit atc_create_hw_devs(struct ct_atc *atc)
+static int atc_create_hw_devs(struct ct_atc *atc)
 {
 	struct hw *hw;
 	struct card_conf info = {0};
@@ -1286,9 +1331,10 @@ static int __devinit atc_create_hw_devs(struct ct_atc *atc)
 
 	err = create_hw_obj(atc->pci, atc->chip_type, atc->model, &hw);
 	if (err) {
-		printk(KERN_ERR "Failed to create hw obj!!!\n");
+		dev_err(atc->card->dev, "Failed to create hw obj!!!\n");
 		return err;
 	}
+	hw->card = atc->card;
 	atc->hw = hw;
 
 	/* Initialize card hardware. */
@@ -1305,8 +1351,8 @@ static int __devinit atc_create_hw_devs(struct ct_atc *atc)
 
 		err = rsc_mgr_funcs[i].create(atc->hw, &atc->rsc_mgrs[i]);
 		if (err) {
-			printk(KERN_ERR "ctxfi: "
-			       "Failed to create rsc_mgr %d!!!\n", i);
+			dev_err(atc->card->dev,
+				"Failed to create rsc_mgr %d!!!\n", i);
 			return err;
 		}
 	}
@@ -1324,54 +1370,48 @@ static int atc_get_resources(struct ct_atc *atc)
 	struct srcimp_mgr *srcimp_mgr;
 	struct sum_desc sum_dsc = {0};
 	struct sum_mgr *sum_mgr;
-	int err, i;
+	int err, i, num_srcs, num_daios;
 
-	atc->daios = kzalloc(sizeof(void *)*(DAIONUM), GFP_KERNEL);
+	num_daios = ((atc->model == CTSB1270) ? 8 : 7);
+	num_srcs = ((atc->model == CTSB1270) ? 6 : 4);
+
+	atc->daios = kcalloc(num_daios, sizeof(void *), GFP_KERNEL);
 	if (!atc->daios)
 		return -ENOMEM;
 
-	atc->srcs = kzalloc(sizeof(void *)*(2*2), GFP_KERNEL);
+	atc->srcs = kcalloc(num_srcs, sizeof(void *), GFP_KERNEL);
 	if (!atc->srcs)
 		return -ENOMEM;
 
-	atc->srcimps = kzalloc(sizeof(void *)*(2*2), GFP_KERNEL);
+	atc->srcimps = kcalloc(num_srcs, sizeof(void *), GFP_KERNEL);
 	if (!atc->srcimps)
 		return -ENOMEM;
 
-	atc->pcm = kzalloc(sizeof(void *)*(2*4), GFP_KERNEL);
+	atc->pcm = kcalloc(2 * 4, sizeof(void *), GFP_KERNEL);
 	if (!atc->pcm)
 		return -ENOMEM;
 
 	daio_mgr = (struct daio_mgr *)atc->rsc_mgrs[DAIO];
 	da_desc.msr = atc->msr;
-	for (i = 0, atc->n_daio = 0; i < DAIONUM-1; i++) {
-		da_desc.type = i;
+	for (i = 0, atc->n_daio = 0; i < num_daios; i++) {
+		da_desc.type = (atc->model != CTSB073X) ? i :
+			     ((i == SPDIFIO) ? SPDIFI1 : i);
 		err = daio_mgr->get_daio(daio_mgr, &da_desc,
 					(struct daio **)&atc->daios[i]);
 		if (err) {
-			printk(KERN_ERR "ctxfi: Failed to get DAIO "
-					"resource %d!!!\n", i);
+			dev_err(atc->card->dev,
+				"Failed to get DAIO resource %d!!!\n",
+				i);
 			return err;
 		}
 		atc->n_daio++;
 	}
-	if (atc->model == CTSB073X)
-		da_desc.type = SPDIFI1;
-	else
-		da_desc.type = SPDIFIO;
-	err = daio_mgr->get_daio(daio_mgr, &da_desc,
-				(struct daio **)&atc->daios[i]);
-	if (err) {
-		printk(KERN_ERR "ctxfi: Failed to get S/PDIF-in resource!!!\n");
-		return err;
-	}
-	atc->n_daio++;
 
 	src_mgr = atc->rsc_mgrs[SRC];
 	src_dsc.multi = 1;
 	src_dsc.msr = atc->msr;
 	src_dsc.mode = ARCRW;
-	for (i = 0, atc->n_src = 0; i < (2*2); i++) {
+	for (i = 0, atc->n_src = 0; i < num_srcs; i++) {
 		err = src_mgr->get_src(src_mgr, &src_dsc,
 					(struct src **)&atc->srcs[i]);
 		if (err)
@@ -1381,19 +1421,10 @@ static int atc_get_resources(struct ct_atc *atc)
 	}
 
 	srcimp_mgr = atc->rsc_mgrs[SRCIMP];
-	srcimp_dsc.msr = 8; /* SRCIMPs for S/PDIFIn SRT */
-	for (i = 0, atc->n_srcimp = 0; i < (2*1); i++) {
+	srcimp_dsc.msr = 8;
+	for (i = 0, atc->n_srcimp = 0; i < num_srcs; i++) {
 		err = srcimp_mgr->get_srcimp(srcimp_mgr, &srcimp_dsc,
 					(struct srcimp **)&atc->srcimps[i]);
-		if (err)
-			return err;
-
-		atc->n_srcimp++;
-	}
-	srcimp_dsc.msr = 8; /* SRCIMPs for LINE/MICIn SRT */
-	for (i = 0; i < (2*1); i++) {
-		err = srcimp_mgr->get_srcimp(srcimp_mgr, &srcimp_dsc,
-				(struct srcimp **)&atc->srcimps[2*1+i]);
 		if (err)
 			return err;
 
@@ -1481,6 +1512,18 @@ static void atc_connect_resources(struct ct_atc *atc)
 	src = atc->srcs[3];
 	mixer->set_input_right(mixer, MIX_LINE_IN, &src->rsc);
 
+	if (atc->model == CTSB1270) {
+		/* Titanium HD has a dedicated ADC for the Mic. */
+		dai = container_of(atc->daios[MIC], struct dai, daio);
+		atc_connect_dai(atc->rsc_mgrs[SRC], dai,
+			(struct src **)&atc->srcs[4],
+			(struct srcimp **)&atc->srcimps[4]);
+		src = atc->srcs[4];
+		mixer->set_input_left(mixer, MIX_MIC_IN, &src->rsc);
+		src = atc->srcs[5];
+		mixer->set_input_right(mixer, MIX_MIC_IN, &src->rsc);
+	}
+
 	dai = container_of(atc->daios[SPDIFIO], struct dai, daio);
 	atc_connect_dai(atc->rsc_mgrs[SRC], dai,
 			(struct src **)&atc->srcs[0],
@@ -1499,24 +1542,16 @@ static void atc_connect_resources(struct ct_atc *atc)
 	}
 }
 
-#ifdef CONFIG_PM
-static int atc_suspend(struct ct_atc *atc, pm_message_t state)
+#ifdef CONFIG_PM_SLEEP
+static int atc_suspend(struct ct_atc *atc)
 {
-	int i;
 	struct hw *hw = atc->hw;
 
 	snd_power_change_state(atc->card, SNDRV_CTL_POWER_D3hot);
 
-	for (i = FRONT; i < NUM_PCMS; i++) {
-		if (!atc->pcms[i])
-			continue;
-
-		snd_pcm_suspend_all(atc->pcms[i]);
-	}
-
 	atc_release_resources(atc);
 
-	hw->suspend(hw, state);
+	hw->suspend(hw);
 
 	return 0;
 }
@@ -1561,8 +1596,8 @@ static int atc_resume(struct ct_atc *atc)
 	/* Do hardware resume. */
 	err = atc_hw_resume(atc);
 	if (err < 0) {
-		printk(KERN_ERR "ctxfi: pci_enable_device failed, "
-		       "disabling device\n");
+		dev_err(atc->card->dev,
+			"pci_enable_device failed, disabling device\n");
 		snd_card_disconnect(atc->card);
 		return err;
 	}
@@ -1577,7 +1612,7 @@ static int atc_resume(struct ct_atc *atc)
 }
 #endif
 
-static struct ct_atc atc_preset __devinitdata = {
+static const struct ct_atc atc_preset = {
 	.map_audio_buffer = ct_map_audio_buffer,
 	.unmap_audio_buffer = ct_unmap_audio_buffer,
 	.pcm_playback_prepare = atc_pcm_playback_prepare,
@@ -1599,13 +1634,18 @@ static struct ct_atc atc_preset __devinitdata = {
 	.line_clfe_unmute = atc_line_clfe_unmute,
 	.line_rear_unmute = atc_line_rear_unmute,
 	.line_in_unmute = atc_line_in_unmute,
+	.mic_unmute = atc_mic_unmute,
 	.spdif_out_unmute = atc_spdif_out_unmute,
 	.spdif_in_unmute = atc_spdif_in_unmute,
 	.spdif_out_get_status = atc_spdif_out_get_status,
 	.spdif_out_set_status = atc_spdif_out_set_status,
 	.spdif_out_passthru = atc_spdif_out_passthru,
-	.have_digit_io_switch = atc_have_digit_io_switch,
-#ifdef CONFIG_PM
+	.capabilities = atc_capabilities,
+	.output_switch_get = atc_output_switch_get,
+	.output_switch_put = atc_output_switch_put,
+	.mic_source_switch_get = atc_mic_source_switch_get,
+	.mic_source_switch_put = atc_mic_source_switch_put,
+#ifdef CONFIG_PM_SLEEP
 	.suspend = atc_suspend,
 	.resume = atc_resume,
 #endif
@@ -1620,15 +1660,16 @@ static struct ct_atc atc_preset __devinitdata = {
  *  Creates and initializes a hardware manager.
  *
  *  Creates kmallocated ct_atc structure. Initializes hardware.
- *  Returns 0 if suceeds, or negative error code if fails.
+ *  Returns 0 if succeeds, or negative error code if fails.
  */
 
-int __devinit ct_atc_create(struct snd_card *card, struct pci_dev *pci,
-			    unsigned int rsr, unsigned int msr,
-			    int chip_type, struct ct_atc **ratc)
+int ct_atc_create(struct snd_card *card, struct pci_dev *pci,
+		  unsigned int rsr, unsigned int msr,
+		  int chip_type, unsigned int ssid,
+		  struct ct_atc **ratc)
 {
 	struct ct_atc *atc;
-	static struct snd_device_ops ops = {
+	static const struct snd_device_ops ops = {
 		.dev_free = atc_dev_free,
 	};
 	int err;
@@ -1651,9 +1692,9 @@ int __devinit ct_atc_create(struct snd_card *card, struct pci_dev *pci,
 	mutex_init(&atc->atc_mutex);
 
 	/* Find card model */
-	err = atc_identify_card(atc);
+	err = atc_identify_card(atc, ssid);
 	if (err < 0) {
-		printk(KERN_ERR "ctatc: Card not recognised\n");
+		dev_err(card->dev, "ctatc: Card not recognised\n");
 		goto error1;
 	}
 
@@ -1669,7 +1710,7 @@ int __devinit ct_atc_create(struct snd_card *card, struct pci_dev *pci,
 
 	err = ct_mixer_create(atc, (struct ct_mixer **)&atc->mixer);
 	if (err) {
-		printk(KERN_ERR "ctxfi: Failed to create mixer obj!!!\n");
+		dev_err(card->dev, "Failed to create mixer obj!!!\n");
 		goto error1;
 	}
 
@@ -1682,20 +1723,20 @@ int __devinit ct_atc_create(struct snd_card *card, struct pci_dev *pci,
 	atc_connect_resources(atc);
 
 	atc->timer = ct_timer_new(atc);
-	if (!atc->timer)
+	if (!atc->timer) {
+		err = -ENOMEM;
 		goto error1;
+	}
 
 	err = snd_device_new(card, SNDRV_DEV_LOWLEVEL, atc, &ops);
 	if (err < 0)
 		goto error1;
-
-	snd_card_set_dev(card, &pci->dev);
 
 	*ratc = atc;
 	return 0;
 
 error1:
 	ct_atc_destroy(atc);
-	printk(KERN_ERR "ctxfi: Something wrong!!!\n");
+	dev_err(card->dev, "Something wrong!!!\n");
 	return err;
 }

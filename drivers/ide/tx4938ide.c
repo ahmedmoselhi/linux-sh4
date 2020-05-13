@@ -46,7 +46,7 @@ static void tx4938ide_tune_ebusc(unsigned int ebus_ch,
 	while ((shwt * 4 + wt + (wt ? 2 : 3)) * cycle < t->cycle)
 		shwt++;
 	if (shwt > 7) {
-		pr_warning("tx4938ide: SHWT violation (%d)\n", shwt);
+		pr_warn("tx4938ide: SHWT violation (%d)\n", shwt);
 		shwt = 7;
 	}
 	pr_debug("tx4938ide: ebus %d, bus cycle %dns, WT %d, SHWT %d\n",
@@ -56,16 +56,15 @@ static void tx4938ide_tune_ebusc(unsigned int ebus_ch,
 		     &tx4938_ebuscptr->cr[ebus_ch]);
 }
 
-static void tx4938ide_set_pio_mode(ide_drive_t *drive, const u8 pio)
+static void tx4938ide_set_pio_mode(ide_hwif_t *hwif, ide_drive_t *drive)
 {
-	ide_hwif_t *hwif = drive->hwif;
-	struct tx4938ide_platform_info *pdata = hwif->dev->platform_data;
-	u8 safe = pio;
+	struct tx4938ide_platform_info *pdata = dev_get_platdata(hwif->dev);
+	u8 safe = drive->pio_mode - XFER_PIO_0;
 	ide_drive_t *pair;
 
 	pair = ide_get_pair_dev(drive);
 	if (pair)
-		safe = min(safe, ide_get_best_pio_mode(pair, 255, 5));
+		safe = min_t(u8, safe, pair->pio_mode - XFER_PIO_0);
 	tx4938ide_tune_ebusc(pdata->ebus_ch, pdata->gbus_clock, safe);
 }
 
@@ -118,7 +117,7 @@ static const struct ide_port_ops tx4938ide_port_ops = {
 	.set_pio_mode		= tx4938ide_set_pio_mode,
 };
 
-static const struct ide_port_info tx4938ide_port_info __initdata = {
+static const struct ide_port_info tx4938ide_port_info __initconst = {
 	.port_ops		= &tx4938ide_port_ops,
 #ifdef __BIG_ENDIAN
 	.tp_ops			= &tx4938ide_tp_ops,
@@ -133,7 +132,7 @@ static int __init tx4938ide_probe(struct platform_device *pdev)
 	struct ide_hw hw, *hws[] = { &hw };
 	struct ide_host *host;
 	struct resource *res;
-	struct tx4938ide_platform_info *pdata = pdev->dev.platform_data;
+	struct tx4938ide_platform_info *pdata = dev_get_platdata(&pdev->dev);
 	int irq, ret, i;
 	unsigned long mapbase, mapctl;
 	struct ide_port_info d = tx4938ide_port_info;
@@ -146,7 +145,7 @@ static int __init tx4938ide_probe(struct platform_device *pdev)
 		return -ENODEV;
 
 	if (!devm_request_mem_region(&pdev->dev, res->start,
-				     res->end - res->start + 1, "tx4938ide"))
+				     resource_size(res), "tx4938ide"))
 		return -EBUSY;
 	mapbase = (unsigned long)devm_ioremap(&pdev->dev, res->start,
 					      8 << pdata->ioport_shift);
@@ -199,23 +198,11 @@ static int __exit tx4938ide_remove(struct platform_device *pdev)
 static struct platform_driver tx4938ide_driver = {
 	.driver		= {
 		.name	= "tx4938ide",
-		.owner	= THIS_MODULE,
 	},
 	.remove = __exit_p(tx4938ide_remove),
 };
 
-static int __init tx4938ide_init(void)
-{
-	return platform_driver_probe(&tx4938ide_driver, tx4938ide_probe);
-}
-
-static void __exit tx4938ide_exit(void)
-{
-	platform_driver_unregister(&tx4938ide_driver);
-}
-
-module_init(tx4938ide_init);
-module_exit(tx4938ide_exit);
+module_platform_driver_probe(tx4938ide_driver, tx4938ide_probe);
 
 MODULE_DESCRIPTION("TX4938 internal IDE driver");
 MODULE_LICENSE("GPL");

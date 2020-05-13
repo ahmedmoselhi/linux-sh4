@@ -1,9 +1,15 @@
-#include <linux/module.h>
+// SPDX-License-Identifier: GPL-2.0
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
+#include <linux/init.h>
 #include <linux/sched.h>
 #include <linux/kthread.h>
 #include <linux/workqueue.h>
-#include <asm/e820.h>
+#include <linux/memblock.h>
+
 #include <asm/proto.h>
+#include <asm/setup.h>
 
 /*
  * Some BIOSes seem to corrupt the low 64k of memory during events
@@ -18,27 +24,48 @@ static int __read_mostly memory_corruption_check = -1;
 static unsigned __read_mostly corruption_check_size = 64*1024;
 static unsigned __read_mostly corruption_check_period = 60; /* seconds */
 
-static struct e820entry scan_areas[MAX_SCAN_AREAS];
+static struct scan_area {
+	u64 addr;
+	u64 size;
+} scan_areas[MAX_SCAN_AREAS];
 static int num_scan_areas;
-
 
 static __init int set_corruption_check(char *arg)
 {
-	char *end;
+	ssize_t ret;
+	unsigned long val;
 
-	memory_corruption_check = simple_strtol(arg, &end, 10);
+	if (!arg) {
+		pr_err("memory_corruption_check config string not provided\n");
+		return -EINVAL;
+	}
 
-	return (*end == 0) ? 0 : -EINVAL;
+	ret = kstrtoul(arg, 10, &val);
+	if (ret)
+		return ret;
+
+	memory_corruption_check = val;
+
+	return 0;
 }
 early_param("memory_corruption_check", set_corruption_check);
 
 static __init int set_corruption_check_period(char *arg)
 {
-	char *end;
+	ssize_t ret;
+	unsigned long val;
 
-	corruption_check_period = simple_strtoul(arg, &end, 10);
+	if (!arg) {
+		pr_err("memory_corruption_check_period config string not provided\n");
+		return -EINVAL;
+	}
 
-	return (*end == 0) ? 0 : -EINVAL;
+	ret = kstrtoul(arg, 10, &val);
+	if (ret)
+		return ret;
+
+	corruption_check_period = val;
+	return 0;
 }
 early_param("memory_corruption_check_period", set_corruption_check_period);
 
@@ -46,6 +73,11 @@ static __init int set_corruption_check_size(char *arg)
 {
 	char *end;
 	unsigned size;
+
+	if (!arg) {
+		pr_err("memory_corruption_check_size config string not provided\n");
+		return -EINVAL;
+	}
 
 	size = memparse(arg, &end);
 
@@ -59,7 +91,8 @@ early_param("memory_corruption_check_size", set_corruption_check_size);
 
 void __init setup_bios_corruption_check(void)
 {
-	u64 addr = PAGE_SIZE;	/* assume first page is reserved anyway */
+	phys_addr_t start, end;
+	u64 i;
 
 	if (memory_corruption_check == -1) {
 		memory_corruption_check =
@@ -79,37 +112,32 @@ void __init setup_bios_corruption_check(void)
 
 	corruption_check_size = round_up(corruption_check_size, PAGE_SIZE);
 
-	while (addr < corruption_check_size && num_scan_areas < MAX_SCAN_AREAS) {
-		u64 size;
-		addr = find_e820_area_size(addr, &size, PAGE_SIZE);
+	for_each_free_mem_range(i, NUMA_NO_NODE, MEMBLOCK_NONE, &start, &end,
+				NULL) {
+		start = clamp_t(phys_addr_t, round_up(start, PAGE_SIZE),
+				PAGE_SIZE, corruption_check_size);
+		end = clamp_t(phys_addr_t, round_down(end, PAGE_SIZE),
+			      PAGE_SIZE, corruption_check_size);
+		if (start >= end)
+			continue;
 
-		if (!(addr + 1))
-			break;
-
-		if (addr >= corruption_check_size)
-			break;
-
-		if ((addr + size) > corruption_check_size)
-			size = corruption_check_size - addr;
-
-		e820_update_range(addr, size, E820_RAM, E820_RESERVED);
-		scan_areas[num_scan_areas].addr = addr;
-		scan_areas[num_scan_areas].size = size;
-		num_scan_areas++;
+		memblock_reserve(start, end - start);
+		scan_areas[num_scan_areas].addr = start;
+		scan_areas[num_scan_areas].size = end - start;
 
 		/* Assume we've already mapped this early memory */
-		memset(__va(addr), 0, size);
+		memset(__va(start), 0, end - start);
 
-		addr += size;
+		if (++num_scan_areas >= MAX_SCAN_AREAS)
+			break;
 	}
 
-	printk(KERN_INFO "Scanning %d areas for low memory corruption\n",
-	       num_scan_areas);
-	update_e820();
+	if (num_scan_areas)
+		pr_info("Scanning %d areas for low memory corruption\n", num_scan_areas);
 }
 
 
-void check_for_bios_corruption(void)
+static void check_for_bios_corruption(void)
 {
 	int i;
 	int corruption = 0;
@@ -124,8 +152,7 @@ void check_for_bios_corruption(void)
 		for (; size; addr++, size -= sizeof(unsigned long)) {
 			if (!*addr)
 				continue;
-			printk(KERN_ERR "Corrupted low memory at %p (%lx phys) = %08lx\n",
-			       addr, __pa(addr), *addr);
+			pr_err("Corrupted low memory at %p (%lx phys) = %08lx\n", addr, __pa(addr), *addr);
 			corruption = 1;
 			*addr = 0;
 		}
@@ -141,21 +168,20 @@ static void check_corruption(struct work_struct *dummy)
 {
 	check_for_bios_corruption();
 	schedule_delayed_work(&bios_check_work,
-		round_jiffies_relative(corruption_check_period*HZ)); 
+		round_jiffies_relative(corruption_check_period*HZ));
 }
 
 static int start_periodic_check_for_corruption(void)
 {
-	if (!memory_corruption_check || corruption_check_period == 0)
+	if (!num_scan_areas || !memory_corruption_check || corruption_check_period == 0)
 		return 0;
 
-	printk(KERN_INFO "Scanning for low memory corruption every %d seconds\n",
-	       corruption_check_period);
+	pr_info("Scanning for low memory corruption every %d seconds\n", corruption_check_period);
 
 	/* First time we run the checks right away */
 	schedule_delayed_work(&bios_check_work, 0);
+
 	return 0;
 }
-
-module_init(start_periodic_check_for_corruption);
+device_initcall(start_periodic_check_for_corruption);
 

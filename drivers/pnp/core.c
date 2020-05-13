@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * core.c - contains all core device and protocol registration functions
  *
@@ -9,6 +10,7 @@
 #include <linux/list.h>
 #include <linux/device.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/init.h>
 #include <linux/string.h>
 #include <linux/slab.h>
@@ -19,7 +21,7 @@
 
 static LIST_HEAD(pnp_protocols);
 LIST_HEAD(pnp_global);
-DEFINE_SPINLOCK(pnp_lock);
+DEFINE_MUTEX(pnp_lock);
 
 /*
  * ACPI or PNPBIOS should tell us about all platform devices, so we can
@@ -41,6 +43,13 @@ void *pnp_alloc(long size)
 	return result;
 }
 
+static void pnp_remove_protocol(struct pnp_protocol *protocol)
+{
+	mutex_lock(&pnp_lock);
+	list_del(&protocol->protocol_list);
+	mutex_unlock(&pnp_lock);
+}
+
 /**
  * pnp_protocol_register - adds a pnp protocol to the pnp layer
  * @protocol: pointer to the corresponding pnp_protocol structure
@@ -49,13 +58,14 @@ void *pnp_alloc(long size)
  */
 int pnp_register_protocol(struct pnp_protocol *protocol)
 {
-	int nodenum;
 	struct list_head *pos;
+	int nodenum, ret;
 
 	INIT_LIST_HEAD(&protocol->devices);
 	INIT_LIST_HEAD(&protocol->cards);
 	nodenum = 0;
-	spin_lock(&pnp_lock);
+
+	mutex_lock(&pnp_lock);
 
 	/* assign the lowest unused number */
 	list_for_each(pos, &pnp_protocols) {
@@ -66,12 +76,18 @@ int pnp_register_protocol(struct pnp_protocol *protocol)
 		}
 	}
 
-	list_add_tail(&protocol->protocol_list, &pnp_protocols);
-	spin_unlock(&pnp_lock);
-
 	protocol->number = nodenum;
 	dev_set_name(&protocol->dev, "pnp%d", nodenum);
-	return device_register(&protocol->dev);
+
+	list_add_tail(&protocol->protocol_list, &pnp_protocols);
+
+	mutex_unlock(&pnp_lock);
+
+	ret = device_register(&protocol->dev);
+	if (ret)
+		pnp_remove_protocol(protocol);
+
+	return ret;
 }
 
 /**
@@ -80,9 +96,7 @@ int pnp_register_protocol(struct pnp_protocol *protocol)
  */
 void pnp_unregister_protocol(struct pnp_protocol *protocol)
 {
-	spin_lock(&pnp_lock);
-	list_del(&protocol->protocol_list);
-	spin_unlock(&pnp_lock);
+	pnp_remove_protocol(protocol);
 	device_unregister(&protocol->dev);
 }
 
@@ -124,7 +138,8 @@ static void pnp_release_device(struct device *dmdev)
 	kfree(dev);
 }
 
-struct pnp_dev *pnp_alloc_dev(struct pnp_protocol *protocol, int id, char *pnpid)
+struct pnp_dev *pnp_alloc_dev(struct pnp_protocol *protocol, int id,
+			      const char *pnpid)
 {
 	struct pnp_dev *dev;
 	struct pnp_id *dev_id;
@@ -156,15 +171,36 @@ struct pnp_dev *pnp_alloc_dev(struct pnp_protocol *protocol, int id, char *pnpid
 	return dev;
 }
 
+static void pnp_delist_device(struct pnp_dev *dev)
+{
+	mutex_lock(&pnp_lock);
+	list_del(&dev->global_list);
+	list_del(&dev->protocol_list);
+	mutex_unlock(&pnp_lock);
+}
+
 int __pnp_add_device(struct pnp_dev *dev)
 {
+	int ret;
+
 	pnp_fixup_device(dev);
 	dev->status = PNP_READY;
-	spin_lock(&pnp_lock);
+
+	mutex_lock(&pnp_lock);
+
 	list_add_tail(&dev->global_list, &pnp_global);
 	list_add_tail(&dev->protocol_list, &dev->protocol->devices);
-	spin_unlock(&pnp_lock);
-	return device_register(&dev->dev);
+
+	mutex_unlock(&pnp_lock);
+
+	ret = device_register(&dev->dev);
+	if (ret)
+		pnp_delist_device(dev);
+	else if (dev->protocol->can_wakeup)
+		device_set_wakeup_capable(&dev->dev,
+				dev->protocol->can_wakeup(dev));
+
+	return ret;
 }
 
 /*
@@ -191,17 +227,15 @@ int pnp_add_device(struct pnp_dev *dev)
 	for (id = dev->id; id; id = id->next)
 		len += scnprintf(buf + len, sizeof(buf) - len, " %s", id->id);
 
-	pnp_dbg(&dev->dev, "%s device, IDs%s (%s)\n",
-		dev->protocol->name, buf, dev->active ? "active" : "disabled");
+	dev_printk(KERN_DEBUG, &dev->dev, "%s device, IDs%s (%s)\n",
+		   dev->protocol->name, buf,
+		   dev->active ? "active" : "disabled");
 	return 0;
 }
 
 void __pnp_remove_device(struct pnp_dev *dev)
 {
-	spin_lock(&pnp_lock);
-	list_del(&dev->global_list);
-	list_del(&dev->protocol_list);
-	spin_unlock(&pnp_lock);
+	pnp_delist_device(dev);
 	device_unregister(&dev->dev);
 }
 
@@ -215,10 +249,5 @@ subsys_initcall(pnp_init);
 int pnp_debug;
 
 #if defined(CONFIG_PNP_DEBUG_MESSAGES)
-static int __init pnp_debug_setup(char *__unused)
-{
-	pnp_debug = 1;
-	return 1;
-}
-__setup("pnp.debug", pnp_debug_setup);
+module_param_named(debug, pnp_debug, int, 0644);
 #endif

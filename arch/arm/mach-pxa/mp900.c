@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/arch/arm/mach-pxa/mp900.c
  *
@@ -7,10 +8,6 @@
  *
  *  2007, 2008 Kristoffer Ericson <kristoffer.ericson@gmail.com>
  *  2007, 2008 Michael Petchkovsky <mkpetch@internode.on.net>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2 as
- *  published by the Free Software Foundation.
  */
 
 #include <linux/init.h>
@@ -22,13 +19,13 @@
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 
-#include <mach/pxa25x.h>
+#include "pxa25x.h"
 #include "generic.h"
 
 static void isp116x_pfm_delay(struct device *dev, int delay)
 {
 
-	/* 400Mhz PXA2 = 2.5ns / instruction */
+	/* 400MHz PXA2 = 2.5ns / instruction */
 
 	int cyc = delay / 10;
 
@@ -84,17 +81,21 @@ static struct platform_device *devices[] __initdata = {
 static void __init mp900c_init(void)
 {
 	printk(KERN_INFO "MobilePro 900/C machine init\n");
+	pxa_set_ffuart_info(NULL);
+	pxa_set_btuart_info(NULL);
+	pxa_set_stuart_info(NULL);
 	platform_add_devices(devices, ARRAY_SIZE(devices));
 }
 
 /* Maintainer - Michael Petchkovsky <mkpetch@internode.on.net> */
 MACHINE_START(NEC_MP900, "MobilePro900/C")
-	.phys_io	= 0x40000000,
-	.boot_params	= 0xa0220100,
-	.io_pg_offst	= (io_p2v(0x40000000) >> 18) & 0xfffc,
-	.timer		= &pxa_timer,
-	.map_io		= pxa_map_io,
+	.atag_offset	= 0x220100,
+	.init_time	= pxa_timer_init,
+	.map_io		= pxa25x_map_io,
+	.nr_irqs	= PXA_NR_IRQS,
 	.init_irq	= pxa25x_init_irq,
+	.handle_irq	= pxa25x_handle_irq,
 	.init_machine	= mp900c_init,
+	.restart	= pxa_restart,
 MACHINE_END
 

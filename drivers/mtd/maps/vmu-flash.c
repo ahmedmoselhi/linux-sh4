@@ -1,13 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* vmu-flash.c
  * Driver for SEGA Dreamcast Visual Memory Unit
  *
  * Copyright (c) Adrian McMenamin 2002 - 2009
  * Copyright (c) Paul Mundt 2001
- *
- * Licensed under version 2 of the
- * GNU General Public Licence
  */
 #include <linux/init.h>
+#include <linux/slab.h>
 #include <linux/sched.h>
 #include <linux/delay.h>
 #include <linux/maple.h>
@@ -359,9 +358,6 @@ static int vmu_flash_read(struct mtd_info *mtd, loff_t from, size_t len,
 	int index = 0, retval, partition, leftover, numblocks;
 	unsigned char cx;
 
-	if (len < 1)
-		return -EIO;
-
 	mpart = mtd->priv;
 	mdev = mpart->mdev;
 	partition = mpart->partition;
@@ -433,11 +429,6 @@ static int vmu_flash_write(struct mtd_info *mtd, loff_t to, size_t len,
 	partition = mpart->partition;
 	card = maple_get_drvdata(mdev);
 
-	/* simple sanity checks */
-	if (len < 1) {
-		error = -EIO;
-		goto failed;
-	}
 	numblocks = card->parts[partition].numblocks;
 	if (to + len > numblocks * card->blocklen)
 		len = numblocks * card->blocklen - to;
@@ -543,9 +534,9 @@ static void vmu_queryblocks(struct mapleq *mq)
 	mtd_cur->flags = MTD_WRITEABLE|MTD_NO_ERASE;
 	mtd_cur->size = part_cur->numblocks * card->blocklen;
 	mtd_cur->erasesize = card->blocklen;
-	mtd_cur->write = vmu_flash_write;
-	mtd_cur->read = vmu_flash_read;
-	mtd_cur->sync = vmu_flash_sync;
+	mtd_cur->_write = vmu_flash_write;
+	mtd_cur->_read = vmu_flash_read;
+	mtd_cur->_sync = vmu_flash_sync;
 	mtd_cur->writesize = card->blocklen;
 
 	mpart = kmalloc(sizeof(struct mdev_part), GFP_KERNEL);
@@ -562,7 +553,7 @@ static void vmu_queryblocks(struct mapleq *mq)
 		goto fail_cache_create;
 	part_cur->pcache = pcache;
 
-	error = add_mtd_device(mtd_cur);
+	error = mtd_device_register(mtd_cur, NULL, 0);
 	if (error)
 		goto fail_mtd_register;
 
@@ -603,7 +594,7 @@ fail_name:
 }
 
 /* Handles very basic info about the flash, queries for details */
-static int __devinit vmu_connect(struct maple_device *mdev)
+static int vmu_connect(struct maple_device *mdev)
 {
 	unsigned long test_flash_data, basic_flash_data;
 	int c, error;
@@ -612,16 +603,15 @@ static int __devinit vmu_connect(struct maple_device *mdev)
 
 	test_flash_data = be32_to_cpu(mdev->devinfo.function);
 	/* Need to count how many bits are set - to find out which
-	 * function_data element has details of the memory card:
-	 * using Brian Kernighan's/Peter Wegner's method */
-	for (c = 0; test_flash_data; c++)
-		test_flash_data &= test_flash_data - 1;
+	 * function_data element has details of the memory card
+	 */
+	c = hweight_long(test_flash_data);
 
 	basic_flash_data = be32_to_cpu(mdev->devinfo.function_data[c - 1]);
 
 	card = kmalloc(sizeof(struct memcard), GFP_KERNEL);
 	if (!card) {
-		error = ENOMEM;
+		error = -ENOMEM;
 		goto fail_nomem;
 	}
 
@@ -637,15 +627,15 @@ static int __devinit vmu_connect(struct maple_device *mdev)
 	* Not sure there are actually any multi-partition devices in the
 	* real world, but the hardware supports them, so, so will we
 	*/
-	card->parts = kmalloc(sizeof(struct vmupart) * card->partitions,
-		GFP_KERNEL);
+	card->parts = kmalloc_array(card->partitions, sizeof(struct vmupart),
+				    GFP_KERNEL);
 	if (!card->parts) {
 		error = -ENOMEM;
 		goto fail_partitions;
 	}
 
-	card->mtd = kmalloc(sizeof(struct mtd_info) * card->partitions,
-		GFP_KERNEL);
+	card->mtd = kmalloc_array(card->partitions, sizeof(struct mtd_info),
+				  GFP_KERNEL);
 	if (!card->mtd) {
 		error = -ENOMEM;
 		goto fail_mtd_info;
@@ -698,7 +688,7 @@ fail_nomem:
 	return error;
 }
 
-static void __devexit vmu_disconnect(struct maple_device *mdev)
+static void vmu_disconnect(struct maple_device *mdev)
 {
 	struct memcard *card;
 	struct mdev_part *mpart;
@@ -709,7 +699,7 @@ static void __devexit vmu_disconnect(struct maple_device *mdev)
 	for (x = 0; x < card->partitions; x++) {
 		mpart = ((card->mtd)[x]).priv;
 		mpart->mdev = NULL;
-		del_mtd_device(&((card->mtd)[x]));
+		mtd_device_unregister(&((card->mtd)[x]));
 		kfree(((card->parts)[x]).name);
 	}
 	kfree(card->parts);
@@ -780,7 +770,7 @@ static void vmu_file_error(struct maple_device *mdev, void *recvbuf)
 }
 
 
-static int __devinit probe_maple_vmu(struct device *dev)
+static int probe_maple_vmu(struct device *dev)
 {
 	int error;
 	struct maple_device *mdev = to_maple_dev(dev);
@@ -797,7 +787,7 @@ static int __devinit probe_maple_vmu(struct device *dev)
 	return 0;
 }
 
-static int __devexit remove_maple_vmu(struct device *dev)
+static int remove_maple_vmu(struct device *dev)
 {
 	struct maple_device *mdev = to_maple_dev(dev);
 
@@ -810,7 +800,7 @@ static struct maple_driver vmu_flash_driver = {
 	.drv = {
 		.name =		"Dreamcast_visual_memory",
 		.probe =	probe_maple_vmu,
-		.remove = 	__devexit_p(remove_maple_vmu),
+		.remove =	remove_maple_vmu,
 	},
 };
 

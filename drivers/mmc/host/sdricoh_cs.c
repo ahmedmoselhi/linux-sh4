@@ -1,23 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  sdricoh_cs.c - driver for Ricoh Secure Digital Card Readers that can be
  *     found on some Ricoh RL5c476 II cardbus bridge
  *
  *  Copyright (C) 2006 - 2008 Sascha Sommer <saschasommer@freenet.de>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
- *
  */
 
 /*
@@ -26,6 +12,7 @@
 */
 #include <linux/delay.h>
 #include <linux/highmem.h>
+#include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/ioport.h>
 #include <linux/scatterlist.h>
@@ -76,7 +63,7 @@ static unsigned int switchlocked;
 #define BUSY_TIMEOUT      32767
 
 /* list of supported pcmcia devices */
-static struct pcmcia_device_id pcmcia_ids[] = {
+static const struct pcmcia_device_id pcmcia_ids[] = {
 	/* vendor and device strings followed by their crc32 hashes */
 	PCMCIA_DEVICE_PROD_ID12("RICOH", "Bay1Controller", 0xd9f522ed,
 				0xc3901202),
@@ -255,9 +242,6 @@ static int sdricoh_blockio(struct sdricoh_host *host, int read,
 		}
 	}
 
-	if (len)
-		return -EIO;
-
 	return 0;
 }
 
@@ -387,7 +371,7 @@ static int sdricoh_get_ro(struct mmc_host *mmc)
 	return (status & STATUS_CARD_LOCKED);
 }
 
-static struct mmc_host_ops sdricoh_ops = {
+static const struct mmc_host_ops sdricoh_ops = {
 	.request = sdricoh_request,
 	.set_ios = sdricoh_set_ios,
 	.get_ro = sdricoh_get_ro,
@@ -397,10 +381,10 @@ static struct mmc_host_ops sdricoh_ops = {
 static int sdricoh_init_mmc(struct pci_dev *pci_dev,
 			    struct pcmcia_device *pcmcia_dev)
 {
-	int result = 0;
-	void __iomem *iobase = NULL;
-	struct mmc_host *mmc = NULL;
-	struct sdricoh_host *host = NULL;
+	int result;
+	void __iomem *iobase;
+	struct mmc_host *mmc;
+	struct sdricoh_host *host;
 	struct device *dev = &pcmcia_dev->dev;
 	/* map iomem */
 	if (pci_resource_len(pci_dev, SDRICOH_PCI_REGION) !=
@@ -418,7 +402,7 @@ static int sdricoh_init_mmc(struct pci_dev *pci_dev,
 	if (readl(iobase + R104_VERSION) != 0x4000) {
 		dev_dbg(dev, "no supported mmc controller found\n");
 		result = -ENODEV;
-		goto err;
+		goto unmap_io;
 	}
 	/* allocate privdata */
 	mmc = pcmcia_dev->priv =
@@ -426,7 +410,7 @@ static int sdricoh_init_mmc(struct pci_dev *pci_dev,
 	if (!mmc) {
 		dev_err(dev, "mmc_alloc_host failed\n");
 		result = -ENOMEM;
-		goto err;
+		goto unmap_io;
 	}
 	host = mmc_priv(mmc);
 
@@ -446,12 +430,11 @@ static int sdricoh_init_mmc(struct pci_dev *pci_dev,
 	mmc->max_seg_size = 1024 * 512;
 	mmc->max_blk_size = 512;
 
-	/* reset the controler */
+	/* reset the controller */
 	if (sdricoh_reset(host)) {
 		dev_dbg(dev, "could not reset\n");
 		result = -EIO;
-		goto err;
-
+		goto free_host;
 	}
 
 	result = mmc_add_host(mmc);
@@ -460,13 +443,10 @@ static int sdricoh_init_mmc(struct pci_dev *pci_dev,
 		dev_dbg(dev, "mmc host registered\n");
 		return 0;
 	}
-
-err:
-	if (iobase)
-		pci_iounmap(pci_dev, iobase);
-	if (mmc)
-		mmc_free_host(mmc);
-
+free_host:
+	mmc_free_host(mmc);
+unmap_io:
+	pci_iounmap(pci_dev, iobase);
 	return result;
 }
 
@@ -478,7 +458,7 @@ static int sdricoh_pcmcia_probe(struct pcmcia_device *pcmcia_dev)
 	dev_info(&pcmcia_dev->dev, "Searching MMC controller for pcmcia device"
 		" %s %s ...\n", pcmcia_dev->prod_id[0], pcmcia_dev->prod_id[1]);
 
-	/* search pci cardbus bridge that contains the mmc controler */
+	/* search pci cardbus bridge that contains the mmc controller */
 	/* the io region is already claimed by yenta_socket... */
 	while ((pci_dev =
 		pci_get_device(PCI_VENDOR_ID_RICOH, PCI_DEVICE_ID_RICOH_RL5C476,
@@ -515,9 +495,7 @@ static void sdricoh_pcmcia_detach(struct pcmcia_device *link)
 #ifdef CONFIG_PM
 static int sdricoh_pcmcia_suspend(struct pcmcia_device *link)
 {
-	struct mmc_host *mmc = link->priv;
 	dev_dbg(&link->dev, "suspend\n");
-	mmc_suspend_host(mmc);
 	return 0;
 }
 
@@ -526,7 +504,6 @@ static int sdricoh_pcmcia_resume(struct pcmcia_device *link)
 	struct mmc_host *mmc = link->priv;
 	dev_dbg(&link->dev, "resume\n");
 	sdricoh_reset(mmc_priv(mmc));
-	mmc_resume_host(mmc);
 	return 0;
 }
 #else
@@ -542,25 +519,7 @@ static struct pcmcia_driver sdricoh_driver = {
 	.suspend = sdricoh_pcmcia_suspend,
 	.resume = sdricoh_pcmcia_resume,
 };
-
-/*****************************************************************************\
- *                                                                           *
- * Driver init/exit                                                          *
- *                                                                           *
-\*****************************************************************************/
-
-static int __init sdricoh_drv_init(void)
-{
-	return pcmcia_register_driver(&sdricoh_driver);
-}
-
-static void __exit sdricoh_drv_exit(void)
-{
-	pcmcia_unregister_driver(&sdricoh_driver);
-}
-
-module_init(sdricoh_drv_init);
-module_exit(sdricoh_drv_exit);
+module_pcmcia_driver(sdricoh_driver);
 
 module_param(switchlocked, uint, 0444);
 

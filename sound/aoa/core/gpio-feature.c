@@ -1,17 +1,17 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Apple Onboard Audio feature call GPIO control
  *
  * Copyright 2006 Johannes Berg <johannes@sipsolutions.net>
- *
- * GPL v2, can be found in COPYING.
  *
  * This file contains the GPIO control routines for
  * direct (through feature calls) access to the GPIO
  * registers.
  */
 
-#include <asm/pmac_feature.h>
+#include <linux/of_irq.h>
 #include <linux/interrupt.h>
+#include <asm/pmac_feature.h>
 #include "../aoa.h"
 
 /* TODO: these are lots of global variables
@@ -81,14 +81,17 @@ static struct device_node *get_gpio(char *name,
 			if (altname && (strcmp(audio_gpio, altname) == 0))
 				break;
 		}
+		of_node_put(gpio);
 		/* still not found, assume not there */
 		if (!np)
 			return NULL;
 	}
 
 	reg = of_get_property(np, "reg", NULL);
-	if (!reg)
+	if (!reg) {
+		of_node_put(np);
 		return NULL;
+	}
 
 	*gpioptr = *reg;
 
@@ -117,7 +120,7 @@ static void get_irq(struct device_node * np, int *irqptr)
 	if (np)
 		*irqptr = irq_of_parse_and_map(np, 0);
 	else
-		*irqptr = NO_IRQ;
+		*irqptr = 0;
 }
 
 /* 0x4 is outenable, 0x1 is out, thus 4 or 5 */
@@ -287,10 +290,9 @@ static void ftr_gpio_exit(struct gpio_runtime *rt)
 		free_irq(linein_detect_irq, &rt->line_in_notify);
 	if (rt->line_out_notify.gpio_private)
 		free_irq(lineout_detect_irq, &rt->line_out_notify);
-	cancel_delayed_work(&rt->headphone_notify.work);
-	cancel_delayed_work(&rt->line_in_notify.work);
-	cancel_delayed_work(&rt->line_out_notify.work);
-	flush_scheduled_work();
+	cancel_delayed_work_sync(&rt->headphone_notify.work);
+	cancel_delayed_work_sync(&rt->line_in_notify.work);
+	cancel_delayed_work_sync(&rt->line_out_notify.work);
 	mutex_destroy(&rt->headphone_notify.mutex);
 	mutex_destroy(&rt->line_in_notify.mutex);
 	mutex_destroy(&rt->line_out_notify.mutex);
@@ -336,7 +338,7 @@ static int ftr_set_notify(struct gpio_runtime *rt,
 		return -EINVAL;
 	}
 
-	if (irq == NO_IRQ)
+	if (!irq)
 		return -ENODEV;
 
 	mutex_lock(&notif->mutex);

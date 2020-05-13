@@ -1,18 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * wm8961.h  --  WM8961 Soc Audio driver
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef _WM8961_H
 #define _WM8961_H
 
 #include <sound/soc.h>
-
-extern struct snd_soc_codec_device soc_codec_dev_wm8961;
-extern struct snd_soc_dai wm8961_dai;
 
 #define WM8961_BCLK  1
 #define WM8961_LRCLK 2

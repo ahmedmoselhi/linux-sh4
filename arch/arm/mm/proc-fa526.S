@@ -1,15 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  *  linux/arch/arm/mm/proc-fa526.S: MMU functions for FA526
  *
  *  Written by : Luke Lee
  *  Copyright (C) 2005 Faraday Corp.
  *  Copyright (C) 2008-2009 Paulius Zaleckas <paulius.zaleckas@teltonika.lt>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
  *
  * These are the low level assembler for performing cache and TLB
  * functions on the fa526.
@@ -22,7 +17,6 @@
 #include <asm/pgtable.h>
 #include <asm/page.h>
 #include <asm/ptrace.h>
-#include <asm/system.h>
 
 #include "proc-macros.S"
 
@@ -33,23 +27,19 @@
  * cpu_fa526_proc_init()
  */
 ENTRY(cpu_fa526_proc_init)
-	mov	pc, lr
+	ret	lr
 
 /*
  * cpu_fa526_proc_fin()
  */
 ENTRY(cpu_fa526_proc_fin)
-	stmfd	sp!, {lr}
-	mov	ip, #PSR_F_BIT | PSR_I_BIT | SVC_MODE
-	msr	cpsr_c, ip
-	bl	fa_flush_kern_cache_all
 	mrc	p15, 0, r0, c1, c0, 0		@ ctrl register
 	bic	r0, r0, #0x1000			@ ...i............
 	bic	r0, r0, #0x000e			@ ............wca.
 	mcr	p15, 0, r0, c1, c0, 0		@ disable caches
 	nop
 	nop
-	ldmfd	sp!, {pc}
+	ret	lr
 
 /*
  * cpu_fa526_reset(loc)
@@ -61,6 +51,7 @@ ENTRY(cpu_fa526_proc_fin)
  * loc: location to jump to for soft reset
  */
 	.align	4
+	.pushsection	.idmap.text, "ax"
 ENTRY(cpu_fa526_reset)
 /* TODO: Use CP8 if possible... */
 	mov	ip, #0
@@ -76,15 +67,16 @@ ENTRY(cpu_fa526_reset)
 	mcr	p15, 0, ip, c1, c0, 0		@ ctrl register
 	nop
 	nop
-	mov	pc, r0
+	ret	r0
+ENDPROC(cpu_fa526_reset)
+	.popsection
 
 /*
  * cpu_fa526_do_idle()
  */
 	.align	4
 ENTRY(cpu_fa526_do_idle)
-	mcr	p15, 0, r0, c7, c0, 4		@ Wait for interrupt
-	mov	pc, lr
+	ret	lr
 
 
 ENTRY(cpu_fa526_dcache_clean_area)
@@ -93,7 +85,7 @@ ENTRY(cpu_fa526_dcache_clean_area)
 	subs	r1, r1, #CACHE_DLINESIZE
 	bhi	1b
 	mcr	p15, 0, r0, c7, c10, 4		@ drain WB
-	mov	pc, lr
+	ret	lr
 
 /* =============================== PageTable ============================== */
 
@@ -120,7 +112,7 @@ ENTRY(cpu_fa526_switch_mm)
 	mcr	p15, 0, r0, c2, c0, 0		@ load page table pointer
 	mcr	p15, 0, ip, c8, c7, 0		@ invalidate UTLB
 #endif
-	mov	pc, lr
+	ret	lr
 
 /*
  * cpu_fa526_set_pte_ext(ptep, pte, ext)
@@ -136,9 +128,7 @@ ENTRY(cpu_fa526_set_pte_ext)
 	mov	r0, #0
 	mcr	p15, 0, r0, c7, c10, 4		@ drain WB
 #endif
-	mov	pc, lr
-
-	__INIT
+	ret	lr
 
 	.type	__fa526_setup, #function
 __fa526_setup:
@@ -167,7 +157,7 @@ __fa526_setup:
 	bic	r0, r0, r5
 	ldr	r5, fa526_cr1_set
 	orr	r0, r0, r5
-	mov	pc, lr
+	ret	lr
 	.size	__fa526_setup, . - __fa526_setup
 
 	/*
@@ -184,43 +174,18 @@ fa526_cr1_set:
 
 	__INITDATA
 
-/*
- * Purpose : Function pointers used to access above functions - all calls
- *	     come through these
- */
-	.type	fa526_processor_functions, #object
-fa526_processor_functions:
-	.word	v4_early_abort
-	.word	legacy_pabort
-	.word	cpu_fa526_proc_init
-	.word	cpu_fa526_proc_fin
-	.word	cpu_fa526_reset
-	.word   cpu_fa526_do_idle
-	.word	cpu_fa526_dcache_clean_area
-	.word	cpu_fa526_switch_mm
-	.word	cpu_fa526_set_pte_ext
-	.size	fa526_processor_functions, . - fa526_processor_functions
+	@ define struct processor (see <asm/proc-fns.h> and proc-macros.S)
+	define_processor_functions fa526, dabort=v4_early_abort, pabort=legacy_pabort
 
 	.section ".rodata"
 
-	.type	cpu_arch_name, #object
-cpu_arch_name:
-	.asciz	"armv4"
-	.size	cpu_arch_name, . - cpu_arch_name
-
-	.type	cpu_elf_name, #object
-cpu_elf_name:
-	.asciz	"v4"
-	.size	cpu_elf_name, . - cpu_elf_name
-
-	.type	cpu_fa526_name, #object
-cpu_fa526_name:
-	.asciz	"FA526"
-	.size	cpu_fa526_name, . - cpu_fa526_name
+	string	cpu_arch_name, "armv4"
+	string	cpu_elf_name, "v4"
+	string	cpu_fa526_name, "FA526"
 
 	.align
 
-	.section ".proc.info.init", #alloc, #execinstr
+	.section ".proc.info.init", "a"
 
 	.type	__fa526_proc_info,#object
 __fa526_proc_info:
@@ -236,7 +201,7 @@ __fa526_proc_info:
 		PMD_BIT4 | \
 		PMD_SECT_AP_WRITE | \
 		PMD_SECT_AP_READ
-	b	__fa526_setup
+	initfn	__fa526_setup, __fa526_proc_info
 	.long	cpu_arch_name
 	.long	cpu_elf_name
 	.long	HWCAP_SWP | HWCAP_HALF

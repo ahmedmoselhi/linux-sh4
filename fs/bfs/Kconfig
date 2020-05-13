@@ -1,6 +1,7 @@
+# SPDX-License-Identifier: GPL-2.0-only
 config BFS_FS
-	tristate "BFS file system support (EXPERIMENTAL)"
-	depends on BLOCK && EXPERIMENTAL
+	tristate "BFS file system support"
+	depends on BLOCK
 	help
 	  Boot File System (BFS) is a file system used under SCO UnixWare to
 	  allow the bootloader access to the kernel image and other important

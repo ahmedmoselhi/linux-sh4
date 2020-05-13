@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _FORE200E_H
 #define _FORE200E_H
 
@@ -263,7 +264,7 @@ typedef enum opcode {
 } opcode_t;
 
 
-/* virtual path / virtual channel identifers */
+/* virtual path / virtual channel identifiers */
 
 typedef struct vpvc {
     BITFIELD3(
@@ -804,12 +805,6 @@ typedef struct fore200e_bus {
     int                  status_alignment;    /* status words DMA alignment requirement */
     u32                  (*read)(volatile u32 __iomem *);
     void                 (*write)(u32, volatile u32 __iomem *);
-    u32                  (*dma_map)(struct fore200e*, void*, int, int);
-    void                 (*dma_unmap)(struct fore200e*, u32, int, int);
-    void                 (*dma_sync_for_cpu)(struct fore200e*, u32, int, int);
-    void                 (*dma_sync_for_device)(struct fore200e*, u32, int, int);
-    int                  (*dma_chunk_alloc)(struct fore200e*, struct chunk*, int, int, int);
-    void                 (*dma_chunk_free)(struct fore200e*, struct chunk*);
     int                  (*configure)(struct fore200e*); 
     int                  (*map)(struct fore200e*); 
     void                 (*reset)(struct fore200e*);
@@ -843,7 +838,7 @@ typedef struct fore200e {
     enum fore200e_state        state;                  /* device state                       */
 
     char                       name[16];               /* device name                        */
-    void*                      bus_dev;                /* bus-specific kernel data           */
+    struct device	       *dev;
     int                        irq;                    /* irq number                         */
     unsigned long              phys_base;              /* physical base address              */
     void __iomem *             virt_base;              /* virtual base address               */
@@ -926,7 +921,7 @@ typedef struct fore200e_vcc {
 
 #define PCA200E_PCI_LATENCY      0x40    /* maximum slave latenty            */
 #define PCA200E_PCI_MASTER_CTRL  0x41    /* master control                   */
-#define PCA200E_PCI_THRESHOLD    0x42    /* burst / continous req threshold  */
+#define PCA200E_PCI_THRESHOLD    0x42    /* burst / continuous req threshold  */
 
 /* PBI master control register */
 

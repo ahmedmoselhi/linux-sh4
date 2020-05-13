@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* una_asm.S: Kernel unaligned trap assembler helpers.
  *
  * Copyright (C) 1996,2005 David S. Miller (davem@davemloft.net)
@@ -127,7 +128,7 @@ do_int_load:
 	wr	%o5, 0x0, %asi
 	retl
 	 mov	0, %o0
-	.size	__do_int_load, .-__do_int_load
+	.size	do_int_load, .-do_int_load
 
 	.section	__ex_table,"a"
 	.word		4b, __retl_efault

@@ -1,22 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /* 
  *  Parallel SCSI (SPI) transport specific attributes exported to sysfs.
  *
  *  Copyright (c) 2003 Silicon Graphics, Inc.  All rights reserved.
  *  Copyright (c) 2004, 2005 James Bottomley <James.Bottomley@SteelEye.com>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 #include <linux/ctype.h>
 #include <linux/init.h>
@@ -25,12 +12,15 @@
 #include <linux/blkdev.h>
 #include <linux/mutex.h>
 #include <linux/sysfs.h>
+#include <linux/slab.h>
+#include <linux/suspend.h>
 #include <scsi/scsi.h>
 #include "scsi_priv.h"
 #include <scsi/scsi_device.h>
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_cmnd.h>
 #include <scsi/scsi_eh.h>
+#include <scsi/scsi_tcq.h>
 #include <scsi/scsi_transport.h>
 #include <scsi/scsi_transport_spi.h>
 
@@ -48,14 +38,14 @@
 
 /* Our blacklist flags */
 enum {
-	SPI_BLIST_NOIUS = 0x1,
+	SPI_BLIST_NOIUS = (__force blist_flags_t)0x1,
 };
 
 /* blacklist table, modelled on scsi_devinfo.c */
 static struct {
 	char *vendor;
 	char *model;
-	unsigned flags;
+	blist_flags_t flags;
 } spi_static_device_list[] __initdata = {
 	{"HP", "Ultrium 3-SCSI", SPI_BLIST_NOIUS },
 	{"IBM", "ULTRIUM-TD3", SPI_BLIST_NOIUS },
@@ -121,25 +111,21 @@ static int spi_execute(struct scsi_device *sdev, const void *cmd,
 {
 	int i, result;
 	unsigned char sense[SCSI_SENSE_BUFFERSIZE];
+	struct scsi_sense_hdr sshdr_tmp;
+
+	if (!sshdr)
+		sshdr = &sshdr_tmp;
 
 	for(i = 0; i < DV_RETRIES; i++) {
-		result = scsi_execute(sdev, cmd, dir, buffer, bufflen,
-				      sense, DV_TIMEOUT, /* retries */ 1,
+		result = scsi_execute(sdev, cmd, dir, buffer, bufflen, sense,
+				      sshdr, DV_TIMEOUT, /* retries */ 1,
 				      REQ_FAILFAST_DEV |
 				      REQ_FAILFAST_TRANSPORT |
 				      REQ_FAILFAST_DRIVER,
-				      NULL);
-		if (driver_byte(result) & DRIVER_SENSE) {
-			struct scsi_sense_hdr sshdr_tmp;
-			if (!sshdr)
-				sshdr = &sshdr_tmp;
-
-			if (scsi_normalize_sense(sense, SCSI_SENSE_BUFFERSIZE,
-						 sshdr)
-			    && sshdr->sense_key == UNIT_ATTENTION)
-				continue;
-		}
-		break;
+				      0, NULL);
+		if (driver_byte(result) != DRIVER_SENSE ||
+		    sshdr->sense_key != UNIT_ATTENTION)
+			break;
 	}
 	return result;
 }
@@ -223,9 +209,11 @@ static int spi_device_configure(struct transport_container *tc,
 {
 	struct scsi_device *sdev = to_scsi_device(dev);
 	struct scsi_target *starget = sdev->sdev_target;
-	unsigned bflags = scsi_get_device_flags_keyed(sdev, &sdev->inquiry[8],
-						      &sdev->inquiry[16],
-						      SCSI_DEVINFO_SPI);
+	blist_flags_t bflags;
+
+	bflags = scsi_get_device_flags_keyed(sdev, &sdev->inquiry[8],
+					     &sdev->inquiry[16],
+					     SCSI_DEVINFO_SPI);
 
 	/* Populate the target capability fields with the values
 	 * gleaned from the device inquiry */
@@ -596,6 +584,28 @@ static DEVICE_ATTR(signalling, S_IRUGO,
 		   show_spi_host_signalling,
 		   store_spi_host_signalling);
 
+static ssize_t show_spi_host_width(struct device *cdev,
+				      struct device_attribute *attr,
+				      char *buf)
+{
+	struct Scsi_Host *shost = transport_class_to_shost(cdev);
+
+	return sprintf(buf, "%s\n", shost->max_id == 16 ? "wide" : "narrow");
+}
+static DEVICE_ATTR(host_width, S_IRUGO,
+		   show_spi_host_width, NULL);
+
+static ssize_t show_spi_host_hba_id(struct device *cdev,
+				    struct device_attribute *attr,
+				    char *buf)
+{
+	struct Scsi_Host *shost = transport_class_to_shost(cdev);
+
+	return sprintf(buf, "%d\n", shost->this_id);
+}
+static DEVICE_ATTR(hba_id, S_IRUGO,
+		   show_spi_host_hba_id, NULL);
+
 #define DV_SET(x, y)			\
 	if(i->f->set_##x)		\
 		i->f->set_##x(sdev->sdev_target, y)
@@ -762,10 +772,10 @@ spi_dv_retrain(struct scsi_device *sdev, u8 *buffer, u8 *ptr,
 		 * IU, then QAS (if we can control them), then finally
 		 * fall down the periods */
 		if (i->f->set_iu && spi_iu(starget)) {
-			starget_printk(KERN_ERR, starget, "Domain Validation Disabing Information Units\n");
+			starget_printk(KERN_ERR, starget, "Domain Validation Disabling Information Units\n");
 			DV_SET(iu, 0);
 		} else if (i->f->set_qas && spi_qas(starget)) {
-			starget_printk(KERN_ERR, starget, "Domain Validation Disabing Quick Arbitration and Selection\n");
+			starget_printk(KERN_ERR, starget, "Domain Validation Disabling Quick Arbitration and Selection\n");
 			DV_SET(qas, 0);
 		} else {
 			newperiod = spi_period(starget);
@@ -799,11 +809,11 @@ spi_dv_device_get_echo_buffer(struct scsi_device *sdev, u8 *buffer)
 	 * fails, the device won't let us write to the echo buffer
 	 * so just return failure */
 	
-	const char spi_test_unit_ready[] = {
+	static const char spi_test_unit_ready[] = {
 		TEST_UNIT_READY, 0, 0, 0, 0, 0
 	};
 
-	const char spi_read_buffer_descriptor[] = {
+	static const char spi_read_buffer_descriptor[] = {
 		READ_BUFFER, 0x0b, 0, 0, 0, 0, 0, 0, 4, 0
 	};
 
@@ -987,11 +997,20 @@ spi_dv_device(struct scsi_device *sdev)
 	u8 *buffer;
 	const int len = SPI_MAX_ECHO_BUFFER_SIZE*2;
 
-	if (unlikely(scsi_device_get(sdev)))
-		return;
+	/*
+	 * Because this function and the power management code both call
+	 * scsi_device_quiesce(), it is not safe to perform domain validation
+	 * while suspend or resume is in progress. Hence the
+	 * lock/unlock_system_sleep() calls.
+	 */
+	lock_system_sleep();
 
 	if (unlikely(spi_dv_in_progress(starget)))
-		return;
+		goto unlock;
+
+	if (unlikely(scsi_device_get(sdev)))
+		goto unlock;
+
 	spi_dv_in_progress(starget) = 1;
 
 	buffer = kzalloc(len, GFP_KERNEL);
@@ -1027,6 +1046,8 @@ spi_dv_device(struct scsi_device *sdev)
  out_put:
 	spi_dv_in_progress(starget) = 0;
 	scsi_device_put(sdev);
+unlock:
+	unlock_system_sleep();
 }
 EXPORT_SYMBOL(spi_dv_device);
 
@@ -1183,6 +1204,28 @@ int spi_populate_ppr_msg(unsigned char *msg, int period, int offset,
 	return 8;
 }
 EXPORT_SYMBOL_GPL(spi_populate_ppr_msg);
+
+/**
+ * spi_populate_tag_msg - place a tag message in a buffer
+ * @msg:	pointer to the area to place the tag
+ * @cmd:	pointer to the scsi command for the tag
+ *
+ * Notes:
+ *	designed to create the correct type of tag message for the 
+ *	particular request.  Returns the size of the tag message.
+ *	May return 0 if TCQ is disabled for this device.
+ **/
+int spi_populate_tag_msg(unsigned char *msg, struct scsi_cmnd *cmd)
+{
+        if (cmd->flags & SCMD_TAGGED) {
+		*msg++ = SIMPLE_QUEUE_TAG;
+        	*msg++ = cmd->request->tag;
+        	return 2;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(spi_populate_tag_msg);
 
 #ifdef CONFIG_SCSI_CONSTANTS
 static const char * const one_byte_msgs[] = {
@@ -1379,6 +1422,8 @@ static DECLARE_ANON_TRANSPORT_CLASS(spi_device_class,
 
 static struct attribute *host_attributes[] = {
 	&dev_attr_signalling.attr,
+	&dev_attr_host_width.attr,
+	&dev_attr_hba_id.attr,
 	NULL
 };
 
@@ -1409,7 +1454,7 @@ static int spi_host_configure(struct transport_container *tc,
 	(si->f->show_##name ? S_IRUGO : 0) | \
 	(si->f->set_##name ? S_IWUSR : 0)
 
-static mode_t target_attribute_is_visible(struct kobject *kobj,
+static umode_t target_attribute_is_visible(struct kobject *kobj,
 					  struct attribute *attr, int i)
 {
 	struct device *cdev = container_of(kobj, struct device, kobj);

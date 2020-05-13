@@ -1,10 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_SH_CACHEFLUSH_H
 #define __ASM_SH_CACHEFLUSH_H
 
 #ifdef __KERNEL__
 
 #include <linux/mm.h>
-#include <asm/l2_cacheflush.h>
 
 /*
  * Cache flushing:
@@ -43,6 +43,7 @@ extern void flush_cache_page(struct vm_area_struct *vma,
 				unsigned long addr, unsigned long pfn);
 extern void flush_cache_range(struct vm_area_struct *vma,
 				 unsigned long start, unsigned long end);
+#define ARCH_IMPLEMENTS_FLUSH_DCACHE_PAGE 1
 extern void flush_dcache_page(struct page *page);
 extern void flush_icache_range(unsigned long start, unsigned long end);
 extern void flush_icache_page(struct vm_area_struct *vma,
@@ -73,10 +74,9 @@ static inline void invalidate_kernel_vmap_range(void *addr, int size)
 }
 
 #define ARCH_HAS_FLUSH_KERNEL_DCACHE_PAGE
-void flush_kernel_dcache_page_addr(unsigned long addr);
 static inline void flush_kernel_dcache_page(struct page *page)
 {
-	flush_kernel_dcache_page_addr((unsigned long)page_address(page));
+	flush_dcache_page(page);
 }
 
 extern void copy_to_user_page(struct vm_area_struct *vma,
@@ -87,43 +87,26 @@ extern void copy_from_user_page(struct vm_area_struct *vma,
 	struct page *page, unsigned long vaddr, void *dst, const void *src,
 	unsigned long len);
 
-#define flush_cache_vmap(start, end)		flush_cache_all()
-#define flush_cache_vunmap(start, end)		flush_cache_all()
+#define flush_cache_vmap(start, end)		local_flush_cache_all(NULL)
+#define flush_cache_vunmap(start, end)		local_flush_cache_all(NULL)
 
 #define flush_dcache_mmap_lock(mapping)		do { } while (0)
 #define flush_dcache_mmap_unlock(mapping)	do { } while (0)
-
-static inline void flush_ioremap_region(unsigned long phys, void __iomem *virt,
-					unsigned offset, size_t size)
-{
-	void *start = (void __force *)virt + offset;
-	__flush_purge_region(start, size);
-	__l2_flush_purge_phys(phys + offset, size);
-}
-
-static inline void writeback_ioremap_region(unsigned long phys, void __iomem *virt,
-					    unsigned offset, size_t size)
-{
-	void *start = (void __force *)virt + offset;
-	__flush_wback_region(start, size);
-	__l2_flush_wback_phys(phys + offset, size);
-}
-
-static inline void invalidate_ioremap_region(unsigned long phys, void __iomem *virt,
-					     unsigned offset, size_t size)
-{
-	void *start = (void __force *)virt + offset;
-	__flush_invalidate_region(start, size);
-	__l2_flush_invalidate_phys(phys + offset, size);
-}
 
 void kmap_coherent_init(void);
 void *kmap_coherent(struct page *page, unsigned long addr);
 void kunmap_coherent(void *kvaddr);
 
-#define PG_dcache_dirty	PG_arch_1
+#define PG_dcache_clean	PG_arch_1
 
 void cpu_cache_init(void);
+
+static inline void *sh_cacheop_vaddr(void *vaddr)
+{
+	if (__in_29bit_mode())
+		vaddr = (void *)CAC_ADDR((unsigned long)vaddr);
+	return vaddr;
+}
 
 #endif /* __KERNEL__ */
 #endif /* __ASM_SH_CACHEFLUSH_H */

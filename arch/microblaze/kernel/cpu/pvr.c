@@ -12,9 +12,9 @@
 
 #include <linux/kernel.h>
 #include <linux/compiler.h>
-#include <asm/system.h>
 #include <asm/exceptions.h>
 #include <asm/pvr.h>
+#include <linux/irqflags.h>
 
 /*
  * Until we get an assembler that knows about the pvr registers,
@@ -27,8 +27,8 @@
 	register unsigned tmp __asm__("r3");			\
 	tmp = 0x0;	/* Prevent warning about unused */	\
 	__asm__ __volatile__ (					\
-			".byte 0x94,0x60,0xa0, " #pvrid "\n\t"	\
-			: "=r" (tmp) : : "memory"); 		\
+			"mfs	%0, rpvr" #pvrid ";"		\
+			: "=r" (tmp) : : "memory");		\
 	val = tmp;						\
 }
 
@@ -45,7 +45,7 @@
 
 int cpu_has_pvr(void)
 {
-	unsigned flags;
+	unsigned long flags;
 	unsigned pvr0;
 
 	local_save_flags(flags);
@@ -54,7 +54,7 @@ int cpu_has_pvr(void)
 	if (!(flags & PVR_MSR_BIT))
 		return 0;
 
-	get_single_pvr(0x00, pvr0);
+	get_single_pvr(0, pvr0);
 	pr_debug("%s: pvr0 is 0x%08x\n", __func__, pvr0);
 
 	if (pvr0 & PVR0_PVR_FULL_MASK)

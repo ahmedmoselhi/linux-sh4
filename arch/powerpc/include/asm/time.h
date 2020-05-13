@@ -1,13 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Common time prototypes and such for all ppc machines.
  *
  * Written by Cort Dougan (cort@cs.nmt.edu) to merge
  * Paul Mackerras' version and mine for PReP and Pmac.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 
 #ifndef __POWERPC_TIME_H
@@ -18,35 +14,24 @@
 #include <linux/percpu.h>
 
 #include <asm/processor.h>
-#ifdef CONFIG_PPC_ISERIES
-#include <asm/paca.h>
-#include <asm/firmware.h>
-#include <asm/iseries/hv_call.h>
-#endif
+#include <asm/cpu_has_feature.h>
 
 /* time.c */
 extern unsigned long tb_ticks_per_jiffy;
 extern unsigned long tb_ticks_per_usec;
 extern unsigned long tb_ticks_per_sec;
-extern u64 tb_to_xs;
-extern unsigned      tb_to_us;
+extern struct clock_event_device decrementer_clockevent;
 
-struct rtc_time;
-extern void to_tm(int tim, struct rtc_time * tm);
-extern void GregorianDay(struct rtc_time *tm);
-extern time_t last_rtc_update;
 
 extern void generic_calibrate_decr(void);
-extern void wakeup_decrementer(void);
-extern void snapshot_timebase(void);
-
-extern void set_dec_cpu6(unsigned int val);
 
 /* Some sane defaults: 125 MHz timebase, 1GHz processor */
 extern unsigned long ppc_proc_freq;
 #define DEFAULT_PROC_FREQ	(DEFAULT_TB_FREQ * 8)
 extern unsigned long ppc_tb_freq;
 #define DEFAULT_TB_FREQ		125000000UL
+
+extern bool tb_invalid;
 
 struct div_result {
 	u64 result_high;
@@ -55,11 +40,7 @@ struct div_result {
 
 /* Accessor functions for the timebase (RTC on 601) registers. */
 /* If one day CONFIG_POWER is added just define __USE_RTC as 1 */
-#ifdef CONFIG_6xx
-#define __USE_RTC()	(!cpu_has_feature(CPU_FTR_USE_TB))
-#else
-#define __USE_RTC()	0
-#endif
+#define __USE_RTC()	(IS_ENABLED(CONFIG_PPC_BOOK3S_601))
 
 #ifdef CONFIG_PPC64
 
@@ -110,6 +91,15 @@ static inline u64 get_rtc(void)
 	return (u64)hi * 1000000000 + lo;
 }
 
+static inline u64 get_vtb(void)
+{
+#ifdef CONFIG_PPC_BOOK3S_64
+	if (cpu_has_feature(CPU_FTR_ARCH_207S))
+		return mfspr(SPRN_VTB);
+#endif
+	return 0;
+}
+
 #ifdef CONFIG_PPC64
 static inline u64 get_tb(void)
 {
@@ -148,7 +138,7 @@ static inline void set_tb(unsigned int upper, unsigned int lower)
  * in auto-reload mode.  The problem is PIT stops counting when it
  * hits zero.  If it would wrap, we could use it just like a decrementer.
  */
-static inline unsigned int get_dec(void)
+static inline u64 get_dec(void)
 {
 #if defined(CONFIG_40x)
 	return (mfspr(SPRN_PIT));
@@ -162,27 +152,16 @@ static inline unsigned int get_dec(void)
  * in when the decrementer generates its interrupt: on the 1 to 0
  * transition for Book E/4xx, but on the 0 to -1 transition for others.
  */
-static inline void set_dec(int val)
+static inline void set_dec(u64 val)
 {
 #if defined(CONFIG_40x)
-	mtspr(SPRN_PIT, val);
-#elif defined(CONFIG_8xx_CPU6)
-	set_dec_cpu6(val - 1);
+	mtspr(SPRN_PIT, (u32) val);
 #else
 #ifndef CONFIG_BOOKE
 	--val;
 #endif
-#ifdef CONFIG_PPC_ISERIES
-	if (firmware_has_feature(FW_FEATURE_ISERIES) &&
-			get_lppaca()->shared_proc) {
-		get_lppaca()->virtual_decr = val;
-		if (get_dec() > val)
-			HvCall_setVirtualDecr();
-		return;
-	}
-#endif
 	mtspr(SPRN_DEC, val);
-#endif /* not 40x or 8xx_CPU6 */
+#endif /* not 40x */
 }
 
 static inline unsigned long tb_ticks_since(unsigned long tstamp)
@@ -204,32 +183,19 @@ static inline unsigned long tb_ticks_since(unsigned long tstamp)
 extern u64 mulhdu(u64, u64);
 #endif
 
-extern void smp_space_timers(unsigned int);
-
-extern unsigned mulhwu_scale_factor(unsigned, unsigned);
 extern void div128_by_32(u64 dividend_high, u64 dividend_low,
 			 unsigned divisor, struct div_result *dr);
 
-/* Used to store Processor Utilization register (purr) values */
-
-struct cpu_usage {
-        u64 current_tb;  /* Holds the current purr register values */
-};
-
-DECLARE_PER_CPU(struct cpu_usage, cpu_usage_array);
-
-#if defined(CONFIG_VIRT_CPU_ACCOUNTING)
-extern void calculate_steal_time(void);
-extern void snapshot_timebases(void);
-#define account_process_vtime(tsk)		account_process_tick(tsk, 0)
-#else
-#define calculate_steal_time()			do { } while (0)
-#define snapshot_timebases()			do { } while (0)
-#define account_process_vtime(tsk)		do { } while (0)
-#endif
-
 extern void secondary_cpu_time_init(void);
-extern void iSeries_time_init_early(void);
+extern void __init time_init(void);
+
+DECLARE_PER_CPU(u64, decrementers_next_tb);
+
+/* Convert timebase ticks to nanoseconds */
+unsigned long long tb_to_ns(unsigned long long tb_ticks);
+
+/* SPLPAR */
+void accumulate_stolen_time(void);
 
 #endif /* __KERNEL__ */
 #endif /* __POWERPC_TIME_H */

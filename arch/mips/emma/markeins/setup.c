@@ -1,23 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  Copyright (C) NEC Electronics Corporation 2004-2006
  *
  *  This file is based on the arch/mips/ddb5xxx/ddb5477/setup.c.
  *
  *	Copyright 2001 MontaVista Software Inc.
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -28,7 +15,7 @@
 
 #include <asm/emma/emma2rh.h>
 
-#define	USE_CPU_COUNTER_TIMER	/* whether we use cpu counter */
+#define USE_CPU_COUNTER_TIMER	/* whether we use cpu counter */
 
 extern void markeins_led(const char *);
 
@@ -52,7 +39,6 @@ static void markeins_machine_halt(void)
 
 static void markeins_machine_power_off(void)
 {
-	printk("EMMA2RH Mark-eins halted. Please turn off the power.\n");
 	markeins_led("poweroff.");
 	while (1) ;
 }
@@ -91,7 +77,7 @@ void __init plat_time_init(void)
 static void markeins_board_init(void);
 extern void markeins_irq_setup(void);
 
-static void inline __init markeins_sio_setup(void)
+static inline void __init markeins_sio_setup(void)
 {
 }
 
@@ -111,9 +97,6 @@ void __init plat_mem_setup(void)
 	ioport_resource.end = EMMA2RH_PCI_IO_BASE + EMMA2RH_PCI_IO_SIZE - 1;
 	iomem_resource.start = EMMA2RH_IO_BASE;
 	iomem_resource.end = EMMA2RH_ROM_BASE - 1;
-
-	/* Reboot on panic */
-	panic_timeout = 180;
 
 	markeins_sio_setup();
 }

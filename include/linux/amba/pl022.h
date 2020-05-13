@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * include/linux/amba/pl022.h
  *
@@ -10,22 +11,12 @@
  *	linux-2.6.17-rc3-mm1/drivers/spi/pxa2xx_spi.c
  * Initial adoption to PL022 by:
  *      Sachin Verma <sachin.verma@st.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #ifndef _SSP_PL022_H
 #define _SSP_PL022_H
 
-#include <linux/device.h>
+#include <linux/types.h>
 
 /**
  * whether SSP is in loopback mode or not
@@ -71,6 +62,7 @@ struct ssp_clock_params {
 
 /**
  * enum ssp_rx_endian - endianess of Rx FIFO Data
+ * this feature is only available in ST versionf of PL022
  */
 enum ssp_rx_endian {
 	SSP_RX_MSB,
@@ -181,7 +173,8 @@ enum ssp_microwire_wait_state {
 };
 
 /**
- * enum Microwire - whether Full/Half Duplex
+ * enum ssp_duplex - whether Full/Half Duplex on microwire, only
+ * available in the ST Micro variant.
  * @SSP_MICROWIRE_CHANNEL_FULL_DUPLEX: SSPTXD becomes bi-directional,
  *     SSPRXD not used
  * @SSP_MICROWIRE_CHANNEL_HALF_DUPLEX: SSPTXD is an output, SSPRXD is
@@ -193,6 +186,31 @@ enum ssp_duplex {
 };
 
 /**
+ * enum ssp_clkdelay - an optional clock delay on the feedback clock
+ * only available in the ST Micro PL023 variant.
+ * @SSP_FEEDBACK_CLK_DELAY_NONE: no delay, the data coming in from the
+ * slave is sampled directly
+ * @SSP_FEEDBACK_CLK_DELAY_1T: the incoming slave data is sampled with
+ * a delay of T-dt
+ * @SSP_FEEDBACK_CLK_DELAY_2T: dito with a delay if 2T-dt
+ * @SSP_FEEDBACK_CLK_DELAY_3T: dito with a delay if 3T-dt
+ * @SSP_FEEDBACK_CLK_DELAY_4T: dito with a delay if 4T-dt
+ * @SSP_FEEDBACK_CLK_DELAY_5T: dito with a delay if 5T-dt
+ * @SSP_FEEDBACK_CLK_DELAY_6T: dito with a delay if 6T-dt
+ * @SSP_FEEDBACK_CLK_DELAY_7T: dito with a delay if 7T-dt
+ */
+enum ssp_clkdelay {
+	SSP_FEEDBACK_CLK_DELAY_NONE,
+	SSP_FEEDBACK_CLK_DELAY_1T,
+	SSP_FEEDBACK_CLK_DELAY_2T,
+	SSP_FEEDBACK_CLK_DELAY_3T,
+	SSP_FEEDBACK_CLK_DELAY_4T,
+	SSP_FEEDBACK_CLK_DELAY_5T,
+	SSP_FEEDBACK_CLK_DELAY_6T,
+	SSP_FEEDBACK_CLK_DELAY_7T
+};
+
+/**
  * CHIP select/deselect commands
  */
 enum ssp_chip_select {
@@ -201,63 +219,67 @@ enum ssp_chip_select {
 };
 
 
+struct dma_chan;
 /**
  * struct pl022_ssp_master - device.platform_data for SPI controller devices.
+ * @bus_id: identifier for this bus
  * @num_chipselect: chipselects are used to distinguish individual
  *     SPI slaves, and are numbered from zero to num_chipselects - 1.
  *     each slave has a chipselect signal, but it's common that not
  *     every chipselect is connected to a slave.
  * @enable_dma: if true enables DMA driven transfers.
+ * @dma_rx_param: parameter to locate an RX DMA channel.
+ * @dma_tx_param: parameter to locate a TX DMA channel.
+ * @autosuspend_delay: delay in ms following transfer completion before the
+ *     runtime power management system suspends the device. A setting of 0
+ *     indicates no delay and the device will be suspended immediately.
+ * @rt: indicates the controller should run the message pump with realtime
+ *     priority to minimise the transfer latency on the bus.
+ * @chipselects: list of <num_chipselects> chip select gpios
  */
 struct pl022_ssp_controller {
 	u16 bus_id;
 	u8 num_chipselect;
 	u8 enable_dma:1;
+	bool (*dma_filter)(struct dma_chan *chan, void *filter_param);
+	void *dma_rx_param;
+	void *dma_tx_param;
+	int autosuspend_delay;
+	bool rt;
+	int *chipselects;
 };
 
 /**
  * struct ssp_config_chip - spi_board_info.controller_data for SPI
  * slave devices, copied to spi_device.controller_data.
  *
- * @lbm: used for test purpose to internally connect RX and TX
  * @iface: Interface type(Motorola, TI, Microwire, Universal)
  * @hierarchy: sets whether interface is master or slave
  * @slave_tx_disable: SSPTXD is disconnected (in slave mode only)
  * @clk_freq: Tune freq parameters of SSP(when in master mode)
- * @endian_rx: Endianess of Data in Rx FIFO
- * @endian_tx: Endianess of Data in Tx FIFO
- * @data_size: Width of data element(4 to 32 bits)
  * @com_mode: communication mode: polling, Interrupt or DMA
  * @rx_lev_trig: Rx FIFO watermark level (for IT & DMA mode)
  * @tx_lev_trig: Tx FIFO watermark level (for IT & DMA mode)
- * @clk_phase: Motorola SPI interface Clock phase
- * @clk_pol: Motorola SPI interface Clock polarity
  * @ctrl_len: Microwire interface: Control length
  * @wait_state: Microwire interface: Wait state
  * @duplex: Microwire interface: Full/Half duplex
+ * @clkdelay: on the PL023 variant, the delay in feeback clock cycles
+ * before sampling the incoming line
  * @cs_control: function pointer to board-specific function to
  * assert/deassert I/O port to control HW generation of devices chip-select.
- * @dma_xfer_type: Type of DMA xfer (Mem-to-periph or Periph-to-Periph)
- * @dma_config: DMA configuration for SSP controller and peripheral
  */
 struct pl022_config_chip {
-	struct device *dev;
-	enum ssp_loopback lbm;
 	enum ssp_interface iface;
 	enum ssp_hierarchy hierarchy;
 	bool slave_tx_disable;
 	struct ssp_clock_params clk_freq;
-	enum ssp_rx_endian endian_rx;
-	enum ssp_tx_endian endian_tx;
-	enum ssp_data_size data_size;
 	enum ssp_mode com_mode;
 	enum ssp_rx_level_trig rx_lev_trig;
 	enum ssp_tx_level_trig tx_lev_trig;
-	enum ssp_spi_clk_phase clk_phase;
-	enum ssp_spi_clk_pol clk_pol;
 	enum ssp_microwire_ctrl_len ctrl_len;
 	enum ssp_microwire_wait_state wait_state;
 	enum ssp_duplex duplex;
+	enum ssp_clkdelay clkdelay;
 	void (*cs_control) (u32 control);
 };
 

@@ -1,33 +1,17 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  sata_uli.c - ULi Electronics SATA
  *
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2, or (at your option)
- *  any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; see the file COPYING.  If not, write to
- *  the Free Software Foundation, 675 Mass Ave, Cambridge, MA 02139, USA.
- *
- *
  *  libata documentation is available via 'make {ps|pdf}docs',
- *  as Documentation/DocBook/libata.*
+ *  as Documentation/driver-api/libata.rst
  *
  *  Hardware documentation available under NDA.
- *
  */
 
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/gfp.h>
 #include <linux/pci.h>
-#include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
@@ -87,8 +71,7 @@ static struct ata_port_operations uli_ops = {
 };
 
 static const struct ata_port_info uli_port_info = {
-	.flags		= ATA_FLAG_SATA | ATA_FLAG_NO_LEGACY |
-			  ATA_FLAG_IGN_SIMPLEX,
+	.flags		= ATA_FLAG_SATA | ATA_FLAG_IGN_SIMPLEX,
 	.pio_mask       = ATA_PIO4,
 	.udma_mask      = ATA_UDMA6,
 	.port_ops       = &uli_ops,
@@ -145,7 +128,6 @@ static int uli_scr_write(struct ata_link *link, unsigned int sc_reg, u32 val)
 
 static int uli_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
-	static int printed_version;
 	const struct ata_port_info *ppi[] = { &uli_port_info, NULL };
 	unsigned int board_idx = (unsigned int) ent->driver_data;
 	struct ata_host *host;
@@ -154,8 +136,7 @@ static int uli_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	struct ata_ioports *ioaddr;
 	int n_ports, rc;
 
-	if (!printed_version++)
-		dev_printk(KERN_INFO, &pdev->dev, "version " DRV_VERSION "\n");
+	ata_print_version_once(&pdev->dev, DRV_VERSION);
 
 	rc = pcim_enable_device(pdev);
 	if (rc)
@@ -180,9 +161,7 @@ static int uli_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	if (rc)
 		return rc;
 
-	rc = ata_pci_bmdma_init(host);
-	if (rc)
-		return rc;
+	ata_pci_bmdma_init(host);
 
 	iomap = host->iomap;
 
@@ -243,20 +222,8 @@ static int uli_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	pci_set_master(pdev);
 	pci_intx(pdev, 1);
-	return ata_host_activate(host, pdev->irq, ata_sff_interrupt,
+	return ata_host_activate(host, pdev->irq, ata_bmdma_interrupt,
 				 IRQF_SHARED, &uli_sht);
 }
 
-static int __init uli_init(void)
-{
-	return pci_register_driver(&uli_pci_driver);
-}
-
-static void __exit uli_exit(void)
-{
-	pci_unregister_driver(&uli_pci_driver);
-}
-
-
-module_init(uli_init);
-module_exit(uli_exit);
+module_pci_driver(uli_pci_driver);
