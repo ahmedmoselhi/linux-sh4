@@ -2,6 +2,135 @@
 config MTD_NAND_CORE
 	tristate
 
+config MTD_NAND_STM_BCH
+	tristate "STMicroelectronics: NANDi BCH Controller"
+	help
+	  Adds support for the STMicroelectronics NANDi BCH Controller
+
+config STM_NAND_BCH_DEBUG
+	bool "NANDi BCH debug messages"
+	depends on MTD_NAND_STM_BCH
+	default n
+	help
+	  Display debug messages on the console
+
+config MTD_NAND_STM_EMI
+	tristate "STMicroelectronics: EMI 'bit-banging'"
+	depends on MTD_NAND
+	help
+	  Enables the STMicroelectronics NAND driver for platforms in which the
+	  device is connected via an EMI bank.
+
+choice
+	prompt "Data Transfer"
+	depends on MTD_NAND_STM_EMI
+	default STM_NAND_EMI_LONGSL
+
+config STM_NAND_EMI_BYTE
+	bool "Legacy byte access"
+	help
+	  Use legacy byte-wise access for page transfers.
+
+config STM_NAND_EMI_LONGSL
+	bool "Standard"
+	help
+	  Use optimised multi-byte routines for page transfers.
+
+config STM_NAND_EMI_FDMA
+	bool "FDMA Transfers"
+	depends on STM_DMA
+	help
+	  Use FDMA trasfers for page transfers.  Reduces CPU load during page
+	  read/writes.  Setup overheads may outweigh gains for small-page
+	  devices.
+
+config STM_NAND_EMI_CACHED
+	depends on EXPERIMENTAL
+	bool "Cached Transfers [EXPERIMENTAL]"
+	help
+	  Perform page transers via the cache-line.  Reduces the impact of STBus
+	  latencies at the expense of an increased IRQ latency.
+
+endchoice
+
+config MTD_NAND_STM_FLEX
+	tristate "STMicroelectronics: H/W FLEX Controller"
+	help
+	  Enables the STMicroelectronics NAND Controller operating in FLEX mode.
+	  This driver is required to access NAND devices when boot-from-NAND is
+	  enabled.
+
+config STM_NAND_FLEX_CACHED
+       depends on EXPERIMENTAL
+       depends on MTD_NAND_STM_FLEX
+       bool "Reads via cacheline"
+       help
+	  Perform read operations via a cacheline.  Reduces the impact of STBus
+	  latencies at the expense of an increased IRQ latency.
+
+config STM_NAND_FLEX_BOOTMODESUPPORT
+	bool "Enable support for boot mode ECC"
+	depends on MTD_NAND_STM_FLEX
+	depends on MTD_PARTITIONS
+	help
+	  This option enables support for boot partition ECC format.
+
+config STM_NAND_FLEX_BOOTPARTITION
+	string "Name of boot partition" if STM_NAND_FLEX_BOOTMODESUPPORT
+	depends on MTD_NAND_STM_FLEX
+	default "Boot firmware"
+	help
+	  Name of NAND partition on which to use boot mode ECC format
+
+config MTD_NAND_STM_AFM
+	tristate "STMicroelectronics: H/W AFM Controller"
+	help
+	  Enables the STMicroelectronics NAND Controller operating in AFM mode.
+
+config STM_NAND_AFM_CACHED
+	depends on EXPERIMENTAL
+	depends on MTD_NAND_STM_AFM
+	bool "Cached Transfers [EXPERIMENTAL]"
+	help
+	  Perform page transers via the cache-line.  Reduces the impact of STBus
+	  latencies at the expence of an incresed IRQ latency.
+
+config STM_NAND_AFM_BOOTMODESUPPORT
+	bool "Enable support for boot mode ECC"
+	depends on MTD_NAND_STM_AFM
+	depends on MTD_PARTITIONS
+	help
+	  This option enables support for boot partition ECC format.
+
+config STM_NAND_AFM_BOOTPARTITION
+	string "Name of NAND boot partition" if STM_NAND_AFM_BOOTMODESUPPORT
+	depends on STM_NAND_AFM_BOOTMODESUPPORT
+	default "Boot firmware"
+	help
+	  Name of NAND boot partition.  By default, boot-mode ECC will be used
+	  when accessing the boot partition.
+
+config STM_NAND_AFM_PBLBOOTBOUNDARY
+	bool "Extract boot-mode ECC boundary from the PBL"
+	depends on STM_NAND_AFM_BOOTMODESUPPORT
+	default false
+	help
+	  Update the boot-mode ECC boundary from the PBL and apply to the
+	  specified NAND boot partition.
+
+config STM_NAND_SAFE_MOUNT
+	bool "STM NAND: Check for 'alien' BBTs when mounting NAND device"
+	depends on (MTD_NAND_STM_EMI || \
+		    MTD_NAND_STM_FLEX || \
+		    MTD_NAND_STM_AFM || \
+		    MTD_NAND_STM_BCH)
+	default y
+	help
+	  This option helps prevent corruption that might otherwise result from
+	  the presence of 'alien' BBTs (i.e. BBTs written by a driver different
+	  to that currently employed).
+
+endif # MTD_NAND
 source "drivers/mtd/nand/onenand/Kconfig"
 source "drivers/mtd/nand/raw/Kconfig"
 source "drivers/mtd/nand/spi/Kconfig"
