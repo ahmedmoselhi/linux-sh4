@@ -96,6 +96,48 @@ config MTD_SPEAR_SMI
 	help
 	  This enable SNOR support on SPEAR platforms using SMI controller
 
+config MTD_M25P80
+	tristate "Support most SPI Flash chips (AT26DF, M25P, W25X, ...)"
+	depends on SPI_MASTER && EXPERIMENTAL
+	help
+	  This enables access to most modern SPI flash chips, used for
+	  program and data storage.   Series supported include Atmel AT26DF,
+	  Spansion S25SL, SST 25VF, ST M25P, and Winbond W25X.  Other chips
+	  are supported as well.  See the driver source for the current list,
+	  or to add other chips.
+
+	  Note that the original DataFlash chips (AT45 series, not AT26DF),
+	  need an entirely different driver.
+
+	  Set up your spi devices with the right board-specific platform data,
+	  if you want to specify device partitioning or to use a device which
+	  doesn't support the JEDEC ID instruction.
+
+config M25PXX_USE_FAST_READ
+	bool "Use FAST_READ OPCode allowing SPI CLK <= 50MHz"
+	depends on MTD_M25P80
+	default y
+	help
+	  This option enables FAST_READ access supported by ST M25Pxx.
+
+config MTD_STM_SPI_FSM
+	tristate "ST Microelectronics SPI-FSM Serial Flash Controller"
+	depends on (CPU_SUBTYPE_STX7105 || \
+		    CPU_SUBTYPE_STX5206 || \
+		    CPU_SUBTYPE_STX7108 || \
+		    CPU_SUBTYPE_FLI75XX || \
+		    CPU_SUBTYPE_STXH205)
+	help
+	  This provides a MTD device driver for the ST Microelectronics SPI
+	  FSM Serial Flash Controller, and connected Serial Flash device.
+
+config STM_SPI_FSM_DEBUG
+	bool "STM SPI FSM debug support"
+	depends on MTD_STM_SPI_FSM
+	default n
+	help
+	  Display debug messages on the console.
+
 config MTD_SST25L
 	tristate "Support SST25L (non JEDEC) SPI Flash chips"
 	depends on SPI_MASTER
