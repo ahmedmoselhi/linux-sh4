@@ -441,6 +441,7 @@ LEX		= flex
 YACC		= bison
 AWK		= awk
 INSTALLKERNEL  := installkernel
+DEPMOD_PATH	?= /sbin
 DEPMOD		= /sbin/depmod
 PERL		= perl
 PYTHON		= python
@@ -812,6 +813,10 @@ endif
 ifdef CONFIG_DEBUG_INFO_REDUCED
 DEBUG_CFLAGS	+= $(call cc-option, -femit-struct-debug-baseonly) \
 		   $(call cc-option,-fno-var-tracking)
+endif
+
+ifdef CONFIG_KPTRACE
+KBUILD_CFLAGS	+= -fno-ipa-cp
 endif
 
 KBUILD_CFLAGS += $(DEBUG_CFLAGS)
