@@ -140,12 +140,12 @@ static int mpc_show(struct seq_file *m, void *v)
 	do_gettimeofday(&now);
 
 	for (in_entry = mpc->in_cache; in_entry; in_entry = in_entry->next) {
-		temp = (unsigned char *)&in_entry->__raw_readfo.in_dst_ip;
+		temp = (unsigned char *)&in_entry->ctrl_info.in_dst_ip;
 		sprintf(ip_string,"%d.%d.%d.%d", temp[0], temp[1], temp[2], temp[3]);
 		seq_printf(m, "%-16s%s%-14lu%-12u",
 			      ip_string,
 			      ingress_state_string(in_entry->entry_state),
-			      in_entry->__raw_readfo.holding_time-(now.tv_sec-in_entry->tv.tv_sec),
+			      in_entry->ctrl_info.holding_time-(now.tv_sec-in_entry->tv.tv_sec),
 			      in_entry->packets_fwded);
 		if (in_entry->shortcut)
 			seq_printf(m, "   %-3d  %-3d",in_entry->shortcut->vpi,in_entry->shortcut->vci);
@@ -155,13 +155,13 @@ static int mpc_show(struct seq_file *m, void *v)
 	seq_printf(m, "\n");
 	seq_printf(m, "Egress Entries:\nIngress MPC ATM addr\nCache-id        State      Holding time  Packets recvd  Latest IP addr   VPI VCI\n");
 	for (eg_entry = mpc->eg_cache; eg_entry; eg_entry = eg_entry->next) {
-		unsigned char *p = eg_entry->__raw_readfo.in_MPC_data_ATM_addr;
+		unsigned char *p = eg_entry->ctrl_info.in_MPC_data_ATM_addr;
 		for(i = 0; i < ATM_ESA_LEN; i++)
 			seq_printf(m, "%02x", p[i]);
 		seq_printf(m, "\n%-16lu%s%-14lu%-15u",
-			   (unsigned long)ntohl(eg_entry->__raw_readfo.cache_id),
+			   (unsigned long)ntohl(eg_entry->ctrl_info.cache_id),
 			   egress_state_string(eg_entry->entry_state),
-			   (eg_entry->__raw_readfo.holding_time-(now.tv_sec-eg_entry->tv.tv_sec)),
+			   (eg_entry->ctrl_info.holding_time-(now.tv_sec-eg_entry->tv.tv_sec)),
 			   eg_entry->packets_rcvd);
 
 		/* latest IP address */

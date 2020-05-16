@@ -1220,7 +1220,7 @@ static int cpqhpc_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	/* set up the interrupt */
 	dbg("HPC interrupt = %d \n", ctrl->interrupt);
-	if (request_irq(ctrl->interrupt, cpqhp___raw_readtr,
+	if (request_irq(ctrl->interrupt, cpqhp_ctrl_intr,
 			IRQF_SHARED, MY_NAME, ctrl)) {
 		err("Can't get irq %d for the hotplug pci controller\n",
 			ctrl->interrupt);
@@ -1238,7 +1238,7 @@ static int cpqhpc_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	/* Changed 05/05/97 to clear all interrupts at start */
 	writel(0xFFFFFFFFL, ctrl->hpc_reg + INT_INPUT_CLEAR);
 
-	ctrl->__raw_readt_comp = readl(ctrl->hpc_reg + INT_INPUT_CLEAR);
+	ctrl->ctrl_int_comp = readl(ctrl->hpc_reg + INT_INPUT_CLEAR);
 
 	writel(0x0L, ctrl->hpc_reg + INT_MASK);
 
@@ -1270,11 +1270,11 @@ static int cpqhpc_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		dbg("hp_slot: %d\n", hp_slot);
 
 		/* We have to save the presence info for these slots */
-		temp_word = ctrl->__raw_readt_comp >> 16;
+		temp_word = ctrl->ctrl_int_comp >> 16;
 		func->presence_save = (temp_word >> hp_slot) & 0x01;
 		func->presence_save |= (temp_word >> (hp_slot + 7)) & 0x02;
 
-		if (ctrl->__raw_readt_comp & (0x1L << hp_slot))
+		if (ctrl->ctrl_int_comp & (0x1L << hp_slot))
 			func->switch_save = 0;
 		else
 			func->switch_save = 0x10;

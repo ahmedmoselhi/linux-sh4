@@ -290,7 +290,7 @@ struct event_info {
 
 struct controller {
 	struct controller *next;
-	u32 __raw_readt_comp;
+	u32 ctrl_int_comp;
 	struct mutex crit_sect;	/* critical section mutex */
 	void __iomem *hpc_reg;	/* cookie for our pci controller location */
 	struct pci_resource *mem_head;
@@ -413,7 +413,7 @@ extern void cpqhp_remove_debugfs_files(struct controller *ctrl);
 
 /* controller functions */
 extern void cpqhp_pushbutton_thread(unsigned long event_pointer);
-extern irqreturn_t cpqhp___raw_readtr(int IRQ, void *data);
+extern irqreturn_t cpqhp_ctrl_intr(int IRQ, void *data);
 extern int cpqhp_find_available_resources(struct controller *ctrl,
 					  void __iomem *rom_start);
 extern int cpqhp_event_start_thread(void);

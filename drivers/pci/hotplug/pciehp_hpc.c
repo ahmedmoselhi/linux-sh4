@@ -925,45 +925,45 @@ static inline void dbg_ctrl(struct controller *ctrl)
 	if (!pciehp_debug)
 		return;
 
-	__raw_readfo(ctrl, "Hotplug Controller:\n");
-	__raw_readfo(ctrl, "  Seg/Bus/Dev/Func/IRQ : %s IRQ %d\n",
+	ctrl_info(ctrl, "Hotplug Controller:\n");
+	ctrl_info(ctrl, "  Seg/Bus/Dev/Func/IRQ : %s IRQ %d\n",
 		  pci_name(pdev), pdev->irq);
-	__raw_readfo(ctrl, "  Vendor ID            : 0x%04x\n", pdev->vendor);
-	__raw_readfo(ctrl, "  Device ID            : 0x%04x\n", pdev->device);
-	__raw_readfo(ctrl, "  Subsystem ID         : 0x%04x\n",
+	ctrl_info(ctrl, "  Vendor ID            : 0x%04x\n", pdev->vendor);
+	ctrl_info(ctrl, "  Device ID            : 0x%04x\n", pdev->device);
+	ctrl_info(ctrl, "  Subsystem ID         : 0x%04x\n",
 		  pdev->subsystem_device);
-	__raw_readfo(ctrl, "  Subsystem Vendor ID  : 0x%04x\n",
+	ctrl_info(ctrl, "  Subsystem Vendor ID  : 0x%04x\n",
 		  pdev->subsystem_vendor);
-	__raw_readfo(ctrl, "  PCIe Cap offset      : 0x%02x\n", ctrl->cap_base);
+	ctrl_info(ctrl, "  PCIe Cap offset      : 0x%02x\n", ctrl->cap_base);
 	for (i = 0; i < DEVICE_COUNT_RESOURCE; i++) {
 		if (!pci_resource_len(pdev, i))
 			continue;
-		__raw_readfo(ctrl, "  PCI resource [%d]     : 0x%llx@0x%llx\n",
+		ctrl_info(ctrl, "  PCI resource [%d]     : 0x%llx@0x%llx\n",
 			  i, (unsigned long long)pci_resource_len(pdev, i),
 			  (unsigned long long)pci_resource_start(pdev, i));
 	}
-	__raw_readfo(ctrl, "Slot Capabilities      : 0x%08x\n", ctrl->slot_cap);
-	__raw_readfo(ctrl, "  Physical Slot Number : %d\n", PSN(ctrl));
-	__raw_readfo(ctrl, "  Attention Button     : %3s\n",
+	ctrl_info(ctrl, "Slot Capabilities      : 0x%08x\n", ctrl->slot_cap);
+	ctrl_info(ctrl, "  Physical Slot Number : %d\n", PSN(ctrl));
+	ctrl_info(ctrl, "  Attention Button     : %3s\n",
 		  ATTN_BUTTN(ctrl) ? "yes" : "no");
-	__raw_readfo(ctrl, "  Power Controller     : %3s\n",
+	ctrl_info(ctrl, "  Power Controller     : %3s\n",
 		  POWER_CTRL(ctrl) ? "yes" : "no");
-	__raw_readfo(ctrl, "  MRL Sensor           : %3s\n",
+	ctrl_info(ctrl, "  MRL Sensor           : %3s\n",
 		  MRL_SENS(ctrl)   ? "yes" : "no");
-	__raw_readfo(ctrl, "  Attention Indicator  : %3s\n",
+	ctrl_info(ctrl, "  Attention Indicator  : %3s\n",
 		  ATTN_LED(ctrl)   ? "yes" : "no");
-	__raw_readfo(ctrl, "  Power Indicator      : %3s\n",
+	ctrl_info(ctrl, "  Power Indicator      : %3s\n",
 		  PWR_LED(ctrl)    ? "yes" : "no");
-	__raw_readfo(ctrl, "  Hot-Plug Surprise    : %3s\n",
+	ctrl_info(ctrl, "  Hot-Plug Surprise    : %3s\n",
 		  HP_SUPR_RM(ctrl) ? "yes" : "no");
-	__raw_readfo(ctrl, "  EMI Present          : %3s\n",
+	ctrl_info(ctrl, "  EMI Present          : %3s\n",
 		  EMI(ctrl)        ? "yes" : "no");
-	__raw_readfo(ctrl, "  Command Completed    : %3s\n",
+	ctrl_info(ctrl, "  Command Completed    : %3s\n",
 		  NO_CMD_CMPL(ctrl) ? "no" : "yes");
 	pciehp_readw(ctrl, PCI_EXP_SLTSTA, &reg16);
-	__raw_readfo(ctrl, "Slot Status            : 0x%04x\n", reg16);
+	ctrl_info(ctrl, "Slot Status            : 0x%04x\n", reg16);
 	pciehp_readw(ctrl, PCI_EXP_SLTCTL, &reg16);
-	__raw_readfo(ctrl, "Slot Control           : 0x%04x\n", reg16);
+	ctrl_info(ctrl, "Slot Control           : 0x%04x\n", reg16);
 }
 
 struct controller *pcie_init(struct pcie_device *dev)
@@ -1029,7 +1029,7 @@ struct controller *pcie_init(struct pcie_device *dev)
 			goto abort_ctrl;
 	}
 
-	__raw_readfo(ctrl, "HPC vendor_id %x device_id %x ss_vid %x ss_did %x\n",
+	ctrl_info(ctrl, "HPC vendor_id %x device_id %x ss_vid %x ss_did %x\n",
 		  pdev->vendor, pdev->device, pdev->subsystem_vendor,
 		  pdev->subsystem_device);
 

@@ -522,7 +522,7 @@ static void attach_one_fan(struct bbc_i2c_bus *bp, struct of_device *op,
 	set_fan_speeds(fp);
 }
 
-int bbc_env__raw_readit(struct bbc_i2c_bus *bp)
+int bbc_envctrl_init(struct bbc_i2c_bus *bp)
 {
 	struct of_device *op;
 	int temp_index = 0;

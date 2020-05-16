@@ -62,7 +62,7 @@ int b1_irq_table[16] =
 avmcard *b1_alloc_card(int nr_controllers)
 {
 	avmcard *card;
-	avm__raw_readfo *cinfo;
+	avmctrl_info *cinfo;
 	int i;
 
 	card = kzalloc(sizeof(*card), GFP_KERNEL);
@@ -274,7 +274,7 @@ int b1_loaded(avmcard *card)
 
 int b1_load_firmware(struct capi_ctr *ctrl, capiloaddata *data)
 {
-	avm__raw_readfo *cinfo = (avm__raw_readfo *)(ctrl->driverdata);
+	avmctrl_info *cinfo = (avmctrl_info *)(ctrl->driverdata);
 	avmcard *card = cinfo->card;
 	unsigned int port = card->port;
 	unsigned long flags;
@@ -318,7 +318,7 @@ int b1_load_firmware(struct capi_ctr *ctrl, capiloaddata *data)
 
 void b1_reset_ctr(struct capi_ctr *ctrl)
 {
-	avm__raw_readfo *cinfo = (avm__raw_readfo *)(ctrl->driverdata);
+	avmctrl_info *cinfo = (avmctrl_info *)(ctrl->driverdata);
 	avmcard *card = cinfo->card;
 	unsigned int port = card->port;
 	unsigned long flags;
@@ -337,7 +337,7 @@ void b1_register_appl(struct capi_ctr *ctrl,
 				u16 appl,
 				capi_register_params *rp)
 {
-	avm__raw_readfo *cinfo = (avm__raw_readfo *)(ctrl->driverdata);
+	avmctrl_info *cinfo = (avmctrl_info *)(ctrl->driverdata);
 	avmcard *card = cinfo->card;
 	unsigned int port = card->port;
 	unsigned long flags;
@@ -359,7 +359,7 @@ void b1_register_appl(struct capi_ctr *ctrl,
 
 void b1_release_appl(struct capi_ctr *ctrl, u16 appl)
 {
-	avm__raw_readfo *cinfo = (avm__raw_readfo *)(ctrl->driverdata);
+	avmctrl_info *cinfo = (avmctrl_info *)(ctrl->driverdata);
 	avmcard *card = cinfo->card;
 	unsigned int port = card->port;
 	unsigned long flags;
@@ -373,7 +373,7 @@ void b1_release_appl(struct capi_ctr *ctrl, u16 appl)
 
 u16 b1_send_message(struct capi_ctr *ctrl, struct sk_buff *skb)
 {
-	avm__raw_readfo *cinfo = (avm__raw_readfo *)(ctrl->driverdata);
+	avmctrl_info *cinfo = (avmctrl_info *)(ctrl->driverdata);
 	avmcard *card = cinfo->card;
 	unsigned int port = card->port;
 	unsigned long flags;
@@ -410,7 +410,7 @@ u16 b1_send_message(struct capi_ctr *ctrl, struct sk_buff *skb)
 
 /* ------------------------------------------------------------- */
 
-void b1_parse_version(avm__raw_readfo *cinfo)
+void b1_parse_version(avmctrl_info *cinfo)
 {
 	struct capi_ctr *ctrl = &cinfo->capi_ctrl;
 	avmcard *card = cinfo->card;
@@ -487,7 +487,7 @@ void b1_parse_version(avm__raw_readfo *cinfo)
 irqreturn_t b1_interrupt(int interrupt, void *devptr)
 {
 	avmcard *card = devptr;
-	avm__raw_readfo *cinfo = &card->ctrlinfo[0];
+	avmctrl_info *cinfo = &card->ctrlinfo[0];
 	struct capi_ctr *ctrl = &cinfo->capi_ctrl;
 	unsigned char b1cmd;
 	struct sk_buff *skb;
@@ -637,7 +637,7 @@ irqreturn_t b1_interrupt(int interrupt, void *devptr)
 int b1ctl_read_proc(char *page, char **start, off_t off,
         		int count, int *eof, struct capi_ctr *ctrl)
 {
-	avm__raw_readfo *cinfo = (avm__raw_readfo *)(ctrl->driverdata);
+	avmctrl_info *cinfo = (avmctrl_info *)(ctrl->driverdata);
 	avmcard *card = cinfo->card;
 	u8 flag;
 	int len = 0;

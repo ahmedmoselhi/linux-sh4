@@ -88,7 +88,7 @@ struct be_mcc_obj {
 	struct be_queue_info *cq;
 };
 
-struct be___raw_readfo {
+struct be_ctrl_info {
 	u8 __iomem *csr;
 	u8 __iomem *db;		/* Door Bell */
 	u8 __iomem *pcicfg;	/* PCI config space */
@@ -177,7 +177,7 @@ static inline void swap_dws(void *wrb, int len)
 #endif /* __BIG_ENDIAN */
 }
 
-extern void beiscsi_cq_notify(struct be___raw_readfo *ctrl, u16 qid, bool arm,
+extern void beiscsi_cq_notify(struct be_ctrl_info *ctrl, u16 qid, bool arm,
 			      u16 num_popped);
 
 #endif /* BEISCSI_H */

@@ -131,17 +131,17 @@ static void (*set_carrier_cb_tab[2])(void *pdev, int carrier);
 
 static int hss_set_clock(int port, unsigned int clock_type)
 {
-	int __raw_readt = port ? CONTROL_HSS1_CLK_INT : CONTROL_HSS0_CLK_INT;
+	int ctrl_int = port ? CONTROL_HSS1_CLK_INT : CONTROL_HSS0_CLK_INT;
 
 	switch (clock_type) {
 	case CLOCK_DEFAULT:
 	case CLOCK_EXT:
-		set_control(__raw_readt, 0);
+		set_control(ctrl_int, 0);
 		output_control();
 		return CLOCK_EXT;
 
 	case CLOCK_INT:
-		set_control(__raw_readt, 1);
+		set_control(ctrl_int, 1);
 		output_control();
 		return CLOCK_INT;
 

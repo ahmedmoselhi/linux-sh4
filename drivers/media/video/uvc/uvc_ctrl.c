@@ -1429,7 +1429,7 @@ uvc_ctrl_prune_entity(struct uvc_device *dev, struct uvc_entity *entity)
 /*
  * Initialize device controls.
  */
-int uvc___raw_readit_device(struct uvc_device *dev)
+int uvc_ctrl_init_device(struct uvc_device *dev)
 {
 	struct uvc_control_info *info;
 	struct uvc_control *ctrl;
@@ -1514,7 +1514,7 @@ void uvc_ctrl_cleanup_device(struct uvc_device *dev)
 	}
 }
 
-void uvc___raw_readit(void)
+void uvc_ctrl_init(void)
 {
 	struct uvc_control_info *ctrl = uvc_ctrls;
 	struct uvc_control_info *cend = ctrl + ARRAY_SIZE(uvc_ctrls);

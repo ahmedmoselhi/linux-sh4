@@ -1114,7 +1114,7 @@ static struct videobuf_queue_ops video_qops = {
 
 /* ------------------------------------------------------------------ */
 
-int saa7134_g___raw_readternal(struct saa7134_dev *dev, struct saa7134_fh *fh, struct v4l2_control *c)
+int saa7134_g_ctrl_internal(struct saa7134_dev *dev, struct saa7134_fh *fh, struct v4l2_control *c)
 {
 	const struct v4l2_queryctrl* ctrl;
 
@@ -1160,16 +1160,16 @@ int saa7134_g___raw_readternal(struct saa7134_dev *dev, struct saa7134_fh *fh, s
 	}
 	return 0;
 }
-EXPORT_SYMBOL_GPL(saa7134_g___raw_readternal);
+EXPORT_SYMBOL_GPL(saa7134_g_ctrl_internal);
 
 static int saa7134_g_ctrl(struct file *file, void *priv, struct v4l2_control *c)
 {
 	struct saa7134_fh *fh = priv;
 
-	return saa7134_g___raw_readternal(fh->dev, fh, c);
+	return saa7134_g_ctrl_internal(fh->dev, fh, c);
 }
 
-int saa7134_s___raw_readternal(struct saa7134_dev *dev,  struct saa7134_fh *fh, struct v4l2_control *c)
+int saa7134_s_ctrl_internal(struct saa7134_dev *dev,  struct saa7134_fh *fh, struct v4l2_control *c)
 {
 	const struct v4l2_queryctrl* ctrl;
 	unsigned long flags;
@@ -1284,13 +1284,13 @@ error:
 	mutex_unlock(&dev->lock);
 	return err;
 }
-EXPORT_SYMBOL_GPL(saa7134_s___raw_readternal);
+EXPORT_SYMBOL_GPL(saa7134_s_ctrl_internal);
 
 static int saa7134_s_ctrl(struct file *file, void *f, struct v4l2_control *c)
 {
 	struct saa7134_fh *fh = f;
 
-	return saa7134_s___raw_readternal(fh->dev, fh, c);
+	return saa7134_s_ctrl_internal(fh->dev, fh, c);
 }
 
 /* ------------------------------------------------------------------ */

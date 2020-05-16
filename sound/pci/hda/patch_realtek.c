@@ -699,7 +699,7 @@ static int alc_gpio_data_put(struct snd_kcontrol *kcontrol,
  * necessary.
  */
 #ifdef CONFIG_SND_DEBUG
-#define alc_spdif___raw_readfo	snd_ctl_boolean_mono_info
+#define alc_spdif_ctrl_info	snd_ctl_boolean_mono_info
 
 static int alc_spdif_ctrl_get(struct snd_kcontrol *kcontrol,
 			      struct snd_ctl_elem_value *ucontrol)
@@ -739,7 +739,7 @@ static int alc_spdif_ctrl_put(struct snd_kcontrol *kcontrol,
 }
 #define ALC_SPDIF_CTRL_SWITCH(xname, nid, mask) \
 	{ .iface = SNDRV_CTL_ELEM_IFACE_MIXER, .name = xname, .index = 0,  \
-	  .info = alc_spdif___raw_readfo, \
+	  .info = alc_spdif_ctrl_info, \
 	  .get = alc_spdif_ctrl_get, \
 	  .put = alc_spdif_ctrl_put, \
 	  .private_value = nid | (mask<<16) }
@@ -750,7 +750,7 @@ static int alc_spdif_ctrl_put(struct snd_kcontrol *kcontrol,
  * the EAPD line must be asserted for features to work.
  */
 #ifdef CONFIG_SND_DEBUG
-#define alc_eapd___raw_readfo	snd_ctl_boolean_mono_info
+#define alc_eapd_ctrl_info	snd_ctl_boolean_mono_info
 
 static int alc_eapd_ctrl_get(struct snd_kcontrol *kcontrol,
 			      struct snd_ctl_elem_value *ucontrol)
@@ -792,7 +792,7 @@ static int alc_eapd_ctrl_put(struct snd_kcontrol *kcontrol,
 
 #define ALC_EAPD_CTRL_SWITCH(xname, nid, mask) \
 	{ .iface = SNDRV_CTL_ELEM_IFACE_MIXER, .name = xname, .index = 0,  \
-	  .info = alc_eapd___raw_readfo, \
+	  .info = alc_eapd_ctrl_info, \
 	  .get = alc_eapd_ctrl_get, \
 	  .put = alc_eapd_ctrl_put, \
 	  .private_value = nid | (mask<<16) }

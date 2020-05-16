@@ -211,7 +211,7 @@ struct au0828_dev {
 	unsigned int frame_count;
 	int ctrl_freq;
 	int input_type;
-	unsigned int __raw_readput;
+	unsigned int ctrl_input;
 	enum au0828_dev_state dev_state;
 	enum au0828_stream_state stream_state;
 	wait_queue_head_t open;

@@ -124,7 +124,7 @@
 #define ENVCTRL_GLOBALADDR_PSTAT_MASK	0x60
 
 /* Node 0x70 ignored on CompactPCI CP1400/1500 platforms 
- * (see env__raw_readit_i2c_child)
+ * (see envctrl_init_i2c_child)
  */
 #define ENVCTRL_CPCI_IGNORED_NODE		0x70
 
@@ -767,7 +767,7 @@ static void envctrl_set_mon(struct i2c_child_t *pchild,
  *                       decoding tables, monitor type, optional properties.
  * Return: None.
  */
-static void env__raw_readit_adc(struct i2c_child_t *pchild, struct device_node *dp)
+static void envctrl_init_adc(struct i2c_child_t *pchild, struct device_node *dp)
 {
 	int i = 0, len;
 	const char *pos;
@@ -796,7 +796,7 @@ static void env__raw_readit_adc(struct i2c_child_t *pchild, struct device_node *
 /* Function Description: Initialize child device monitoring fan status.
  * Return: None.
  */
-static void env__raw_readit_fanstat(struct i2c_child_t *pchild)
+static void envctrl_init_fanstat(struct i2c_child_t *pchild)
 {
 	int i;
 
@@ -813,7 +813,7 @@ static void env__raw_readit_fanstat(struct i2c_child_t *pchild)
 /* Function Description: Initialize child device for global addressing line.
  * Return: None.
  */
-static void env__raw_readit_globaladdr(struct i2c_child_t *pchild)
+static void envctrl_init_globaladdr(struct i2c_child_t *pchild)
 {
 	int i;
 
@@ -844,7 +844,7 @@ static void env__raw_readit_globaladdr(struct i2c_child_t *pchild)
 }
 
 /* Initialize child device monitoring voltage status. */
-static void env__raw_readit_voltage_status(struct i2c_child_t *pchild)
+static void envctrl_init_voltage_status(struct i2c_child_t *pchild)
 {
 	int i;
 
@@ -861,7 +861,7 @@ static void env__raw_readit_voltage_status(struct i2c_child_t *pchild)
 /* Function Description: Initialize i2c child device.
  * Return: None.
  */
-static void env__raw_readit_i2c_child(struct device_node *dp,
+static void envctrl_init_i2c_child(struct device_node *dp,
 				   struct i2c_child_t *pchild)
 {
 	int len, i, tbls_size = 0;
@@ -923,24 +923,24 @@ static void env__raw_readit_i2c_child(struct device_node *dp,
 	for (i = 0; i < pchild->total_chnls; i++) {
 		switch (pchild->chnl_array[i].type) {
 		case PCF8584_TEMP_TYPE:
-			env__raw_readit_adc(pchild, dp);
+			envctrl_init_adc(pchild, dp);
 			break;
 
 		case PCF8584_GLOBALADDR_TYPE:
-			env__raw_readit_globaladdr(pchild);
+			envctrl_init_globaladdr(pchild);
 			i = pchild->total_chnls;
 			break;
 
 		case PCF8584_FANSTAT_TYPE:
-			env__raw_readit_fanstat(pchild);
+			envctrl_init_fanstat(pchild);
 			i = pchild->total_chnls;
 			break;
 
 		case PCF8584_VOLTAGE_TYPE:
 			if (pchild->i2ctype == I2C_ADC) {
-				env__raw_readit_adc(pchild,dp);
+				envctrl_init_adc(pchild,dp);
 			} else {
-				env__raw_readit_voltage_status(pchild);
+				envctrl_init_voltage_status(pchild);
 			}
 			i = pchild->total_chnls;
 			break;
@@ -1046,10 +1046,10 @@ static int __devinit envctrl_probe(struct of_device *op,
 	while (dp) {
 		if (!strcmp(dp->name, "gpio")) {
 			i2c_childlist[index].i2ctype = I2C_GPIO;
-			env__raw_readit_i2c_child(dp, &(i2c_childlist[index++]));
+			envctrl_init_i2c_child(dp, &(i2c_childlist[index++]));
 		} else if (!strcmp(dp->name, "adc")) {
 			i2c_childlist[index].i2ctype = I2C_ADC;
-			env__raw_readit_i2c_child(dp, &(i2c_childlist[index++]));
+			envctrl_init_i2c_child(dp, &(i2c_childlist[index++]));
 		}
 
 		dp = dp->sibling;
@@ -1136,7 +1136,7 @@ static struct of_platform_driver envctrl_driver = {
 	.remove		= __devexit_p(envctrl_remove),
 };
 
-static int __init env__raw_readit(void)
+static int __init envctrl_init(void)
 {
 	return of_register_driver(&envctrl_driver, &of_bus_type);
 }
@@ -1146,6 +1146,6 @@ static void __exit envctrl_exit(void)
 	of_unregister_driver(&envctrl_driver);
 }
 
-module_init(env__raw_readit);
+module_init(envctrl_init);
 module_exit(envctrl_exit);
 MODULE_LICENSE("GPL");

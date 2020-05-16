@@ -633,10 +633,10 @@ extern int uvc_query_v4l2_ctrl(struct uvc_video_chain *chain,
 
 extern int uvc_ctrl_add_info(struct uvc_control_info *info);
 extern int uvc_ctrl_add_mapping(struct uvc_control_mapping *mapping);
-extern int uvc___raw_readit_device(struct uvc_device *dev);
+extern int uvc_ctrl_init_device(struct uvc_device *dev);
 extern void uvc_ctrl_cleanup_device(struct uvc_device *dev);
 extern int uvc_ctrl_resume_device(struct uvc_device *dev);
-extern void uvc___raw_readit(void);
+extern void uvc_ctrl_init(void);
 
 extern int uvc_ctrl_begin(struct uvc_video_chain *chain);
 extern int __uvc_ctrl_commit(struct uvc_video_chain *chain, int rollback);

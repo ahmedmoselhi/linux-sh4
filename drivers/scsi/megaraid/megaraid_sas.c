@@ -1885,20 +1885,20 @@ static int megasas_alloc_cmds(struct megasas_instance *instance)
 /**
  * megasas_get_controller_info -	Returns FW's controller structure
  * @instance:				Adapter soft state
- * @__raw_readfo:				Controller information structure
+ * @ctrl_info:				Controller information structure
  *
  * Issues an internal command (DCMD) to get the FW's controller structure.
  * This information is mainly used to find out the maximum IO transfer per
  * command supported by the FW.
  */
 static int
-megasas_get___raw_readfo(struct megasas_instance *instance,
-		      struct megasas___raw_readfo *__raw_readfo)
+megasas_get_ctrl_info(struct megasas_instance *instance,
+		      struct megasas_ctrl_info *ctrl_info)
 {
 	int ret = 0;
 	struct megasas_cmd *cmd;
 	struct megasas_dcmd_frame *dcmd;
-	struct megasas___raw_readfo *ci;
+	struct megasas_ctrl_info *ci;
 	dma_addr_t ci_h = 0;
 
 	cmd = megasas_get_cmd(instance);
@@ -1911,7 +1911,7 @@ megasas_get___raw_readfo(struct megasas_instance *instance,
 	dcmd = &cmd->frame->dcmd;
 
 	ci = pci_alloc_consistent(instance->pdev,
-				  sizeof(struct megasas___raw_readfo), &ci_h);
+				  sizeof(struct megasas_ctrl_info), &ci_h);
 
 	if (!ci) {
 		printk(KERN_DEBUG "Failed to alloc mem for ctrl info\n");
@@ -1927,19 +1927,19 @@ megasas_get___raw_readfo(struct megasas_instance *instance,
 	dcmd->sge_count = 1;
 	dcmd->flags = MFI_FRAME_DIR_READ;
 	dcmd->timeout = 0;
-	dcmd->data_xfer_len = sizeof(struct megasas___raw_readfo);
+	dcmd->data_xfer_len = sizeof(struct megasas_ctrl_info);
 	dcmd->opcode = MR_DCMD_CTRL_GET_INFO;
 	dcmd->sgl.sge32[0].phys_addr = ci_h;
-	dcmd->sgl.sge32[0].length = sizeof(struct megasas___raw_readfo);
+	dcmd->sgl.sge32[0].length = sizeof(struct megasas_ctrl_info);
 
 	if (!megasas_issue_polled(instance, cmd)) {
 		ret = 0;
-		memcpy(__raw_readfo, ci, sizeof(struct megasas___raw_readfo));
+		memcpy(ctrl_info, ci, sizeof(struct megasas_ctrl_info));
 	} else {
 		ret = -1;
 	}
 
-	pci_free_consistent(instance->pdev, sizeof(struct megasas___raw_readfo),
+	pci_free_consistent(instance->pdev, sizeof(struct megasas_ctrl_info),
 			    ci, ci_h);
 
 	megasas_return_cmd(instance, cmd);
@@ -2076,7 +2076,7 @@ static int megasas_init_mfi(struct megasas_instance *instance)
 	u32 max_sectors_2;
 	u32 tmp_sectors;
 	struct megasas_register_set __iomem *reg_set;
-	struct megasas___raw_readfo *__raw_readfo;
+	struct megasas_ctrl_info *ctrl_info;
 	/*
 	 * Map the message registers
 	 */
@@ -2166,7 +2166,7 @@ static int megasas_init_mfi(struct megasas_instance *instance)
 	if (megasas_issue_init_mfi(instance))
 		goto fail_fw_init;
 
-	__raw_readfo = kmalloc(sizeof(struct megasas___raw_readfo), GFP_KERNEL);
+	ctrl_info = kmalloc(sizeof(struct megasas_ctrl_info), GFP_KERNEL);
 
 	/*
 	 * Compute the max allowed sectors per IO: The controller info has two
@@ -2178,11 +2178,11 @@ static int megasas_init_mfi(struct megasas_instance *instance)
 	 * to calculate max_sectors_1. So the number ended up as zero always.
 	 */
 	tmp_sectors = 0;
-	if (__raw_readfo && !megasas_get___raw_readfo(instance, __raw_readfo)) {
+	if (ctrl_info && !megasas_get_ctrl_info(instance, ctrl_info)) {
 
-		max_sectors_1 = (1 << __raw_readfo->stripe_sz_ops.min) *
-		    __raw_readfo->max_strips_per_io;
-		max_sectors_2 = __raw_readfo->max_request_size;
+		max_sectors_1 = (1 << ctrl_info->stripe_sz_ops.min) *
+		    ctrl_info->max_strips_per_io;
+		max_sectors_2 = ctrl_info->max_request_size;
 
 		tmp_sectors = min_t(u32, max_sectors_1 , max_sectors_2);
 	}
@@ -2192,7 +2192,7 @@ static int megasas_init_mfi(struct megasas_instance *instance)
 	if (tmp_sectors && (instance->max_sectors_per_req > tmp_sectors))
 		instance->max_sectors_per_req = tmp_sectors;
 
-	kfree(__raw_readfo);
+	kfree(ctrl_info);
 
         /*
 	* Setup tasklet for cmd completion

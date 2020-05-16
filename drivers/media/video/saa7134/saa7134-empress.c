@@ -349,7 +349,7 @@ static int empress_g_ctrl(struct file *file, void *priv,
 {
 	struct saa7134_dev *dev = file->private_data;
 
-	return saa7134_g___raw_readternal(dev, NULL, c);
+	return saa7134_g_ctrl_internal(dev, NULL, c);
 }
 
 static int empress_s_ctrl(struct file *file, void *priv,
@@ -357,7 +357,7 @@ static int empress_s_ctrl(struct file *file, void *priv,
 {
 	struct saa7134_dev *dev = file->private_data;
 
-	return saa7134_s___raw_readternal(dev, NULL, c);
+	return saa7134_s_ctrl_internal(dev, NULL, c);
 }
 
 static int empress_queryctrl(struct file *file, void *priv,

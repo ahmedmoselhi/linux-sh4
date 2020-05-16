@@ -18,7 +18,7 @@ struct atmmpc_ioc {
         int type;                     /* ingress or egress                 */
 };
 
-typedef struct in___raw_readfo {
+typedef struct in_ctrl_info {
         __u8   Last_NHRP_CIE_code;
         __u8   Last_Q2931_cause_value;
         __u8   eg_MPC_ATM_addr[ATM_ESA_LEN];
@@ -26,9 +26,9 @@ typedef struct in___raw_readfo {
         __be32  in_dst_ip;      /* IP address this ingress MPC sends packets to */
         __u16  holding_time;
         __u32  request_id;
-} in___raw_readfo;
+} in_ctrl_info;
 
-typedef struct eg___raw_readfo {
+typedef struct eg_ctrl_info {
         __u8   DLL_header[256];
         __u8   DH_length;
         __be32  cache_id;
@@ -37,7 +37,7 @@ typedef struct eg___raw_readfo {
         __be32  eg_dst_ip;      /* IP address to which ingress MPC sends packets */
         __u8   in_MPC_data_ATM_addr[ATM_ESA_LEN];
         __u16  holding_time;
-} eg___raw_readfo;
+} eg_ctrl_info;
 
 struct mpc_parameters {
         __u16 mpc_p1;   /* Shortcut-Setup Frame Count    */
@@ -53,8 +53,8 @@ struct k_message {
         __be32 ip_mask;
         __u8  MPS_ctrl[ATM_ESA_LEN];
         union {
-                in___raw_readfo in_info;
-                eg___raw_readfo eg_info;
+                in_ctrl_info in_info;
+                eg_ctrl_info eg_info;
                 struct mpc_parameters params;
         } content;
         struct atm_qos qos;       

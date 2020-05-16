@@ -676,7 +676,7 @@ static int cfi_intelext_partition_fixup(struct mtd_info *mtd,
 			prinfo = (struct cfi_intelext_programming_regioninfo *)&extp->extra[offs];
 			mtd->writesize = cfi->interleave << prinfo->ProgRegShift;
 			mtd->flags &= ~MTD_BIT_WRITEABLE;
-			printk(KERN_DEBUG "%s: program region size/ctrl_valid/__raw_readval = %d/%d/%d\n",
+			printk(KERN_DEBUG "%s: program region size/ctrl_valid/ctrl_inval = %d/%d/%d\n",
 			       map->name, mtd->writesize,
 			       cfi->interleave * prinfo->ControlValid,
 			       cfi->interleave * prinfo->ControlInvalid);

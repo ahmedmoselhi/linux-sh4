@@ -21,7 +21,7 @@
 #include "be_mgmt.h"
 #include "be_iscsi.h"
 
-unsigned char mgmt_get_fw_config(struct be___raw_readfo *ctrl,
+unsigned char mgmt_get_fw_config(struct be_ctrl_info *ctrl,
 				struct beiscsi_hba *phba)
 {
 	struct be_mcc_wrb *wrb = wrb_from_mbox(&ctrl->mbox_mem);
@@ -58,7 +58,7 @@ unsigned char mgmt_get_fw_config(struct be___raw_readfo *ctrl,
 	return status;
 }
 
-unsigned char mgmt_check_supported_fw(struct be___raw_readfo *ctrl)
+unsigned char mgmt_check_supported_fw(struct be_ctrl_info *ctrl)
 {
 	struct be_dma_mem nonemb_cmd;
 	struct be_mcc_wrb *wrb = wrb_from_mbox(&ctrl->mbox_mem);
@@ -108,7 +108,7 @@ unsigned char mgmt_check_supported_fw(struct be___raw_readfo *ctrl)
 
 unsigned char mgmt_epfw_cleanup(struct beiscsi_hba *phba, unsigned short chute)
 {
-	struct be___raw_readfo *ctrl = &phba->ctrl;
+	struct be_ctrl_info *ctrl = &phba->ctrl;
 	struct be_mcc_wrb *wrb = wrb_from_mbox(&ctrl->mbox_mem);
 	struct iscsi_cleanup_req *req = embedded_payload(wrb);
 	int status = 0;
@@ -136,7 +136,7 @@ unsigned char mgmt_invalidate_icds(struct beiscsi_hba *phba,
 				   unsigned int icd, unsigned int cid)
 {
 	struct be_dma_mem nonemb_cmd;
-	struct be___raw_readfo *ctrl = &phba->ctrl;
+	struct be_ctrl_info *ctrl = &phba->ctrl;
 	struct be_mcc_wrb *wrb = wrb_from_mbox(&ctrl->mbox_mem);
 	struct be_sge *sge = nonembedded_sgl(wrb);
 	struct invalidate_commands_params_in *req;
@@ -185,7 +185,7 @@ unsigned char mgmt_invalidate_connection(struct beiscsi_hba *phba,
 					 unsigned short issue_reset,
 					 unsigned short savecfg_flag)
 {
-	struct be___raw_readfo *ctrl = &phba->ctrl;
+	struct be_ctrl_info *ctrl = &phba->ctrl;
 	struct be_mcc_wrb *wrb = wrb_from_mbox(&ctrl->mbox_mem);
 	struct iscsi_invalidate_connection_params_in *req =
 						embedded_payload(wrb);
@@ -216,7 +216,7 @@ unsigned char mgmt_invalidate_connection(struct beiscsi_hba *phba,
 unsigned char mgmt_upload_connection(struct beiscsi_hba *phba,
 				unsigned short cid, unsigned int upload_flag)
 {
-	struct be___raw_readfo *ctrl = &phba->ctrl;
+	struct be_ctrl_info *ctrl = &phba->ctrl;
 	struct be_mcc_wrb *wrb = wrb_from_mbox(&ctrl->mbox_mem);
 	struct tcp_upload_params_in *req = embedded_payload(wrb);
 	int status = 0;
@@ -244,7 +244,7 @@ int mgmt_open_connection(struct beiscsi_hba *phba,
 	struct hwi_context_memory *phwi_context;
 	struct sockaddr_in *daddr_in = (struct sockaddr_in *)dst_addr;
 	struct sockaddr_in6 *daddr_in6 = (struct sockaddr_in6 *)dst_addr;
-	struct be___raw_readfo *ctrl = &phba->ctrl;
+	struct be_ctrl_info *ctrl = &phba->ctrl;
 	struct be_mcc_wrb *wrb = wrb_from_mbox(&ctrl->mbox_mem);
 	struct tcp_connect_and_offload_in *req = embedded_payload(wrb);
 	unsigned short def_hdr_id;

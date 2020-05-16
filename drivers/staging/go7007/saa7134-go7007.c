@@ -407,13 +407,13 @@ static int saa7134_go7007_send_command(struct go7007 *go, unsigned int cmd,
 	{
 		struct v4l2_control *ctrl = arg;
 		if (V4L2_CTRL_ID2CLASS(ctrl->id) == V4L2_CTRL_CLASS_USER)
-			return saa7134_g___raw_readternal(dev, NULL, ctrl);
+			return saa7134_g_ctrl_internal(dev, NULL, ctrl);
 	}
 	case VIDIOC_S_CTRL:
 	{
 		struct v4l2_control *ctrl = arg;
 		if (V4L2_CTRL_ID2CLASS(ctrl->id) == V4L2_CTRL_CLASS_USER)
-			return saa7134_s___raw_readternal(dev, NULL, ctrl);
+			return saa7134_s_ctrl_internal(dev, NULL, ctrl);
 	}
 	}
 	return -EINVAL;

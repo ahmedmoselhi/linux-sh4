@@ -503,9 +503,9 @@ static int send_via_shortcut(struct sk_buff *skb, struct mpoa_client *mpc)
 	iph->check = 0;
 	iph->check = ip_fast_csum((unsigned char *)iph, iph->ihl);
 
-	if (entry->__raw_readfo.tag != 0) {
-		ddprintk("mpoa: (%s) send_via_shortcut: adding tag 0x%x\n", mpc->dev->name, entry->__raw_readfo.tag);
-		tagged_llc_snap_hdr.tag = entry->__raw_readfo.tag;
+	if (entry->ctrl_info.tag != 0) {
+		ddprintk("mpoa: (%s) send_via_shortcut: adding tag 0x%x\n", mpc->dev->name, entry->ctrl_info.tag);
+		tagged_llc_snap_hdr.tag = entry->ctrl_info.tag;
 		skb_pull(skb, ETH_HLEN);                       /* get rid of Eth header */
 		skb_push(skb, sizeof(tagged_llc_snap_hdr));    /* add LLC/SNAP header   */
 		skb_copy_to_linear_data(skb, &tagged_llc_snap_hdr,
@@ -594,7 +594,7 @@ static int atm_mpoa_vcc_attach(struct atm_vcc *vcc, void __user *arg)
 			return -EINVAL;
 		}
 		printk("mpoa: (%s) mpc_vcc_attach: attaching ingress SVC, entry = %pI4\n",
-		       mpc->dev->name, &in_entry->__raw_readfo.in_dst_ip);
+		       mpc->dev->name, &in_entry->ctrl_info.in_dst_ip);
 		in_entry->shortcut = vcc;
 		mpc->in_ops->put(in_entry);
 	} else {
@@ -626,7 +626,7 @@ static void mpc_vcc_close(struct atm_vcc *vcc, struct net_device *dev)
 	in_entry = mpc->in_ops->get_by_vcc(vcc, mpc);
 	if (in_entry) {
 		dprintk("mpoa: (%s) mpc_vcc_close: ingress SVC closed ip = %pI4\n",
-		       mpc->dev->name, &in_entry->__raw_readfo.in_dst_ip);
+		       mpc->dev->name, &in_entry->ctrl_info.in_dst_ip);
 		in_entry->shortcut = NULL;
 		mpc->in_ops->put(in_entry);
 	}
@@ -715,15 +715,15 @@ static void mpc_push(struct atm_vcc *vcc, struct sk_buff *skb)
 	}
 
 	skb_pull(skb, sizeof(struct llc_snap_hdr) + sizeof(tag)); /* get rid of LLC/SNAP header */
-	new_skb = skb_realloc_headroom(skb, eg->__raw_readfo.DH_length); /* LLC/SNAP is shorter than MAC header :( */
+	new_skb = skb_realloc_headroom(skb, eg->ctrl_info.DH_length); /* LLC/SNAP is shorter than MAC header :( */
 	dev_kfree_skb_any(skb);
 	if (new_skb == NULL){
 		mpc->eg_ops->put(eg);
 		return;
 	}
-	skb_push(new_skb, eg->__raw_readfo.DH_length);     /* add MAC header */
-	skb_copy_to_linear_data(new_skb, eg->__raw_readfo.DLL_header,
-				eg->__raw_readfo.DH_length);
+	skb_push(new_skb, eg->ctrl_info.DH_length);     /* add MAC header */
+	skb_copy_to_linear_data(new_skb, eg->ctrl_info.DLL_header,
+				eg->ctrl_info.DH_length);
 	new_skb->protocol = eth_type_trans(new_skb, dev);
 	skb_reset_network_header(new_skb);
 
@@ -1053,7 +1053,7 @@ static void MPOA_trigger_rcvd(struct k_message *msg, struct mpoa_client *mpc)
 		entry = mpc->in_ops->add_entry(dst_ip, mpc);
 		entry->entry_state = INGRESS_RESOLVING;
 		msg->type = SND_MPOA_RES_RQST;
-		msg->content.in_info = entry->__raw_readfo;
+		msg->content.in_info = entry->ctrl_info;
 		msg_to_mpoad(msg, mpc);
 		do_gettimeofday(&(entry->reply_wait));
 		mpc->in_ops->put(entry);
@@ -1063,7 +1063,7 @@ static void MPOA_trigger_rcvd(struct k_message *msg, struct mpoa_client *mpc)
 	if(entry->entry_state == INGRESS_INVALID){
 		entry->entry_state = INGRESS_RESOLVING;
 		msg->type = SND_MPOA_RES_RQST;
-		msg->content.in_info = entry->__raw_readfo;
+		msg->content.in_info = entry->ctrl_info;
 		msg_to_mpoad(msg, mpc);
 		do_gettimeofday(&(entry->reply_wait));
 		mpc->in_ops->put(entry);
@@ -1137,7 +1137,7 @@ static void MPOA_res_reply_rcvd(struct k_message *msg, struct mpoa_client *mpc)
 		return;
 	}
 
-	entry->__raw_readfo = msg->content.in_info;
+	entry->ctrl_info = msg->content.in_info;
 	do_gettimeofday(&(entry->tv));
 	do_gettimeofday(&(entry->reply_wait)); /* Used in refreshing func from now on */
 	entry->refresh_time = 0;
@@ -1231,7 +1231,7 @@ static void purge_egress_shortcut(struct atm_vcc *vcc, eg_cache_entry *entry)
 	purge_msg = (struct k_message *)skb->data;
 	purge_msg->type = DATA_PLANE_PURGE;
 	if (entry != NULL)
-		purge_msg->content.eg_info = entry->__raw_readfo;
+		purge_msg->content.eg_info = entry->ctrl_info;
 
 	atm_force_charge(vcc, skb->truesize);
 
@@ -1364,8 +1364,8 @@ static void clean_up(struct k_message *msg, struct mpoa_client *mpc, int action)
 	read_lock_irq(&mpc->egress_lock);
 	entry = mpc->eg_cache;
 	while (entry != NULL){
-		    msg->content.eg_info = entry->__raw_readfo;
-		    dprintk("mpoa: cache_id %u\n", entry->__raw_readfo.cache_id);
+		    msg->content.eg_info = entry->ctrl_info;
+		    dprintk("mpoa: cache_id %u\n", entry->ctrl_info.cache_id);
 		    msg_to_mpoad(msg, mpc);
 		    entry = entry->next;
 	}

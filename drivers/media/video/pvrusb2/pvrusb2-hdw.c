@@ -2488,13 +2488,13 @@ struct pvr2_hdw *pvr2_hdw_create(struct usb_interface *intf,
 	}
 
 	/* Define and configure additional controls from cx2341x module. */
-	hdw->mpeg___raw_readfo = kzalloc(
-		sizeof(*(hdw->mpeg___raw_readfo)) * MPEGDEF_COUNT, GFP_KERNEL);
-	if (!hdw->mpeg___raw_readfo) goto fail;
+	hdw->mpeg_ctrl_info = kzalloc(
+		sizeof(*(hdw->mpeg_ctrl_info)) * MPEGDEF_COUNT, GFP_KERNEL);
+	if (!hdw->mpeg_ctrl_info) goto fail;
 	for (idx = 0; idx < MPEGDEF_COUNT; idx++) {
 		cptr = hdw->controls + idx + CTRLDEF_COUNT;
-		ciptr = &(hdw->mpeg___raw_readfo[idx].info);
-		ciptr->desc = hdw->mpeg___raw_readfo[idx].desc;
+		ciptr = &(hdw->mpeg_ctrl_info[idx].info);
+		ciptr->desc = hdw->mpeg_ctrl_info[idx].desc;
 		ciptr->name = mpeg_ids[idx].strid;
 		ciptr->v4l_id = mpeg_ids[idx].id;
 		ciptr->skip_init = !0;
@@ -2507,9 +2507,9 @@ struct pvr2_hdw *pvr2_hdw_create(struct usb_interface *intf,
 		if (!(qctrl.flags & V4L2_CTRL_FLAG_READ_ONLY)) {
 			ciptr->set_value = ctrl_cx2341x_set;
 		}
-		strncpy(hdw->mpeg___raw_readfo[idx].desc,qctrl.name,
+		strncpy(hdw->mpeg_ctrl_info[idx].desc,qctrl.name,
 			PVR2_CTLD_INFO_DESC_SIZE);
-		hdw->mpeg___raw_readfo[idx].desc[PVR2_CTLD_INFO_DESC_SIZE-1] = 0;
+		hdw->mpeg_ctrl_info[idx].desc[PVR2_CTLD_INFO_DESC_SIZE-1] = 0;
 		ciptr->default_value = qctrl.default_value;
 		switch (qctrl.type) {
 		default:
@@ -2650,7 +2650,7 @@ struct pvr2_hdw *pvr2_hdw_create(struct usb_interface *intf,
 		kfree(hdw->ctl_read_buffer);
 		kfree(hdw->ctl_write_buffer);
 		kfree(hdw->controls);
-		kfree(hdw->mpeg___raw_readfo);
+		kfree(hdw->mpeg_ctrl_info);
 		kfree(hdw->std_defs);
 		kfree(hdw->std_enum_names);
 		kfree(hdw);
@@ -2726,7 +2726,7 @@ void pvr2_hdw_destroy(struct pvr2_hdw *hdw)
 		}
 	} while (0); mutex_unlock(&pvr2_unit_mtx);
 	kfree(hdw->controls);
-	kfree(hdw->mpeg___raw_readfo);
+	kfree(hdw->mpeg_ctrl_info);
 	kfree(hdw->std_defs);
 	kfree(hdw->std_enum_names);
 	kfree(hdw);

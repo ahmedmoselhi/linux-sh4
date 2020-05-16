@@ -45,7 +45,7 @@ MODULE_LICENSE("GPL");
 
 static char *b1pci_procinfo(struct capi_ctr *ctrl)
 {
-	avm__raw_readfo *cinfo = (avm__raw_readfo *)(ctrl->driverdata);
+	avmctrl_info *cinfo = (avmctrl_info *)(ctrl->driverdata);
 
 	if (!cinfo)
 		return "";
@@ -64,7 +64,7 @@ static char *b1pci_procinfo(struct capi_ctr *ctrl)
 static int b1pci_probe(struct capicardparams *p, struct pci_dev *pdev)
 {
 	avmcard *card;
-	avm__raw_readfo *cinfo;
+	avmctrl_info *cinfo;
 	int retval;
 
 	card = b1_alloc_card(1);
@@ -146,7 +146,7 @@ static int b1pci_probe(struct capicardparams *p, struct pci_dev *pdev)
 static void b1pci_remove(struct pci_dev *pdev)
 {
 	avmcard *card = pci_get_drvdata(pdev);
-	avm__raw_readfo *cinfo = card->ctrlinfo;
+	avmctrl_info *cinfo = card->ctrlinfo;
 	unsigned int port = card->port;
 
 	b1_reset(port);
@@ -163,7 +163,7 @@ static void b1pci_remove(struct pci_dev *pdev)
 
 static char *b1pciv4_procinfo(struct capi_ctr *ctrl)
 {
-	avm__raw_readfo *cinfo = (avm__raw_readfo *)(ctrl->driverdata);
+	avmctrl_info *cinfo = (avmctrl_info *)(ctrl->driverdata);
 
 	if (!cinfo)
 		return "";
@@ -183,7 +183,7 @@ static char *b1pciv4_procinfo(struct capi_ctr *ctrl)
 static int b1pciv4_probe(struct capicardparams *p, struct pci_dev *pdev)
 {
 	avmcard *card;
-	avm__raw_readfo *cinfo;
+	avmctrl_info *cinfo;
 	int retval;
 
 	card = b1_alloc_card(1);
@@ -285,7 +285,7 @@ static int b1pciv4_probe(struct capicardparams *p, struct pci_dev *pdev)
 static void b1pciv4_remove(struct pci_dev *pdev)
 {
 	avmcard *card = pci_get_drvdata(pdev);
-	avm__raw_readfo *cinfo = card->ctrlinfo;
+	avmctrl_info *cinfo = card->ctrlinfo;
 
  	b1dma_reset(card);
 

@@ -287,7 +287,7 @@ struct megasas_ctrl_prop {
 /*
  * SAS controller information
  */
-struct megasas___raw_readfo {
+struct megasas_ctrl_info {
 
 	/*
 	 * PCI device information

@@ -34,7 +34,7 @@
 #endif
 
 struct uctrl_regs {
-	u32 u__raw_readtr;
+	u32 uctrl_intr;
 	u32 uctrl_data;
 	u32 uctrl_stat;
 	u32 uctrl_xxx[5];
@@ -49,14 +49,14 @@ struct ts102_regs {
 	u32 card_b_stat;
 	u32 card_b_ctrl;
 	u32 card_b_xxx;
-	u32 u__raw_readtr;
+	u32 uctrl_intr;
 	u32 uctrl_data;
 	u32 uctrl_stat;
 	u32 uctrl_xxx;
 	u32 ts102_xxx[4];
 };
 
-/* Bits for u__raw_readtr register */
+/* Bits for uctrl_intr register */
 #define UCTRL_INTR_TXE_REQ         0x01    /* transmit FIFO empty int req */
 #define UCTRL_INTR_TXNF_REQ        0x02    /* transmit FIFO not full int req */
 #define UCTRL_INTR_RXNE_REQ        0x04    /* receive FIFO not empty int req */
@@ -217,7 +217,7 @@ uctrl_open(struct inode *inode, struct file *file)
 	return 0;
 }
 
-static irqreturn_t u__raw_readterrupt(int irq, void *dev_id)
+static irqreturn_t uctrl_interrupt(int irq, void *dev_id)
 {
 	return IRQ_HANDLED;
 }
@@ -268,7 +268,7 @@ static void uctrl_do_txn(struct uctrl_driver *driver, struct uctrl_txn *txn)
 	u32 byte;
 
 	stat = sbus_readl(&driver->regs->uctrl_stat);
-	intr = sbus_readl(&driver->regs->u__raw_readtr);
+	intr = sbus_readl(&driver->regs->uctrl_intr);
 	sbus_writel(stat, &driver->regs->uctrl_stat);
 
 	dprintk(("interrupt stat 0x%x int 0x%x\n", stat, intr));
@@ -368,7 +368,7 @@ static int __devinit uctrl_probe(struct of_device *op,
 	}
 
 	p->irq = op->irqs[0];
-	err = request_irq(p->irq, u__raw_readterrupt, 0, "uctrl", p);
+	err = request_irq(p->irq, uctrl_interrupt, 0, "uctrl", p);
 	if (err) {
 		printk(KERN_ERR "uctrl: Unable to register irq.\n");
 		goto out_iounmap;
@@ -380,7 +380,7 @@ static int __devinit uctrl_probe(struct of_device *op,
 		goto out_free_irq;
 	}
 
-	sbus_writel(UCTRL_INTR_RXNE_REQ|UCTRL_INTR_RXNE_MSK, &p->regs->u__raw_readtr);
+	sbus_writel(UCTRL_INTR_RXNE_REQ|UCTRL_INTR_RXNE_MSK, &p->regs->uctrl_intr);
 	printk(KERN_INFO "%s: uctrl regs[0x%p] (irq %d)\n",
 	       op->node->full_name, p->regs, p->irq);
 	uctrl_get_event_status(p);
@@ -432,7 +432,7 @@ static struct of_platform_driver uctrl_driver = {
 };
 
 
-static int __init u__raw_readit(void)
+static int __init uctrl_init(void)
 {
 	return of_register_driver(&uctrl_driver, &of_bus_type);
 }
@@ -442,6 +442,6 @@ static void __exit uctrl_exit(void)
 	of_unregister_driver(&uctrl_driver);
 }
 
-module_init(u__raw_readit);
+module_init(uctrl_init);
 module_exit(uctrl_exit);
 MODULE_LICENSE("GPL");

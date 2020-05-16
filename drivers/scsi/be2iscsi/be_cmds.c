@@ -34,7 +34,7 @@ static inline void be_mcc_compl_use(struct be_mcc_compl *compl)
 	compl->flags = 0;
 }
 
-static int be_mcc_compl_process(struct be___raw_readfo *ctrl,
+static int be_mcc_compl_process(struct be_ctrl_info *ctrl,
 				struct be_mcc_compl *compl)
 {
 	u16 compl_status, extd_status;
@@ -60,7 +60,7 @@ static inline bool is_link_state_evt(u32 trailer)
 		ASYNC_TRAILER_EVENT_CODE_MASK) == ASYNC_EVENT_CODE_LINK_STATE);
 }
 
-void beiscsi_cq_notify(struct be___raw_readfo *ctrl, u16 qid, bool arm,
+void beiscsi_cq_notify(struct be_ctrl_info *ctrl, u16 qid, bool arm,
 		       u16 num_popped)
 {
 	u32 val = 0;
@@ -71,7 +71,7 @@ void beiscsi_cq_notify(struct be___raw_readfo *ctrl, u16 qid, bool arm,
 	iowrite32(val, ctrl->db + DB_CQ_OFFSET);
 }
 
-static int be_mbox_db_ready_wait(struct be___raw_readfo *ctrl)
+static int be_mbox_db_ready_wait(struct be_ctrl_info *ctrl)
 {
 #define long_delay 2000
 	void __iomem *db = ctrl->db + MPU_MAILBOX_DB_OFFSET;
@@ -98,7 +98,7 @@ static int be_mbox_db_ready_wait(struct be___raw_readfo *ctrl)
 	return 0;
 }
 
-int be_mbox_notify(struct be___raw_readfo *ctrl)
+int be_mbox_notify(struct be_ctrl_info *ctrl)
 {
 	int status;
 	u32 val = 0;
@@ -203,7 +203,7 @@ struct be_mcc_wrb *wrb_from_mbox(struct be_dma_mem *mbox_mem)
 	return &((struct be_mcc_mailbox *)(mbox_mem->va))->wrb;
 }
 
-int beiscsi_cmd_eq_create(struct be___raw_readfo *ctrl,
+int beiscsi_cmd_eq_create(struct be_ctrl_info *ctrl,
 			  struct be_queue_info *eq, int eq_delay)
 {
 	struct be_mcc_wrb *wrb = wrb_from_mbox(&ctrl->mbox_mem);
@@ -243,7 +243,7 @@ int beiscsi_cmd_eq_create(struct be___raw_readfo *ctrl,
 	return status;
 }
 
-int be_cmd_fw_initialize(struct be___raw_readfo *ctrl)
+int be_cmd_fw_initialize(struct be_ctrl_info *ctrl)
 {
 	struct be_mcc_wrb *wrb = wrb_from_mbox(&ctrl->mbox_mem);
 	int status;
@@ -271,7 +271,7 @@ int be_cmd_fw_initialize(struct be___raw_readfo *ctrl)
 	return status;
 }
 
-int beiscsi_cmd_cq_create(struct be___raw_readfo *ctrl,
+int beiscsi_cmd_cq_create(struct be_ctrl_info *ctrl,
 			  struct be_queue_info *cq, struct be_queue_info *eq,
 			  bool sol_evts, bool no_delay, int coalesce_wm)
 {
@@ -329,7 +329,7 @@ static u32 be_encoded_q_len(int q_len)
 		len_encoded = 0;
 	return len_encoded;
 }
-int beiscsi_cmd_q_destroy(struct be___raw_readfo *ctrl, struct be_queue_info *q,
+int beiscsi_cmd_q_destroy(struct be_ctrl_info *ctrl, struct be_queue_info *q,
 			  int queue_type)
 {
 	struct be_mcc_wrb *wrb = wrb_from_mbox(&ctrl->mbox_mem);
@@ -377,7 +377,7 @@ int beiscsi_cmd_q_destroy(struct be___raw_readfo *ctrl, struct be_queue_info *q,
 	return status;
 }
 
-int be_cmd_get_mac_addr(struct be___raw_readfo *ctrl, u8 *mac_addr)
+int be_cmd_get_mac_addr(struct be_ctrl_info *ctrl, u8 *mac_addr)
 {
 	struct be_mcc_wrb *wrb = wrb_from_mbox(&ctrl->mbox_mem);
 	struct be_cmd_req_get_mac_addr *req = embedded_payload(wrb);
@@ -401,7 +401,7 @@ int be_cmd_get_mac_addr(struct be___raw_readfo *ctrl, u8 *mac_addr)
 	return status;
 }
 
-int be_cmd_create_default_pdu_queue(struct be___raw_readfo *ctrl,
+int be_cmd_create_default_pdu_queue(struct be_ctrl_info *ctrl,
 				    struct be_queue_info *cq,
 				    struct be_queue_info *dq, int length,
 				    int entry_size)
@@ -449,7 +449,7 @@ int be_cmd_create_default_pdu_queue(struct be___raw_readfo *ctrl,
 	return status;
 }
 
-int be_cmd_wrbq_create(struct be___raw_readfo *ctrl, struct be_dma_mem *q_mem,
+int be_cmd_wrbq_create(struct be_ctrl_info *ctrl, struct be_dma_mem *q_mem,
 		       struct be_queue_info *wrbq)
 {
 	struct be_mcc_wrb *wrb = wrb_from_mbox(&ctrl->mbox_mem);
@@ -474,7 +474,7 @@ int be_cmd_wrbq_create(struct be___raw_readfo *ctrl, struct be_dma_mem *q_mem,
 	return status;
 }
 
-int be_cmd_iscsi_post_sgl_pages(struct be___raw_readfo *ctrl,
+int be_cmd_iscsi_post_sgl_pages(struct be_ctrl_info *ctrl,
 				struct be_dma_mem *q_mem,
 				u32 page_offset, u32 num_pages)
 {

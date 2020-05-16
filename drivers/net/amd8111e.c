@@ -801,7 +801,7 @@ static int amd8111e_rx_poll(struct napi_struct *napi, int budget)
 #if AMD8111E_VLAN_TAG_USED
 			if(lp->vlgrp != NULL && (vtag == TT_VLAN_TAGGED)){
 				amd8111e_vlan_rx(lp, skb,
-					 le16_to_cpu(lp->rx_ring[rx_index].tag___raw_readfo));
+					 le16_to_cpu(lp->rx_ring[rx_index].tag_ctrl_info));
 			} else
 #endif
 				netif_receive_skb(skb);
@@ -1320,7 +1320,7 @@ static netdev_tx_t amd8111e_start_xmit(struct sk_buff *skb,
 	if((lp->vlgrp != NULL) && vlan_tx_tag_present(skb)){
 		lp->tx_ring[tx_index].tag_ctrl_cmd |=
 				cpu_to_le16(TCC_VLAN_INSERT);
-		lp->tx_ring[tx_index].tag___raw_readfo =
+		lp->tx_ring[tx_index].tag_ctrl_info =
 				cpu_to_le16(vlan_tx_tag_get(skb));
 
 	}
