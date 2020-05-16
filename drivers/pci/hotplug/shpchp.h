@@ -67,7 +67,7 @@ do {									\
 	} while (0)
 #define ctrl_err(ctrl, format, arg...)					\
 	dev_err(&ctrl->pci_dev->dev, format, ## arg)
-#define ctrl_info(ctrl, format, arg...)					\
+#define __raw_readfo(ctrl, format, arg...)					\
 	dev_info(&ctrl->pci_dev->dev, format, ## arg)
 #define ctrl_warn(ctrl, format, arg...)					\
 	dev_warn(&ctrl->pci_dev->dev, format, ## arg)

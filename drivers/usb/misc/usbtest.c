@@ -46,7 +46,7 @@ struct usbtest_info {
 	u8			ep_in;		/* bulk/intr source */
 	u8			ep_out;		/* bulk/intr sink */
 	unsigned		autoconf : 1;
-	unsigned		ctrl_out : 1;
+	unsigned		__raw_write : 1;
 	unsigned		iso : 1;	/* try iso in/out */
 	int			alt;
 };
@@ -1248,7 +1248,7 @@ done:
  * need to be able to handle more than one OUT data packet.  We'll
  * try whatever we're told to try.
  */
-static int ctrl_out (struct usbtest_dev *dev,
+static int __raw_write (struct usbtest_dev *dev,
 		unsigned count, unsigned length, unsigned vary)
 {
 	unsigned		i, j, len;
@@ -1281,7 +1281,7 @@ static int ctrl_out (struct usbtest_dev *dev,
 		if (retval != len) {
 			what = "write";
 			if (retval >= 0) {
-				ERROR(dev, "ctrl_out, wlen %d (expected %d)\n",
+				ERROR(dev, "__raw_write, wlen %d (expected %d)\n",
 						retval, len);
 				retval = -EBADMSG;
 			}
@@ -1295,7 +1295,7 @@ static int ctrl_out (struct usbtest_dev *dev,
 		if (retval != len) {
 			what = "read";
 			if (retval >= 0) {
-				ERROR(dev, "ctrl_out, rlen %d (expected %d)\n",
+				ERROR(dev, "__raw_write, rlen %d (expected %d)\n",
 						retval, len);
 				retval = -EBADMSG;
 			}
@@ -1305,7 +1305,7 @@ static int ctrl_out (struct usbtest_dev *dev,
 		/* fail if we can't verify */
 		for (j = 0; j < len; j++) {
 			if (buf [j] != (u8) (i + j)) {
-				ERROR(dev, "ctrl_out, byte %d is %d not %d\n",
+				ERROR(dev, "__raw_write, byte %d is %d not %d\n",
 					j, buf [j], (u8) i + j);
 				retval = -EBADMSG;
 				break;
@@ -1327,7 +1327,7 @@ static int ctrl_out (struct usbtest_dev *dev,
 	}
 
 	if (retval < 0)
-		ERROR (dev, "ctrl_out %s failed, code %d, count %d\n",
+		ERROR (dev, "__raw_write %s failed, code %d, count %d\n",
 			what, retval, i);
 
 	kfree (buf);
@@ -1828,13 +1828,13 @@ usbtest_ioctl (struct usb_interface *intf, unsigned int code, void *buf)
 
 	/* control write tests */
 	case 14:
-		if (!dev->info->ctrl_out)
+		if (!dev->info->__raw_write)
 			break;
 		dev_info(&intf->dev, "TEST 14:  %d ep0out, %d..%d vary %d\n",
 				param->iterations,
 				realworld ? 1 : 0, param->length,
 				param->vary);
-		retval = ctrl_out(dev, param->iterations,
+		retval = __raw_write(dev, param->iterations,
 				param->length, param->vary);
 		break;
 
@@ -1991,7 +1991,7 @@ usbtest_probe (struct usb_interface *intf, const struct usb_device_id *id)
 			case USB_SPEED_HIGH: tmp = "high"; break;
 			default: tmp = "unknown"; break;
 			}; tmp; }),
-			info->ctrl_out ? " in/out" : "",
+			info->__raw_write ? " in/out" : "",
 			rtest, wtest,
 			irtest, iwtest,
 			info->alt >= 0 ? " (+alt)" : "");
@@ -2052,8 +2052,8 @@ static struct usbtest_info fw_info = {
 	.ep_in		= 2,
 	.ep_out		= 2,
 	.alt		= 1,
-	.autoconf	= 1,		// iso and ctrl_out need autoconf
-	.ctrl_out	= 1,
+	.autoconf	= 1,		// iso and __raw_write need autoconf
+	.__raw_write	= 1,
 	.iso		= 1,		// iso_ep's are #8 in/out
 };
 
@@ -2065,7 +2065,7 @@ static struct usbtest_info fw_info = {
 static struct usbtest_info gz_info = {
 	.name		= "Linux gadget zero",
 	.autoconf	= 1,
-	.ctrl_out	= 1,
+	.__raw_write	= 1,
 	.alt		= 0,
 };
 

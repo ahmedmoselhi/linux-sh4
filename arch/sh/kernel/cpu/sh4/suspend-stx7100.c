@@ -181,26 +181,26 @@ static int stx7100_suspend_core(suspend_state_t state, int suspending)
 	 * to avoid multi hit on the PMB
 	 */
 	for (i = 2; i < 14; ++i) {
-		tmp_addr = ctrl_inl(PMB_ADDR | (i << PMB_E_SHIFT));
-		tmp_data = ctrl_inl(PMB_DATA | (i << PMB_E_SHIFT));
+		tmp_addr = __raw_readl(PMB_ADDR | (i << PMB_E_SHIFT));
+		tmp_data = __raw_readl(PMB_DATA | (i << PMB_E_SHIFT));
 		if ((tmp_addr & PMB_V) || (tmp_data & PMB_V)) {
 			invalidated |= (1 << i);
-			ctrl_outl(tmp_addr & ~PMB_V,
+			__raw_writel(tmp_addr & ~PMB_V,
 					PMB_ADDR | (i << PMB_E_SHIFT));
-			ctrl_outl(tmp_data & ~PMB_V,
+			__raw_writel(tmp_data & ~PMB_V,
 					PMB_DATA | (i << PMB_E_SHIFT));
 
 		}
 	}
-	pmb_addr_14 = ctrl_inl(PMB_ADDR | (14 << PMB_E_SHIFT));
-	pmb_data_14 = ctrl_inl(PMB_DATA | (14 << PMB_E_SHIFT));
+	pmb_addr_14 = __raw_readl(PMB_ADDR | (14 << PMB_E_SHIFT));
+	pmb_data_14 = __raw_readl(PMB_DATA | (14 << PMB_E_SHIFT));
 
 	/* Create an entry ad-hoc to simulate the P2 area */
-	ctrl_outl(pmb_addr_14 & ~PMB_V, PMB_ADDR | (14 << PMB_E_SHIFT));
-	ctrl_outl(pmb_data_14 & ~PMB_V, PMB_DATA | (14 << PMB_E_SHIFT));
+	__raw_writel(pmb_addr_14 & ~PMB_V, PMB_ADDR | (14 << PMB_E_SHIFT));
+	__raw_writel(pmb_data_14 & ~PMB_V, PMB_DATA | (14 << PMB_E_SHIFT));
 
-	ctrl_outl(0xb8000000, PMB_ADDR | (14 << PMB_E_SHIFT));
-	ctrl_outl(0x18000000 | PMB_V | PMB_SZ_64M | PMB_UB | PMB_WT,
+	__raw_writel(0xb8000000, PMB_ADDR | (14 << PMB_E_SHIFT));
+	__raw_writel(0x18000000 | PMB_V | PMB_SZ_64M | PMB_UB | PMB_WT,
 			PMB_DATA | (14 << PMB_E_SHIFT));
 #endif
 
@@ -210,27 +210,27 @@ static int stx7100_suspend_core(suspend_state_t state, int suspending)
 
 on_resuming:
 #ifdef CONFIG_32BIT
-	tmp_addr = ctrl_inl(PMB_ADDR | (14 << PMB_E_SHIFT));
-	tmp_data = ctrl_inl(PMB_DATA | (14 << PMB_E_SHIFT));
-	ctrl_outl(tmp_addr & ~PMB_V, PMB_ADDR | (14 << PMB_E_SHIFT));
-	ctrl_outl(tmp_data & ~PMB_V, PMB_DATA | (14 << PMB_E_SHIFT));
+	tmp_addr = __raw_readl(PMB_ADDR | (14 << PMB_E_SHIFT));
+	tmp_data = __raw_readl(PMB_DATA | (14 << PMB_E_SHIFT));
+	__raw_writel(tmp_addr & ~PMB_V, PMB_ADDR | (14 << PMB_E_SHIFT));
+	__raw_writel(tmp_data & ~PMB_V, PMB_DATA | (14 << PMB_E_SHIFT));
 
 	/*
 	 * restore the 14-th entry as it was
 	 */
-	ctrl_outl(pmb_addr_14, PMB_ADDR | (14 << PMB_E_SHIFT));
-	ctrl_outl(pmb_data_14, PMB_DATA | (14 << PMB_E_SHIFT));
-	ctrl_inl(PMB_ADDR | (14 << PMB_E_SHIFT));
-	ctrl_inl(PMB_DATA | (14 << PMB_E_SHIFT));
+	__raw_writel(pmb_addr_14, PMB_ADDR | (14 << PMB_E_SHIFT));
+	__raw_writel(pmb_data_14, PMB_DATA | (14 << PMB_E_SHIFT));
+	__raw_readl(PMB_ADDR | (14 << PMB_E_SHIFT));
+	__raw_readl(PMB_DATA | (14 << PMB_E_SHIFT));
 	/*
 	 * restore all the other entries
 	 */
 	for (i = 2; i < 14; ++i)
 		if (invalidated & (1 << i)) {
-			tmp_data = ctrl_inl(PMB_DATA | (i << PMB_E_SHIFT));
-			ctrl_outl(tmp_data | PMB_V, PMB_DATA |
+			tmp_data = __raw_readl(PMB_DATA | (i << PMB_E_SHIFT));
+			__raw_writel(tmp_data | PMB_V, PMB_DATA |
 				(i << PMB_E_SHIFT));
-			ctrl_inl(PMB_DATA | (i << PMB_E_SHIFT));
+			__raw_readl(PMB_DATA | (i << PMB_E_SHIFT));
 		}
 #endif
 	/* CGA.PLL0 management */

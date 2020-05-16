@@ -49,7 +49,7 @@ static char *t1pci_procinfo(struct capi_ctr *ctrl);
 static int t1pci_add_card(struct capicardparams *p, struct pci_dev *pdev)
 {
 	avmcard *card;
-	avmctrl_info *cinfo;
+	avm__raw_readfo *cinfo;
 	int retval;
 
 	card = b1_alloc_card(1);
@@ -155,7 +155,7 @@ static int t1pci_add_card(struct capicardparams *p, struct pci_dev *pdev)
 static void t1pci_remove(struct pci_dev *pdev)
 {
 	avmcard *card = pci_get_drvdata(pdev);
-	avmctrl_info *cinfo = card->ctrlinfo;
+	avm__raw_readfo *cinfo = card->ctrlinfo;
 
  	b1dma_reset(card);
 
@@ -171,7 +171,7 @@ static void t1pci_remove(struct pci_dev *pdev)
 
 static char *t1pci_procinfo(struct capi_ctr *ctrl)
 {
-	avmctrl_info *cinfo = (avmctrl_info *)(ctrl->driverdata);
+	avm__raw_readfo *cinfo = (avm__raw_readfo *)(ctrl->driverdata);
 
 	if (!cinfo)
 		return "";

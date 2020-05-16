@@ -391,16 +391,16 @@ static void common(struct gspca_dev *gspca_dev)
 		fetch_validx(gspca_dev, tbl_common_a, ARRAY_SIZE(tbl_common_a));
 	} else {
 		if (_MI2020_)
-			ctrl_out(gspca_dev, 0x40,  1, 0x0008, 0x0004,  0, NULL);
+			__raw_write(gspca_dev, 0x40,  1, 0x0008, 0x0004,  0, NULL);
 		else
-			ctrl_out(gspca_dev, 0x40,  1, 0x0002, 0x0004,  0, NULL);
+			__raw_write(gspca_dev, 0x40,  1, 0x0002, 0x0004,  0, NULL);
 		msleep(35);
 		fetch_validx(gspca_dev, tbl_common_b, ARRAY_SIZE(tbl_common_b));
 	}
-	ctrl_out(gspca_dev, 0x40,  3, 0x7a00, 0x0033,  3, "\x86\x25\x01");
-	ctrl_out(gspca_dev, 0x40,  3, 0x7a00, 0x0033,  3, "\x86\x25\x00");
+	__raw_write(gspca_dev, 0x40,  3, 0x7a00, 0x0033,  3, "\x86\x25\x01");
+	__raw_write(gspca_dev, 0x40,  3, 0x7a00, 0x0033,  3, "\x86\x25\x00");
 	msleep(2); /* - * */
-	ctrl_out(gspca_dev, 0x40,  3, 0x7a00, 0x0030,  3, "\x1a\x0a\xcc");
+	__raw_write(gspca_dev, 0x40,  3, 0x7a00, 0x0030,  3, "\x1a\x0a\xcc");
 	if (reso == IMAGE_1600)
 		msleep(2); /* 1600 */
 	fetch_idxdata(gspca_dev, tbl_common_c, ARRAY_SIZE(tbl_common_c));
@@ -412,23 +412,23 @@ static void common(struct gspca_dev *gspca_dev)
 	fetch_idxdata(gspca_dev, tbl_common_e, ARRAY_SIZE(tbl_common_e));
 	if (_MI2020b_ || _MI2020_) {
 		/* Different from fret */
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x78");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x78");
 		/* Same as fret */
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\x24\x17");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\x24\x17");
 		/* Different from fret */
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x90");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x90");
 	} else {
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x6a");
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\x24\x17");
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x80");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x6a");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\x24\x17");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x80");
 	}
-	ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa1\x03");
-	ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x05");
+	__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa1\x03");
+	__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x05");
 	msleep(2);
-	ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa1\x03");
+	__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa1\x03");
 	if (reso == IMAGE_1600)
 		msleep(14); /* 1600 */
-	ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x06");
+	__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x06");
 	msleep(2);
 }
 
@@ -436,8 +436,8 @@ static int mi2020_init_at_startup(struct gspca_dev *gspca_dev)
 {
 	u8 c;
 
-	ctrl_in(gspca_dev, 0xc0, 2, 0x0000, 0x0004, 1, &c);
-	ctrl_in(gspca_dev, 0xc0, 2, 0x0000, 0x0004, 1, &c);
+	__raw_read(gspca_dev, 0xc0, 2, 0x0000, 0x0004, 1, &c);
+	__raw_read(gspca_dev, 0xc0, 2, 0x0000, 0x0004, 1, &c);
 
 	fetch_validx(gspca_dev, tbl_init_at_startup,
 			ARRAY_SIZE(tbl_init_at_startup));
@@ -498,30 +498,30 @@ static int mi2020_init_post_alt(struct gspca_dev *gspca_dev)
 
 	msleep(200);
 
-	ctrl_out(gspca_dev, 0x40, 5, 0x0001, 0x0000, 0, NULL);
+	__raw_write(gspca_dev, 0x40, 5, 0x0001, 0x0000, 0, NULL);
 	msleep(3); /* 35 * */
 
 	common(gspca_dev);
 
-	ctrl_out(gspca_dev, 0x40,  1, 0x0041, 0x0000,  0, NULL);
+	__raw_write(gspca_dev, 0x40,  1, 0x0041, 0x0000,  0, NULL);
 	msleep(70);
 
 	if (_MI2020b_)
-		ctrl_out(gspca_dev, 0x40,  1, 0x0040, 0x0000,  0, NULL);
+		__raw_write(gspca_dev, 0x40,  1, 0x0040, 0x0000,  0, NULL);
 
-	ctrl_out(gspca_dev, 0x40,  1, 0x0010, 0x0010,  0, NULL);
-	ctrl_out(gspca_dev, 0x40,  1, 0x0003, 0x00c1,  0, NULL);
-	ctrl_out(gspca_dev, 0x40,  1, 0x0042, 0x00c2,  0, NULL);
-	ctrl_out(gspca_dev, 0x40,  1, 0x006a, 0x000d,  0, NULL);
+	__raw_write(gspca_dev, 0x40,  1, 0x0010, 0x0010,  0, NULL);
+	__raw_write(gspca_dev, 0x40,  1, 0x0003, 0x00c1,  0, NULL);
+	__raw_write(gspca_dev, 0x40,  1, 0x0042, 0x00c2,  0, NULL);
+	__raw_write(gspca_dev, 0x40,  1, 0x006a, 0x000d,  0, NULL);
 
 	switch (reso) {
 	case IMAGE_640:
 	case IMAGE_800:
 		if (reso != IMAGE_800)
-			ctrl_out(gspca_dev, 0x40,  3, 0x0000, 0x0200,
+			__raw_write(gspca_dev, 0x40,  3, 0x0000, 0x0200,
 				12, dat_640);
 		else
-			ctrl_out(gspca_dev, 0x40,  3, 0x0000, 0x0200,
+			__raw_write(gspca_dev, 0x40,  3, 0x0000, 0x0200,
 				12, dat_800);
 
 		if (_MI2020c_)
@@ -536,80 +536,80 @@ static int mi2020_init_post_alt(struct gspca_dev *gspca_dev)
 				ARRAY_SIZE(tbl_init_post_alt_low_c));
 
 		if (_MI2020b_) {
-			ctrl_out(gspca_dev, 0x40, 1, 0x0001, 0x0010, 0, NULL);
-			ctrl_out(gspca_dev, 0x40, 1, 0x0000, 0x00c1, 0, NULL);
-			ctrl_out(gspca_dev, 0x40, 1, 0x0041, 0x00c2, 0, NULL);
+			__raw_write(gspca_dev, 0x40, 1, 0x0001, 0x0010, 0, NULL);
+			__raw_write(gspca_dev, 0x40, 1, 0x0000, 0x00c1, 0, NULL);
+			__raw_write(gspca_dev, 0x40, 1, 0x0041, 0x00c2, 0, NULL);
 			msleep(150);
 		} else if (_MI2020c_) {
-			ctrl_out(gspca_dev, 0x40, 1, 0x0010, 0x0010, 0, NULL);
-			ctrl_out(gspca_dev, 0x40, 1, 0x0000, 0x00c1, 0, NULL);
-			ctrl_out(gspca_dev, 0x40, 1, 0x0041, 0x00c2, 0, NULL);
+			__raw_write(gspca_dev, 0x40, 1, 0x0010, 0x0010, 0, NULL);
+			__raw_write(gspca_dev, 0x40, 1, 0x0000, 0x00c1, 0, NULL);
+			__raw_write(gspca_dev, 0x40, 1, 0x0041, 0x00c2, 0, NULL);
 			msleep(120);
-			ctrl_out(gspca_dev, 0x40, 1, 0x0040, 0x0000, 0, NULL);
+			__raw_write(gspca_dev, 0x40, 1, 0x0040, 0x0000, 0, NULL);
 			msleep(30);
 		} else if (_MI2020_) {
-			ctrl_out(gspca_dev, 0x40, 1, 0x0001, 0x0010, 0, NULL);
-			ctrl_out(gspca_dev, 0x40, 1, 0x0000, 0x00c1, 0, NULL);
-			ctrl_out(gspca_dev, 0x40, 1, 0x0041, 0x00c2, 0, NULL);
+			__raw_write(gspca_dev, 0x40, 1, 0x0001, 0x0010, 0, NULL);
+			__raw_write(gspca_dev, 0x40, 1, 0x0000, 0x00c1, 0, NULL);
+			__raw_write(gspca_dev, 0x40, 1, 0x0041, 0x00c2, 0, NULL);
 			msleep(120);
-			ctrl_out(gspca_dev, 0x40, 1, 0x0040, 0x0000, 0, NULL);
+			__raw_write(gspca_dev, 0x40, 1, 0x0040, 0x0000, 0, NULL);
 			msleep(30);
 		}
 
 		/* AC power frequency */
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_freq1);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_freq2);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_freq1);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_freq2);
 		msleep(20);
 		/* backlight */
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi1);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi2);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi3);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi4);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi1);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi2);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi3);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi4);
 		/* at init time but not after */
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa2\x0c");
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x17");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa2\x0c");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x17");
 		/* finish the backlight */
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi5);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi6);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi5);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi6);
 		msleep(5);/* " */
 
 		if (_MI2020c_) {
 			fetch_idxdata(gspca_dev, tbl_init_post_alt_low_d,
 					ARRAY_SIZE(tbl_init_post_alt_low_d));
 		} else {
-			ctrl_in(gspca_dev, 0xc0, 2, 0x0000, 0x0000, 1, &c);
+			__raw_read(gspca_dev, 0xc0, 2, 0x0000, 0x0000, 1, &c);
 			msleep(14); /* 0xd8 */
 
 			/* flip/mirror */
-			ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
+			__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
 					3, dat_hvflip1);
-			ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
+			__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
 					3, dat_hvflip2);
-			ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
+			__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
 					3, dat_hvflip3);
-			ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
+			__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
 					3, dat_hvflip4);
-			ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
+			__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
 					3, dat_hvflip5);
-			ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
+			__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
 					3, dat_hvflip6);
 			msleep(21);
-			ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
+			__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
 					3, dat_dummy1);
 			msleep(5);
-			ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
+			__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
 					3, dat_dummy1);
 			msleep(5);
-			ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
+			__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
 					3, dat_dummy1);
 			msleep(5);
-			ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
+			__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
 					3, dat_dummy1);
 			msleep(5);
-			ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
+			__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
 					3, dat_dummy1);
 			msleep(5);
-			ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
+			__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
 					3, dat_dummy1);
 			/* end of flip/mirror main part */
 			msleep(246); /* 146 */
@@ -621,26 +621,26 @@ static int mi2020_init_post_alt(struct gspca_dev *gspca_dev)
 	case IMAGE_1280:
 	case IMAGE_1600:
 		if (reso == IMAGE_1280) {
-			ctrl_out(gspca_dev, 0x40, 3, 0x0000, 0x0200,
+			__raw_write(gspca_dev, 0x40, 3, 0x0000, 0x0200,
 					12, dat_1280);
-			ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
+			__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
 					3, "\x8c\x27\x07");
-			ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
+			__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
 					3, "\x90\x05\x04");
-			ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
+			__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
 					3, "\x8c\x27\x09");
-			ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
+			__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
 					3, "\x90\x04\x02");
 		} else {
-			ctrl_out(gspca_dev, 0x40, 3, 0x0000, 0x0200,
+			__raw_write(gspca_dev, 0x40, 3, 0x0000, 0x0200,
 					12, dat_1600);
-			ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
+			__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
 					3, "\x8c\x27\x07");
-			ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
+			__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
 					3, "\x90\x06\x40");
-			ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
+			__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
 					3, "\x8c\x27\x09");
-			ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
+			__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033,
 					3, "\x90\x04\xb0");
 		}
 
@@ -649,62 +649,62 @@ static int mi2020_init_post_alt(struct gspca_dev *gspca_dev)
 
 		if (reso == IMAGE_1600)
 			msleep(13); /* 1600 */
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\x27\x97");
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x01\x00");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\x27\x97");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x01\x00");
 		msleep(53);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa1\x20");
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x00");
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa1\x03");
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x01");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa1\x20");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x00");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa1\x03");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x01");
 		if (reso == IMAGE_1600)
 			msleep(13); /* 1600 */
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa7\x02");
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x00");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa7\x02");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x00");
 		msleep(53);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa1\x20");
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x72");
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa1\x03");
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x02");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa1\x20");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x72");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa1\x03");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x02");
 		if (reso == IMAGE_1600)
 			msleep(13); /* 1600 */
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa7\x02");
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x01");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa7\x02");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x01");
 		msleep(53);
 
 		if (_MI2020b_) {
-			ctrl_out(gspca_dev, 0x40, 1, 0x0001, 0x0010, 0, NULL);
+			__raw_write(gspca_dev, 0x40, 1, 0x0001, 0x0010, 0, NULL);
 			if (reso == IMAGE_1600)
 				msleep(500); /* 1600 */
-			ctrl_out(gspca_dev, 0x40, 1, 0x0000, 0x00c1, 0, NULL);
-			ctrl_out(gspca_dev, 0x40, 1, 0x0041, 0x00c2, 0, NULL);
+			__raw_write(gspca_dev, 0x40, 1, 0x0000, 0x00c1, 0, NULL);
+			__raw_write(gspca_dev, 0x40, 1, 0x0041, 0x00c2, 0, NULL);
 			msleep(1850);
 		} else if (_MI2020c_ || _MI2020_) {
-			ctrl_out(gspca_dev, 0x40, 1, 0x0001, 0x0010, 0, NULL);
-			ctrl_out(gspca_dev, 0x40, 1, 0x0000, 0x00c1, 0, NULL);
-			ctrl_out(gspca_dev, 0x40, 1, 0x0041, 0x00c2, 0, NULL);
+			__raw_write(gspca_dev, 0x40, 1, 0x0001, 0x0010, 0, NULL);
+			__raw_write(gspca_dev, 0x40, 1, 0x0000, 0x00c1, 0, NULL);
+			__raw_write(gspca_dev, 0x40, 1, 0x0041, 0x00c2, 0, NULL);
 			msleep(1850);
-			ctrl_out(gspca_dev, 0x40, 1, 0x0040, 0x0000, 0, NULL);
+			__raw_write(gspca_dev, 0x40, 1, 0x0040, 0x0000, 0, NULL);
 			msleep(30);
 		}
 
 		/* AC power frequency */
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_freq1);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_freq2);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_freq1);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_freq2);
 		msleep(20);
 		/* backlight */
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi1);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi2);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi3);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi4);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi1);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi2);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi3);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi4);
 		/* at init time but not after */
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa2\x0c");
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x17");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa2\x0c");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x17");
 		/* finish the backlight */
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi5);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi6);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi5);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi6);
 		msleep(6); /* " */
 
-		ctrl_in(gspca_dev, 0xc0, 2, 0x0000, 0x0000, 1, &c);
+		__raw_read(gspca_dev, 0xc0, 2, 0x0000, 0x0000, 1, &c);
 		msleep(14);
 
 		if (_MI2020c_)
@@ -712,29 +712,29 @@ static int mi2020_init_post_alt(struct gspca_dev *gspca_dev)
 					ARRAY_SIZE(tbl_init_post_alt_big_b));
 
 		/* flip/mirror */
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_hvflip1);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_hvflip2);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_hvflip3);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_hvflip4);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_hvflip5);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_hvflip6);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_hvflip1);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_hvflip2);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_hvflip3);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_hvflip4);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_hvflip5);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_hvflip6);
 		/* end of flip/mirror main part */
 		msleep(16);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa1\x03");
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x01");
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa1\x20");
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x00");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa1\x03");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x01");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa1\x20");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x00");
 		if (reso == IMAGE_1600)
 			msleep(25); /* 1600 */
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa7\x02");
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x00");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa7\x02");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x00");
 		msleep(103);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa1\x03");
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x02");
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa1\x20");
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x72");
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa7\x02");
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x01");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa1\x03");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x02");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa1\x20");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x72");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x8c\xa7\x02");
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, "\x90\x00\x01");
 		sd->nbIm = 0;
 
 		if (_MI2020c_)
@@ -805,8 +805,8 @@ int mi2020_camera_settings(struct gspca_dev *gspca_dev)
 		sd->vold.AC50Hz = freq;
 
 		dat_freq2[2] = freq ? 0xc0 : 0x80;
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_freq1);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_freq2);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_freq1);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_freq2);
 		msleep(20);
 	}
 
@@ -816,35 +816,35 @@ int mi2020_camera_settings(struct gspca_dev *gspca_dev)
 
 		dat_hvflip2[2] = 0x6c + 2 * (1 - flip) + (1 - mirror);
 		dat_hvflip4[2] = 0x24 + 2 * (1 - flip) + (1 - mirror);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_hvflip1);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_hvflip2);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_hvflip3);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_hvflip4);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_hvflip5);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_hvflip6);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_hvflip1);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_hvflip2);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_hvflip3);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_hvflip4);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_hvflip5);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_hvflip6);
 		msleep(130);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_dummy1);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_dummy1);
 		msleep(6);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_dummy1);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_dummy1);
 		msleep(6);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_dummy1);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_dummy1);
 		msleep(6);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_dummy1);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_dummy1);
 		msleep(6);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_dummy1);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_dummy1);
 		msleep(6);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_dummy1);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_dummy1);
 		msleep(6);
 
 		/* Sometimes present, sometimes not, useful? */
-		/* ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dummy2);
-		 * ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dummy3);
-		 * ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dummy2);
-		 * ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dummy3);
-		 * ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dummy2);
-		 * ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dummy3);
-		 * ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dummy2);
-		 * ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dummy3);*/
+		/* __raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dummy2);
+		 * __raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dummy3);
+		 * __raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dummy2);
+		 * __raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dummy3);
+		 * __raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dummy2);
+		 * __raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dummy3);
+		 * __raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dummy2);
+		 * __raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dummy3);*/
 	}
 
 	if (backlight != sd->vold.backlight) {
@@ -855,12 +855,12 @@ int mi2020_camera_settings(struct gspca_dev *gspca_dev)
 		dat_multi1[2] = 0x9d;
 		dat_multi3[2] = dat_multi1[2] + 1;
 		dat_multi4[2] = dat_multi2[2] = backlight;
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi1);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi2);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi3);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi4);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi5);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi6);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi1);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi2);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi3);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi4);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi5);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi6);
 	}
 
 	if (gam != sd->vold.gamma) {
@@ -871,12 +871,12 @@ int mi2020_camera_settings(struct gspca_dev *gspca_dev)
 		dat_multi1[2] = 0x6d;
 		dat_multi3[2] = dat_multi1[2] + 1;
 		dat_multi4[2] = dat_multi2[2] = 0x40 + gam;
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi1);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi2);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi3);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi4);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi5);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi6);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi1);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi2);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi3);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi4);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi5);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi6);
 	}
 
 	if (cntr != sd->vold.contrast) {
@@ -887,12 +887,12 @@ int mi2020_camera_settings(struct gspca_dev *gspca_dev)
 		dat_multi1[2] = 0x6d;
 		dat_multi3[2] = dat_multi1[2] + 1;
 		dat_multi4[2] = dat_multi2[2] = 0x12 + 16 * cntr;
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi1);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi2);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi3);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi4);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi5);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi6);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi1);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi2);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi3);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi4);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi5);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_multi6);
 	}
 
 	if (bright != sd->vold.brightness) {
@@ -901,12 +901,12 @@ int mi2020_camera_settings(struct gspca_dev *gspca_dev)
 			bright = 0;
 
 		dat_bright2[2] = bright;
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_bright1);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_bright2);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_bright3);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_bright4);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_bright5);
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_bright6);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_bright1);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_bright2);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_bright3);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_bright4);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_bright5);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0033, 3, dat_bright6);
 	}
 
 	if (sharp != sd->vold.sharpness) {
@@ -915,7 +915,7 @@ int mi2020_camera_settings(struct gspca_dev *gspca_dev)
 			sharp = 0;
 
 		dat_sharp[1] = sharp;
-		ctrl_out(gspca_dev, 0x40, 3, 0x7a00, 0x0032, 3, dat_sharp);
+		__raw_write(gspca_dev, 0x40, 3, 0x7a00, 0x0032, 3, dat_sharp);
 	}
 
 	if (hue != sd->vold.hue) {
@@ -928,10 +928,10 @@ int mi2020_camera_settings(struct gspca_dev *gspca_dev)
 
 static void mi2020_post_unset_alt(struct gspca_dev *gspca_dev)
 {
-	ctrl_out(gspca_dev, 0x40, 5, 0x0000, 0x0000, 0, NULL);
+	__raw_write(gspca_dev, 0x40, 5, 0x0000, 0x0000, 0, NULL);
 	msleep(20);
 	if (_MI2020c_ || _MI2020_)
-		ctrl_out(gspca_dev, 0x40, 1, 0x0001, 0x0000, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0x0001, 0x0000, 0, NULL);
 	else
-		ctrl_out(gspca_dev, 0x40, 1, 0x0041, 0x0000, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0x0041, 0x0000, 0, NULL);
 }

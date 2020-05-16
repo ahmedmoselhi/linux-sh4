@@ -74,9 +74,9 @@ void __init h8300_timer_setup(void)
 	setup_irq(ITUIRQ, &itu_irq);
 
 	/* initalize timer */
-	ctrl_outb(0, TSTR);
-	ctrl_outb(CCLR0 | div, ITUBASE + TCR);
-	ctrl_outb(0x01, ITUBASE + TIER);
-	ctrl_outw(cnt, ITUBASE + GRA);
+	__raw_writeb(0, TSTR);
+	__raw_writeb(CCLR0 | div, ITUBASE + TCR);
+	__raw_writeb(0x01, ITUBASE + TIER);
+	__raw_writew(cnt, ITUBASE + GRA);
 	ctrl_bset(CONFIG_H8300_ITU_CH, TSTR);
 }

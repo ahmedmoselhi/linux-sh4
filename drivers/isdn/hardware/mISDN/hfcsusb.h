@@ -104,10 +104,10 @@ static int iso_packets[8] =
 
 /* HFC-S USB register access by Control-URSs */
 #define write_reg_atomic(a, b, c) \
-	usb_control_msg((a)->dev, (a)->ctrl_out_pipe, 0, 0x40, (c), (b), \
+	usb_control_msg((a)->dev, (a)->__raw_write_pipe, 0, 0x40, (c), (b), \
 		0, 0, HFC_CTRL_TIMEOUT)
 #define read_reg_atomic(a, b, c) \
-	usb_control_msg((a)->dev, (a)->ctrl_in_pipe, 1, 0xC0, 0, (b), (c), \
+	usb_control_msg((a)->dev, (a)->__raw_read_pipe, 1, 0xC0, 0, (b), (c), \
 		1, HFC_CTRL_TIMEOUT)
 #define HFC_CTRL_BUFSIZE 64
 
@@ -285,12 +285,12 @@ struct hfcsusb {
 
 	/* control pipe background handling */
 	struct ctrl_buf		ctrl_buff[HFC_CTRL_BUFSIZE];
-	int			ctrl_in_idx, ctrl_out_idx, ctrl_cnt;
+	int			__raw_read_idx, __raw_write_idx, ctrl_cnt;
 	struct urb		*ctrl_urb;
 	struct usb_ctrlrequest	ctrl_write;
 	struct usb_ctrlrequest	ctrl_read;
 	int			ctrl_paksize;
-	int			ctrl_in_pipe, ctrl_out_pipe;
+	int			__raw_read_pipe, __raw_write_pipe;
 	spinlock_t		ctrl_lock; /* lock for ctrl */
 	spinlock_t              lock;
 

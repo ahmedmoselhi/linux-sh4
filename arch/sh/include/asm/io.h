@@ -11,7 +11,7 @@
  * While read{b,w,l,q} and write{b,w,l,q} contain memory barriers
  * automatically, there are also __raw versions, which do not.
  *
- * Historically, we have also had ctrl_in{b,w,l,q}/ctrl_out{b,w,l,q} for
+ * Historically, we have also had __raw_read{b,w,l,q}/__raw_write{b,w,l,q} for
  * SuperH specific I/O (raw I/O to on-chip CPU peripherals). In practice
  * these have the same semantics as the __raw variants, and as such, all
  * new code should be using the __raw versions.
@@ -80,15 +80,15 @@
 #define writeq(v,a)		({ __raw_writeq((v),(a)); mb(); })
 
 /* SuperH on-chip I/O functions */
-#define ctrl_inb		__raw_readb
-#define ctrl_inw		__raw_readw
-#define ctrl_inl		__raw_readl
-#define ctrl_inq		__raw_readq
+#define __raw_readb		__raw_readb
+#define __raw_readw		__raw_readw
+#define __raw_readl		__raw_readl
+#define __raw_readq		__raw_readq
 
-#define ctrl_outb		__raw_writeb
-#define ctrl_outw		__raw_writew
-#define ctrl_outl		__raw_writel
-#define ctrl_outq		__raw_writeq
+#define __raw_writeb		__raw_writeb
+#define __raw_writew		__raw_writew
+#define __raw_writel		__raw_writel
+#define __raw_writeq		__raw_writeq
 
 static inline void ctrl_delay(void)
 {

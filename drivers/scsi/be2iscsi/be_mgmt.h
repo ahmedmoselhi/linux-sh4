@@ -238,7 +238,7 @@ struct beiscsi_endpoint {
 	u16 cid_vld;
 };
 
-unsigned char mgmt_get_fw_config(struct be_ctrl_info *ctrl,
+unsigned char mgmt_get_fw_config(struct be___raw_readfo *ctrl,
 				 struct beiscsi_hba *phba);
 
 unsigned char mgmt_invalidate_connection(struct beiscsi_hba *phba,

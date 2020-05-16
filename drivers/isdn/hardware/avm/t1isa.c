@@ -134,7 +134,7 @@ static int t1_detectandinit(unsigned int base, unsigned irq, int cardnr)
 static irqreturn_t t1isa_interrupt(int interrupt, void *devptr)
 {
 	avmcard *card = devptr;
-	avmctrl_info *cinfo = &card->ctrlinfo[0];
+	avm__raw_readfo *cinfo = &card->ctrlinfo[0];
 	struct capi_ctr *ctrl = &cinfo->capi_ctrl;
 	unsigned char b1cmd;
 	struct sk_buff *skb;
@@ -283,7 +283,7 @@ static irqreturn_t t1isa_interrupt(int interrupt, void *devptr)
 
 static int t1isa_load_firmware(struct capi_ctr *ctrl, capiloaddata *data)
 {
-	avmctrl_info *cinfo = (avmctrl_info *)(ctrl->driverdata);
+	avm__raw_readfo *cinfo = (avm__raw_readfo *)(ctrl->driverdata);
 	avmcard *card = cinfo->card;
 	unsigned int port = card->port;
 	unsigned long flags;
@@ -326,7 +326,7 @@ static int t1isa_load_firmware(struct capi_ctr *ctrl, capiloaddata *data)
 
 static void t1isa_reset_ctr(struct capi_ctr *ctrl)
 {
-	avmctrl_info *cinfo = (avmctrl_info *)(ctrl->driverdata);
+	avm__raw_readfo *cinfo = (avm__raw_readfo *)(ctrl->driverdata);
 	avmcard *card = cinfo->card;
 	unsigned int port = card->port;
 	unsigned long flags;
@@ -344,7 +344,7 @@ static void t1isa_reset_ctr(struct capi_ctr *ctrl)
 
 static void t1isa_remove(struct pci_dev *pdev)
 {
-	avmctrl_info *cinfo = pci_get_drvdata(pdev);
+	avm__raw_readfo *cinfo = pci_get_drvdata(pdev);
 	avmcard *card;
 	
 	if (!cinfo)
@@ -370,7 +370,7 @@ static char *t1isa_procinfo(struct capi_ctr *ctrl);
 
 static int t1isa_probe(struct pci_dev *pdev, int cardnr)
 {
-	avmctrl_info *cinfo;
+	avm__raw_readfo *cinfo;
 	avmcard *card;
 	int retval;
 
@@ -456,7 +456,7 @@ static int t1isa_probe(struct pci_dev *pdev, int cardnr)
 
 static u16 t1isa_send_message(struct capi_ctr *ctrl, struct sk_buff *skb)
 {
-	avmctrl_info *cinfo = (avmctrl_info *)(ctrl->driverdata);
+	avm__raw_readfo *cinfo = (avm__raw_readfo *)(ctrl->driverdata);
 	avmcard *card = cinfo->card;
 	unsigned int port = card->port;
 	unsigned long flags;
@@ -492,7 +492,7 @@ static u16 t1isa_send_message(struct capi_ctr *ctrl, struct sk_buff *skb)
 
 static char *t1isa_procinfo(struct capi_ctr *ctrl)
 {
-	avmctrl_info *cinfo = (avmctrl_info *)(ctrl->driverdata);
+	avm__raw_readfo *cinfo = (avm__raw_readfo *)(ctrl->driverdata);
 
 	if (!cinfo)
 		return "";

@@ -1772,7 +1772,7 @@ static int dib8000_tune(struct dvb_frontend *fe)
 	ret |= dib8000_write_word(state, 770, 0x0000);
 	msleep(45);
 
-	/* P_ctrl_inh_cor=0, P_ctrl_alpha_cor=4, P_ctrl_inh_isi=0, P_ctrl_alpha_isi=3 */
+	/* P___raw_readh_cor=0, P_ctrl_alpha_cor=4, P___raw_readh_isi=0, P_ctrl_alpha_isi=3 */
 	/*  ret |= dib8000_write_word(state, 29, (0 << 9) | (4 << 5) | (0 << 4) | (3 << 0) );  workaround inh_isi stays at 1 */
 
 	// never achieved a lock before - wait for timfreq to update

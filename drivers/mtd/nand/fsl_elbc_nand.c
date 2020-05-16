@@ -942,7 +942,7 @@ err:
 	return ret;
 }
 
-static int __devinit fsl_elbc_ctrl_init(struct fsl_elbc_ctrl *ctrl)
+static int __devinit fsl_elbc___raw_readit(struct fsl_elbc_ctrl *ctrl)
 {
 	struct fsl_lbc_regs __iomem *lbc = ctrl->regs;
 
@@ -1048,7 +1048,7 @@ static int __devinit fsl_elbc_ctrl_probe(struct of_device *ofdev,
 
 	ctrl->dev = &ofdev->dev;
 
-	ret = fsl_elbc_ctrl_init(ctrl);
+	ret = fsl_elbc___raw_readit(ctrl);
 	if (ret < 0)
 		goto err;
 

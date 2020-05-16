@@ -95,8 +95,8 @@ void __init h8300_timer_setup(void)
 #endif
 
 	/* initalize timer */
-	ctrl_outw(cnt, _8BASE + TCORA);
-	ctrl_outw(0x0000, _8BASE + _8TCSR);
-	ctrl_outw((CMIEA|CCLR_CMA|CKS2) << 8 | div,
+	__raw_writew(cnt, _8BASE + TCORA);
+	__raw_writew(0x0000, _8BASE + _8TCSR);
+	__raw_writew((CMIEA|CCLR_CMA|CKS2) << 8 | div,
 		  _8BASE + _8TCR);
 }

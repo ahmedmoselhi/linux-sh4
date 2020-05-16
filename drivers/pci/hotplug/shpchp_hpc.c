@@ -303,7 +303,7 @@ static inline int shpc_wait_cmd(struct controller *ctrl)
 		ctrl_err(ctrl, "Command not completed in 1000 msec\n");
 	} else if (rc < 0) {
 		retval = -EINTR;
-		ctrl_info(ctrl, "Command was interrupted by a signal\n");
+		__raw_readfo(ctrl, "Command was interrupted by a signal\n");
 	}
 
 	return retval;
@@ -993,7 +993,7 @@ int shpc_init(struct controller *ctrl, struct pci_dev *pdev)
 		ctrl->mmio_size = 0x24 + 0x4 * num_slots;
 	}
 
-	ctrl_info(ctrl, "HPC vendor_id %x device_id %x ss_vid %x ss_did %x\n",
+	__raw_readfo(ctrl, "HPC vendor_id %x device_id %x ss_vid %x ss_did %x\n",
 		  pdev->vendor, pdev->device, pdev->subsystem_vendor,
 		  pdev->subsystem_device);
 
@@ -1067,9 +1067,9 @@ int shpc_init(struct controller *ctrl, struct pci_dev *pdev)
 		/* Installs the interrupt handler */
 		rc = pci_enable_msi(pdev);
 		if (rc) {
-			ctrl_info(ctrl,
+			__raw_readfo(ctrl,
 				  "Can't get msi for the hotplug controller\n");
-			ctrl_info(ctrl,
+			__raw_readfo(ctrl,
 				  "Use INTx for the hotplug controller\n");
 		}
 

@@ -288,13 +288,13 @@ static int kfr2r09_usb0_gadget_setup(void)
 	if (kfr2r09_usb0_gadget_i2c_setup() != 0)
 		return -ENODEV; /* unable to configure using i2c */
 
-	ctrl_outw((ctrl_inw(PORT_MSELCRB) & ~0xc000) | 0x8000, PORT_MSELCRB);
+	__raw_writew((__raw_readw(PORT_MSELCRB) & ~0xc000) | 0x8000, PORT_MSELCRB);
 	gpio_request(GPIO_FN_PDSTATUS, NULL); /* R-standby disables USB clock */
 	gpio_request(GPIO_PTV6, NULL); /* USBCLK_ON */
 	gpio_direction_output(GPIO_PTV6, 1); /* USBCLK_ON = H */
 	msleep(20); /* wait 20ms to let the clock settle */
 	clk_enable(clk_get(NULL, "usb0"));
-	ctrl_outw(0x0600, 0xa40501d4);
+	__raw_writew(0x0600, 0xa40501d4);
 
 	return 0;
 }
@@ -306,12 +306,12 @@ static int __init kfr2r09_devices_setup(void)
 	gpio_request(GPIO_FN_SCIF1_TXD, NULL);
 
 	/* setup NOR flash at CS0 */
-	ctrl_outl(0x36db0400, BSC_CS0BCR);
-	ctrl_outl(0x00000500, BSC_CS0WCR);
+	__raw_writel(0x36db0400, BSC_CS0BCR);
+	__raw_writel(0x00000500, BSC_CS0WCR);
 
 	/* setup NAND flash at CS4 */
-	ctrl_outl(0x36db0400, BSC_CS4BCR);
-	ctrl_outl(0x00000500, BSC_CS4WCR);
+	__raw_writel(0x36db0400, BSC_CS4BCR);
+	__raw_writel(0x00000500, BSC_CS4WCR);
 
 	/* setup KEYSC pins */
 	gpio_request(GPIO_FN_KEYOUT0, NULL);

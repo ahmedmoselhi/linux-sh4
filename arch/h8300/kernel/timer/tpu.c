@@ -90,11 +90,11 @@ void __init h8300_timer_setup(void)
 	/* TPU module enabled */
 	ctrl_bclr(3, MSTPCRH);
 
-	ctrl_outb(0, TSTR);
-	ctrl_outb(CCLR0 | div, TPUBASE + _TCR);
-	ctrl_outb(0, TPUBASE + _TMDR);
-	ctrl_outw(0, TPUBASE + _TIOR);
-	ctrl_outb(0x01, TPUBASE + _TIER);
-	ctrl_outw(cnt, TPUBASE + _GRA);
+	__raw_writeb(0, TSTR);
+	__raw_writeb(CCLR0 | div, TPUBASE + _TCR);
+	__raw_writeb(0, TPUBASE + _TMDR);
+	__raw_writew(0, TPUBASE + _TIOR);
+	__raw_writeb(0x01, TPUBASE + _TIER);
+	__raw_writew(cnt, TPUBASE + _GRA);
 	ctrl_bset(CONFIG_H8300_TPU_CH, TSTR);
 }

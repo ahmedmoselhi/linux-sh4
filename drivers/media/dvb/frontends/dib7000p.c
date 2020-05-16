@@ -965,7 +965,7 @@ static int dib7000p_tune(struct dvb_frontend *demod, struct dvb_frontend_paramet
 	dib7000p_write_word(state, 770, 0x0000);
 	msleep(45);
 
-	/* P_ctrl_inh_cor=0, P_ctrl_alpha_cor=4, P_ctrl_inh_isi=0, P_ctrl_alpha_isi=3, P_ctrl_inh_cor4=1, P_ctrl_alpha_cor4=3 */
+	/* P___raw_readh_cor=0, P_ctrl_alpha_cor=4, P___raw_readh_isi=0, P_ctrl_alpha_isi=3, P___raw_readh_cor4=1, P_ctrl_alpha_cor4=3 */
 	tmp = (0 << 14) | (4 << 10) | (0 << 9) | (3 << 5) | (1 << 4) | (0x3);
 	if (state->sfn_workaround_active) {
 		dprintk( "SFN workaround is active");

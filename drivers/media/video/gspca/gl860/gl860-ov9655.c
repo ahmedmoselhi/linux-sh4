@@ -190,7 +190,7 @@ static int ov9655_init_at_startup(struct gspca_dev *gspca_dev)
 	fetch_validx(gspca_dev, tbl_init_at_startup,
 			ARRAY_SIZE(tbl_init_at_startup));
 	fetch_validx(gspca_dev, tbl_commmon, ARRAY_SIZE(tbl_commmon));
-/*	ctrl_out(gspca_dev, 0x40, 11, 0x0000, 0x0000, 0, NULL);*/
+/*	__raw_write(gspca_dev, 0x40, 11, 0x0000, 0x0000, 0, NULL);*/
 
 	return 0;
 }
@@ -216,72 +216,72 @@ static int ov9655_init_post_alt(struct gspca_dev *gspca_dev)
 	s32 i;
 	u8 **tbl;
 
-	ctrl_out(gspca_dev, 0x40, 5, 0x0001, 0x0000, 0, NULL);
+	__raw_write(gspca_dev, 0x40, 5, 0x0001, 0x0000, 0, NULL);
 
 	tbl = (reso == IMAGE_640) ? tbl_640 : tbl_800;
 
-	ctrl_out(gspca_dev, 0x40, 3, 0x0000, 0x0200,
+	__raw_write(gspca_dev, 0x40, 3, 0x0000, 0x0200,
 			tbl_length[0], tbl[0]);
 	for (i = 1; i < 7; i++)
-		ctrl_out(gspca_dev, 0x40, 3, 0x6000, 0x0200,
+		__raw_write(gspca_dev, 0x40, 3, 0x6000, 0x0200,
 				tbl_length[i], tbl[i]);
-	ctrl_out(gspca_dev, 0x40, 3, 0x0000, 0x0200,
+	__raw_write(gspca_dev, 0x40, 3, 0x0000, 0x0200,
 			tbl_length[7], tbl[7]);
 
 	n = fetch_validx(gspca_dev, tbl_init_post_alt,
 			ARRAY_SIZE(tbl_init_post_alt));
 
-	ctrl_in(gspca_dev, 0xc0, 2, 0x6000, 0x801e, 1, c04);
+	__raw_read(gspca_dev, 0xc0, 2, 0x6000, 0x801e, 1, c04);
 	keep_on_fetching_validx(gspca_dev, tbl_init_post_alt,
 					ARRAY_SIZE(tbl_init_post_alt), n);
-	ctrl_in(gspca_dev, 0xc0, 2, 0x6000, 0x801e, 1, c04);
+	__raw_read(gspca_dev, 0xc0, 2, 0x6000, 0x801e, 1, c04);
 	keep_on_fetching_validx(gspca_dev, tbl_init_post_alt,
 					ARRAY_SIZE(tbl_init_post_alt), n);
-	ctrl_in(gspca_dev, 0xc0, 2, 0x6000, 0x801e, 1, c04);
+	__raw_read(gspca_dev, 0xc0, 2, 0x6000, 0x801e, 1, c04);
 	keep_on_fetching_validx(gspca_dev, tbl_init_post_alt,
 					ARRAY_SIZE(tbl_init_post_alt), n);
-	ctrl_in(gspca_dev, 0xc0, 2, 0x6000, 0x801e, 1, c04);
+	__raw_read(gspca_dev, 0xc0, 2, 0x6000, 0x801e, 1, c04);
 	keep_on_fetching_validx(gspca_dev, tbl_init_post_alt,
 					ARRAY_SIZE(tbl_init_post_alt), n);
-	ctrl_out(gspca_dev, 0x40, 3, 0x6000, 0x0200, 8, dat_post_1);
-	keep_on_fetching_validx(gspca_dev, tbl_init_post_alt,
-					ARRAY_SIZE(tbl_init_post_alt), n);
-
-	ctrl_in(gspca_dev, 0xc0, 2, 0x6000, 0x801e, 1, c04);
-	keep_on_fetching_validx(gspca_dev, tbl_init_post_alt,
-					ARRAY_SIZE(tbl_init_post_alt), n);
-	ctrl_in(gspca_dev, 0xc0, 2, 0x6000, 0x801e, 1, c04);
-	keep_on_fetching_validx(gspca_dev, tbl_init_post_alt,
-					ARRAY_SIZE(tbl_init_post_alt), n);
-	ctrl_in(gspca_dev, 0xc0, 2, 0x6000, 0x801e, 1, c04);
-	keep_on_fetching_validx(gspca_dev, tbl_init_post_alt,
-					ARRAY_SIZE(tbl_init_post_alt), n);
-	ctrl_in(gspca_dev, 0xc0, 2, 0x6000, 0x801e, 1, c04);
-	keep_on_fetching_validx(gspca_dev, tbl_init_post_alt,
-					ARRAY_SIZE(tbl_init_post_alt), n);
-	ctrl_out(gspca_dev, 0x40, 3, 0x6000, 0x0200, 8, dat_post_1);
+	__raw_write(gspca_dev, 0x40, 3, 0x6000, 0x0200, 8, dat_post_1);
 	keep_on_fetching_validx(gspca_dev, tbl_init_post_alt,
 					ARRAY_SIZE(tbl_init_post_alt), n);
 
-	ctrl_in(gspca_dev, 0xc0, 2, 0x6000, 0x801e, 1, c04);
+	__raw_read(gspca_dev, 0xc0, 2, 0x6000, 0x801e, 1, c04);
 	keep_on_fetching_validx(gspca_dev, tbl_init_post_alt,
 					ARRAY_SIZE(tbl_init_post_alt), n);
-	ctrl_in(gspca_dev, 0xc0, 2, 0x6000, 0x801e, 1, c04);
+	__raw_read(gspca_dev, 0xc0, 2, 0x6000, 0x801e, 1, c04);
+	keep_on_fetching_validx(gspca_dev, tbl_init_post_alt,
+					ARRAY_SIZE(tbl_init_post_alt), n);
+	__raw_read(gspca_dev, 0xc0, 2, 0x6000, 0x801e, 1, c04);
+	keep_on_fetching_validx(gspca_dev, tbl_init_post_alt,
+					ARRAY_SIZE(tbl_init_post_alt), n);
+	__raw_read(gspca_dev, 0xc0, 2, 0x6000, 0x801e, 1, c04);
+	keep_on_fetching_validx(gspca_dev, tbl_init_post_alt,
+					ARRAY_SIZE(tbl_init_post_alt), n);
+	__raw_write(gspca_dev, 0x40, 3, 0x6000, 0x0200, 8, dat_post_1);
 	keep_on_fetching_validx(gspca_dev, tbl_init_post_alt,
 					ARRAY_SIZE(tbl_init_post_alt), n);
 
-	ctrl_out(gspca_dev, 0x40, 3, 0x6000, 0x0200, 8, dat_post_1);
+	__raw_read(gspca_dev, 0xc0, 2, 0x6000, 0x801e, 1, c04);
+	keep_on_fetching_validx(gspca_dev, tbl_init_post_alt,
+					ARRAY_SIZE(tbl_init_post_alt), n);
+	__raw_read(gspca_dev, 0xc0, 2, 0x6000, 0x801e, 1, c04);
+	keep_on_fetching_validx(gspca_dev, tbl_init_post_alt,
+					ARRAY_SIZE(tbl_init_post_alt), n);
 
-	ctrl_out(gspca_dev, 0x40, 3, 0x0000, 0x0200, 4, dat_post_2);
-	ctrl_out(gspca_dev, 0x40, 3, 0x6000, 0x0200, 8, dat_post_3);
+	__raw_write(gspca_dev, 0x40, 3, 0x6000, 0x0200, 8, dat_post_1);
 
-	ctrl_out(gspca_dev, 0x40, 3, 0x0000, 0x0200, 4, dat_post_4);
-	ctrl_out(gspca_dev, 0x40, 3, 0x6000, 0x0200, 8, dat_post_5);
+	__raw_write(gspca_dev, 0x40, 3, 0x0000, 0x0200, 4, dat_post_2);
+	__raw_write(gspca_dev, 0x40, 3, 0x6000, 0x0200, 8, dat_post_3);
 
-	ctrl_out(gspca_dev, 0x40, 3, 0x0000, 0x0200, 4, dat_post_6);
-	ctrl_out(gspca_dev, 0x40, 3, 0x6000, 0x0200, 8, dat_post_7);
+	__raw_write(gspca_dev, 0x40, 3, 0x0000, 0x0200, 4, dat_post_4);
+	__raw_write(gspca_dev, 0x40, 3, 0x6000, 0x0200, 8, dat_post_5);
 
-	ctrl_out(gspca_dev, 0x40, 3, 0x6000, 0x0200, 8, dat_post_8);
+	__raw_write(gspca_dev, 0x40, 3, 0x0000, 0x0200, 4, dat_post_6);
+	__raw_write(gspca_dev, 0x40, 3, 0x6000, 0x0200, 8, dat_post_7);
+
+	__raw_write(gspca_dev, 0x40, 3, 0x6000, 0x0200, 8, dat_post_8);
 
 	ov9655_camera_settings(gspca_dev);
 
@@ -319,7 +319,7 @@ static int ov9655_camera_settings(struct gspca_dev *gspca_dev)
 			bright = 0;
 
 		dat_bright[3] = bright;
-		ctrl_out(gspca_dev, 0x40, 3, 0x6000, 0x0200, 8, dat_bright);
+		__raw_write(gspca_dev, 0x40, 3, 0x6000, 0x0200, 8, dat_bright);
 	}
 
 	if (hue != sd->vold.hue) {
@@ -332,6 +332,6 @@ static int ov9655_camera_settings(struct gspca_dev *gspca_dev)
 
 static void ov9655_post_unset_alt(struct gspca_dev *gspca_dev)
 {
-	ctrl_out(gspca_dev, 0x40, 5, 0x0000, 0x0000, 0, NULL);
-	ctrl_out(gspca_dev, 0x40, 1, 0x0061, 0x0000, 0, NULL);
+	__raw_write(gspca_dev, 0x40, 5, 0x0000, 0x0000, 0, NULL);
+	__raw_write(gspca_dev, 0x40, 1, 0x0061, 0x0000, 0, NULL);
 }

@@ -25,7 +25,7 @@ void __init mb374_setup(char **cmdline_p)
 {
 	unsigned char version;
 
-	version = ctrl_inl(EPLD_REVID) & 0xff;
+	version = __raw_readl(EPLD_REVID) & 0xff;
 
 	printk("STMicroelectronics ST40 Starter initialisation\n");
 	printk("EPLD version: %d.%02d\n",(version >> 4) & 0xf, version & 0xf);

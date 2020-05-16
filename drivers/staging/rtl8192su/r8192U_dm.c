@@ -118,10 +118,10 @@ static	void	dm_bb_initialgain_backup(struct net_device *dev);
 #endif
 // DM --> Dynamic Init Gain by RSSI
 static	void	dm_dig_init(struct net_device *dev);
-static	void	dm_ctrl_initgain_byrssi(struct net_device *dev);
-static	void	dm_ctrl_initgain_byrssi_highpwr(struct net_device *dev);
-static	void	dm_ctrl_initgain_byrssi_by_driverrssi(	struct net_device *dev);
-static	void	dm_ctrl_initgain_byrssi_by_fwfalse_alarm(struct net_device *dev);
+static	void	dm___raw_readitgain_byrssi(struct net_device *dev);
+static	void	dm___raw_readitgain_byrssi_highpwr(struct net_device *dev);
+static	void	dm___raw_readitgain_byrssi_by_driverrssi(	struct net_device *dev);
+static	void	dm___raw_readitgain_byrssi_by_fwfalse_alarm(struct net_device *dev);
 static	void	dm_initial_gain(struct net_device *dev);
 static	void	dm_pd_th(struct net_device *dev);
 static	void	dm_cs_ratio(struct net_device *dev);
@@ -318,7 +318,7 @@ extern  void    hal_dm_watchdog(struct net_device *dev)
 	dm_dynamic_txpower(dev);
 
 	dm_check_txpower_tracking(dev);
-	dm_ctrl_initgain_byrssi(dev);//LZM TMP 090302
+	dm___raw_readitgain_byrssi(dev);//LZM TMP 090302
 
 	dm_bandwidth_autoswitch(dev);
 
@@ -2091,7 +2091,7 @@ static void dm_dig_init(struct net_device *dev)
 
 
 /*-----------------------------------------------------------------------------
- * Function:	dm_ctrl_initgain_byrssi()
+ * Function:	dm___raw_readitgain_byrssi()
  *
  * Overview:	Driver must monitor RSSI and notify firmware to change initial
  *				gain according to different threshold. BB team provide the
@@ -2107,23 +2107,23 @@ static void dm_dig_init(struct net_device *dev)
  *	When		Who		Remark
  *	05/27/2008	amy		Create Version 0 porting from windows code.
  *---------------------------------------------------------------------------*/
-static void dm_ctrl_initgain_byrssi(struct net_device *dev)
+static void dm___raw_readitgain_byrssi(struct net_device *dev)
 {
 
 	if (dm_digtable.dig_enable_flag == false)
 		return;
 
 	if(dm_digtable.dig_algorithm == DIG_ALGO_BY_FALSE_ALARM)
-		dm_ctrl_initgain_byrssi_by_fwfalse_alarm(dev);
+		dm___raw_readitgain_byrssi_by_fwfalse_alarm(dev);
 	else if(dm_digtable.dig_algorithm == DIG_ALGO_BY_RSSI)
-		dm_ctrl_initgain_byrssi_by_driverrssi(dev);
+		dm___raw_readitgain_byrssi_by_driverrssi(dev);
 //		;
 	else
 		return;
 }
 
 
-static void dm_ctrl_initgain_byrssi_by_driverrssi(
+static void dm___raw_readitgain_byrssi_by_driverrssi(
 	struct net_device *dev)
 {
 	struct r8192_priv *priv = ieee80211_priv(dev);
@@ -2164,7 +2164,7 @@ static void dm_ctrl_initgain_byrssi_by_driverrssi(
 
 }	/* dm_CtrlInitGainByRssi */
 
-static void dm_ctrl_initgain_byrssi_by_fwfalse_alarm(
+static void dm___raw_readitgain_byrssi_by_fwfalse_alarm(
 	struct net_device *dev)
 {
 	struct r8192_priv *priv = ieee80211_priv(dev);
@@ -2262,7 +2262,7 @@ static void dm_ctrl_initgain_byrssi_by_fwfalse_alarm(
 		if (dm_digtable.dig_state == DM_STA_DIG_ON &&
 			(priv->reset_count == reset_cnt))
 		{
-			dm_ctrl_initgain_byrssi_highpwr(dev);
+			dm___raw_readitgain_byrssi_highpwr(dev);
 			return;
 		}
 		else
@@ -2327,13 +2327,13 @@ static void dm_ctrl_initgain_byrssi_by_fwfalse_alarm(
 
 	}
 
-	dm_ctrl_initgain_byrssi_highpwr(dev);
+	dm___raw_readitgain_byrssi_highpwr(dev);
 
 }	/* dm_CtrlInitGainByRssi */
 
 
 /*-----------------------------------------------------------------------------
- * Function:	dm_ctrl_initgain_byrssi_highpwr()
+ * Function:	dm___raw_readitgain_byrssi_highpwr()
  *
  * Overview:
  *
@@ -2348,7 +2348,7 @@ static void dm_ctrl_initgain_byrssi_by_fwfalse_alarm(
  *	05/28/2008	amy		Create Version 0 porting from windows code.
  *
  *---------------------------------------------------------------------------*/
-static void dm_ctrl_initgain_byrssi_highpwr(
+static void dm___raw_readitgain_byrssi_highpwr(
 	struct net_device * dev)
 {
 	struct r8192_priv *priv = ieee80211_priv(dev);

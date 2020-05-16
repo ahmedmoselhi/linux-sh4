@@ -24,7 +24,7 @@ typedef struct in_cache_entry {
 	uint32_t count;
 	struct   atm_vcc *shortcut;
 	uint8_t  MPS_ctrl_ATM_addr[ATM_ESA_LEN];
-	struct   in_ctrl_info ctrl_info;
+	struct   in___raw_readfo __raw_readfo;
 	atomic_t use;
 } in_cache_entry;
 
@@ -57,7 +57,7 @@ typedef struct eg_cache_entry{
 	uint32_t             packets_rcvd;
 	uint16_t             entry_state;
 	__be32             latest_ip_addr;    /* The src IP address of the last packet */
-	struct eg_ctrl_info  ctrl_info;
+	struct eg___raw_readfo  __raw_readfo;
 	atomic_t             use;
 } eg_cache_entry;
 

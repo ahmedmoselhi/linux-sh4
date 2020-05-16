@@ -23,8 +23,8 @@
  */
 void __init platform_setup(void)
 {
-        unsigned board=ctrl_inl(EPLD_REVID_PLD);
-        unsigned pld=ctrl_inl(EPLD_REVID_BOARD);
+        unsigned board=__raw_readl(EPLD_REVID_PLD);
+        unsigned pld=__raw_readl(EPLD_REVID_BOARD);
 
         printk("STMicroelectronics ST40RA/ST40STB1 Eval initialisaton\n");
         printk("Board version %c EPLD version: %d.%02d\n",

@@ -265,32 +265,32 @@ static inline void *ioremap_fullcache(unsigned long physaddr, unsigned long size
 extern void iounmap(void *addr);
 
 /* H8/300 internal I/O functions */
-static __inline__ unsigned char ctrl_inb(unsigned long addr)
+static __inline__ unsigned char __raw_readb(unsigned long addr)
 {
 	return *(volatile unsigned char*)addr;
 }
 
-static __inline__ unsigned short ctrl_inw(unsigned long addr)
+static __inline__ unsigned short __raw_readw(unsigned long addr)
 {
 	return *(volatile unsigned short*)addr;
 }
 
-static __inline__ unsigned long ctrl_inl(unsigned long addr)
+static __inline__ unsigned long __raw_readl(unsigned long addr)
 {
 	return *(volatile unsigned long*)addr;
 }
 
-static __inline__ void ctrl_outb(unsigned char b, unsigned long addr)
+static __inline__ void __raw_writeb(unsigned char b, unsigned long addr)
 {
 	*(volatile unsigned char*)addr = b;
 }
 
-static __inline__ void ctrl_outw(unsigned short b, unsigned long addr)
+static __inline__ void __raw_writew(unsigned short b, unsigned long addr)
 {
 	*(volatile unsigned short*)addr = b;
 }
 
-static __inline__ void ctrl_outl(unsigned long b, unsigned long addr)
+static __inline__ void __raw_writel(unsigned long b, unsigned long addr)
 {
         *(volatile unsigned long*)addr = b;
 }

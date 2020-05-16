@@ -70,14 +70,14 @@ ctrl_start_transfer(struct hfcsusb *hw)
 		printk(KERN_DEBUG "%s: %s\n", hw->name, __func__);
 
 	if (hw->ctrl_cnt) {
-		hw->ctrl_urb->pipe = hw->ctrl_out_pipe;
+		hw->ctrl_urb->pipe = hw->__raw_write_pipe;
 		hw->ctrl_urb->setup_packet = (u_char *)&hw->ctrl_write;
 		hw->ctrl_urb->transfer_buffer = NULL;
 		hw->ctrl_urb->transfer_buffer_length = 0;
 		hw->ctrl_write.wIndex =
-		    cpu_to_le16(hw->ctrl_buff[hw->ctrl_out_idx].hfcs_reg);
+		    cpu_to_le16(hw->ctrl_buff[hw->__raw_write_idx].hfcs_reg);
 		hw->ctrl_write.wValue =
-		    cpu_to_le16(hw->ctrl_buff[hw->ctrl_out_idx].reg_val);
+		    cpu_to_le16(hw->ctrl_buff[hw->__raw_write_idx].reg_val);
 
 		usb_submit_urb(hw->ctrl_urb, GFP_ATOMIC);
 	}
@@ -98,11 +98,11 @@ static int write_reg(struct hfcsusb *hw, __u8 reg, __u8 val)
 	spin_lock(&hw->ctrl_lock);
 	if (hw->ctrl_cnt >= HFC_CTRL_BUFSIZE)
 		return 1;
-	buf = &hw->ctrl_buff[hw->ctrl_in_idx];
+	buf = &hw->ctrl_buff[hw->__raw_read_idx];
 	buf->hfcs_reg = reg;
 	buf->reg_val = val;
-	if (++hw->ctrl_in_idx >= HFC_CTRL_BUFSIZE)
-		hw->ctrl_in_idx = 0;
+	if (++hw->__raw_read_idx >= HFC_CTRL_BUFSIZE)
+		hw->__raw_read_idx = 0;
 	if (++hw->ctrl_cnt == 1)
 		ctrl_start_transfer(hw);
 	spin_unlock(&hw->ctrl_lock);
@@ -122,10 +122,10 @@ ctrl_complete(struct urb *urb)
 
 	urb->dev = hw->dev;
 	if (hw->ctrl_cnt) {
-		buf = &hw->ctrl_buff[hw->ctrl_out_idx];
+		buf = &hw->ctrl_buff[hw->__raw_write_idx];
 		hw->ctrl_cnt--;	/* decrement actual count */
-		if (++hw->ctrl_out_idx >= HFC_CTRL_BUFSIZE)
-			hw->ctrl_out_idx = 0;	/* pointer wrap */
+		if (++hw->__raw_write_idx >= HFC_CTRL_BUFSIZE)
+			hw->__raw_write_idx = 0;	/* pointer wrap */
 
 		ctrl_start_transfer(hw); /* start next transfer */
 	}
@@ -1753,7 +1753,7 @@ setup_hfcsusb(struct hfcsusb *hw)
 	hw->ctrl_write.bRequestType = 0x40;
 	hw->ctrl_write.bRequest = 0;
 	hw->ctrl_write.wLength = 0;
-	usb_fill_control_urb(hw->ctrl_urb, hw->dev, hw->ctrl_out_pipe,
+	usb_fill_control_urb(hw->ctrl_urb, hw->dev, hw->__raw_write_pipe,
 	    (u_char *)&hw->ctrl_write, NULL, 0,
 	    (usb_complete_t)ctrl_complete, hw);
 
@@ -2107,8 +2107,8 @@ hfcsusb_probe(struct usb_interface *intf, const struct usb_device_id *id)
 	hw->iso_packet_size = iso_packet_size;
 
 	/* create the control pipes needed for register access */
-	hw->ctrl_in_pipe = usb_rcvctrlpipe(hw->dev, 0);
-	hw->ctrl_out_pipe = usb_sndctrlpipe(hw->dev, 0);
+	hw->__raw_read_pipe = usb_rcvctrlpipe(hw->dev, 0);
+	hw->__raw_write_pipe = usb_sndctrlpipe(hw->dev, 0);
 	hw->ctrl_urb = usb_alloc_urb(0, GFP_KERNEL);
 
 	driver_info =

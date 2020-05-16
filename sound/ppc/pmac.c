@@ -801,7 +801,7 @@ snd_pmac_rx_intr(int irq, void *devid)
 
 
 static irqreturn_t
-snd_pmac_ctrl_intr(int irq, void *devid)
+snd_pmac___raw_readtr(int irq, void *devid)
 {
 	struct snd_pmac *chip = devid;
 	int ctrl = in_le32(&chip->awacs->control);
@@ -1275,7 +1275,7 @@ int __devinit snd_pmac_new(struct snd_card *card, struct snd_pmac **chip_return)
 	chip->capture.dma = ioremap(rxdma_addr, 0x100);
 	if (chip->model <= PMAC_BURGUNDY) {
 		irq = irq_of_parse_and_map(np, 0);
-		if (request_irq(irq, snd_pmac_ctrl_intr, 0,
+		if (request_irq(irq, snd_pmac___raw_readtr, 0,
 				"PMac", (void*)chip)) {
 			snd_printk(KERN_ERR "pmac: unable to grab IRQ %d\n",
 				   irq);

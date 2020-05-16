@@ -21,7 +21,7 @@
 
 /* Returns: 1 if being executed on the "HOST" ST40,
  *          0 if executed on the "RT" ST40 */
-#define FLI7510_ST40HOST_CORE ((ctrl_inl(CCN_PRR) & (1 << 7)) != 0)
+#define FLI7510_ST40HOST_CORE ((__raw_readl(CCN_PRR) & (1 << 7)) != 0)
 
 
 

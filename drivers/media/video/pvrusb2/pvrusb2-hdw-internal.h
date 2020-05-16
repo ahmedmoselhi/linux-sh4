@@ -373,7 +373,7 @@ struct pvr2_hdw {
 	VCREATE_DATA(srate);
 #undef VCREATE_DATA
 
-	struct pvr2_ctld_info *mpeg_ctrl_info;
+	struct pvr2_ctld_info *mpeg___raw_readfo;
 
 	struct pvr2_ctrl *controls;
 	unsigned int control_cnt;

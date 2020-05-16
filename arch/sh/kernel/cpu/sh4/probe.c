@@ -28,10 +28,10 @@ int __init detect_cpu_and_cache_system(void)
 		[9] = (1 << 16)
 	};
 
-	pvr = (ctrl_inl(CCN_PVR) >> 8) & 0xffffff;
-	prr_all = ctrl_inl(CCN_PRR);
+	pvr = (__raw_readl(CCN_PVR) >> 8) & 0xffffff;
+	prr_all = __raw_readl(CCN_PRR);
 	prr = (prr_all >> 4) & 0xff;
-	cvr = (ctrl_inl(CCN_CVR));
+	cvr = (__raw_readl(CCN_CVR));
 
 	/*
 	 * Setup some sane SH-4 defaults for the icache
@@ -238,7 +238,7 @@ int __init detect_cpu_and_cache_system(void)
 		boot_cpu_data.flags |= CPU_HAS_FPU;
 		boot_cpu_data.flags |= CPU_HAS_ICBI | CPU_HAS_SYNCO | CPU_HAS_FPCHG;
 		boot_cpu_data.flags &= ~CPU_HAS_PTEA;
-		ramcr = ctrl_inl(CCN_RAMCR);
+		ramcr = __raw_readl(CCN_RAMCR);
 		boot_cpu_data.icache.ways = (ramcr & (1<<7)) ? 2 : 4;
 		boot_cpu_data.dcache.ways = (ramcr & (1<<6)) ? 2 : 4;
 		break;

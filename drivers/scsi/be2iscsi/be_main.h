@@ -324,7 +324,7 @@ struct beiscsi_hba {
 	char wq_name[20];
 	struct workqueue_struct *wq;	/* The actuak work queue */
 	struct work_struct work_cqs;	/* The work being queued */
-	struct be_ctrl_info ctrl;
+	struct be___raw_readfo ctrl;
 };
 
 struct beiscsi_session {

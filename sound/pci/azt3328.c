@@ -420,25 +420,25 @@ snd_azf3328_codec_inl(const struct snd_azf3328_codec_data *codec, unsigned reg)
 }
 
 static inline void
-snd_azf3328_ctrl_outb(const struct snd_azf3328 *chip, unsigned reg, u8 value)
+snd_azf3328___raw_writeb(const struct snd_azf3328 *chip, unsigned reg, u8 value)
 {
 	outb(value, chip->ctrl_io + reg);
 }
 
 static inline u8
-snd_azf3328_ctrl_inb(const struct snd_azf3328 *chip, unsigned reg)
+snd_azf3328___raw_readb(const struct snd_azf3328 *chip, unsigned reg)
 {
 	return inb(chip->ctrl_io + reg);
 }
 
 static inline void
-snd_azf3328_ctrl_outw(const struct snd_azf3328 *chip, unsigned reg, u16 value)
+snd_azf3328___raw_writew(const struct snd_azf3328 *chip, unsigned reg, u16 value)
 {
 	outw(value, chip->ctrl_io + reg);
 }
 
 static inline void
-snd_azf3328_ctrl_outl(const struct snd_azf3328 *chip, unsigned reg, u32 value)
+snd_azf3328___raw_writel(const struct snd_azf3328 *chip, unsigned reg, u32 value)
 {
 	outl(value, chip->ctrl_io + reg);
 }
@@ -1043,7 +1043,7 @@ snd_azf3328_ctrl_reg_6AH_update(struct snd_azf3328 *chip,
 		chip->shadow_reg_ctrl_6AH &= ~bitmask;
 	snd_azf3328_dbgcodec("6AH_update mask 0x%04x do_mask %d: val 0x%04x\n",
 			bitmask, do_mask, chip->shadow_reg_ctrl_6AH);
-	snd_azf3328_ctrl_outw(chip, IDX_IO_6AH, chip->shadow_reg_ctrl_6AH);
+	snd_azf3328___raw_writew(chip, IDX_IO_6AH, chip->shadow_reg_ctrl_6AH);
 }
 
 static inline void
@@ -1670,7 +1670,7 @@ snd_azf3328_interrupt(int irq, void *dev_id)
 	static unsigned long irq_count;
 #endif
 
-	status = snd_azf3328_ctrl_inb(chip, IDX_IO_IRQSTATUS);
+	status = snd_azf3328___raw_readb(chip, IDX_IO_IRQSTATUS);
 
         /* fast path out, to ease interrupt sharing */
 	if (!(status &
@@ -1694,7 +1694,7 @@ snd_azf3328_interrupt(int irq, void *dev_id)
 			snd_timer_interrupt(chip->timer, chip->timer->sticks);
 		/* ACK timer */
                 spin_lock(&chip->reg_lock);
-		snd_azf3328_ctrl_outb(chip, IDX_IO_TIMER_VALUE + 3, 0x07);
+		snd_azf3328___raw_writeb(chip, IDX_IO_TIMER_VALUE + 3, 0x07);
 		spin_unlock(&chip->reg_lock);
 		snd_azf3328_dbgcodec("azt3328: timer IRQ\n");
 	}
@@ -1964,7 +1964,7 @@ snd_azf3328_timer_start(struct snd_timer *timer)
 	snd_azf3328_dbgtimer("setting timer countdown value %d, add COUNTDOWN|IRQ\n", delay);
 	delay |= TIMER_COUNTDOWN_ENABLE | TIMER_IRQ_ENABLE;
 	spin_lock_irqsave(&chip->reg_lock, flags);
-	snd_azf3328_ctrl_outl(chip, IDX_IO_TIMER_VALUE, delay);
+	snd_azf3328___raw_writel(chip, IDX_IO_TIMER_VALUE, delay);
 	spin_unlock_irqrestore(&chip->reg_lock, flags);
 	snd_azf3328_dbgcallleave();
 	return 0;
@@ -1981,7 +1981,7 @@ snd_azf3328_timer_stop(struct snd_timer *timer)
 	spin_lock_irqsave(&chip->reg_lock, flags);
 	/* disable timer countdown and interrupt */
 	/* FIXME: should we write TIMER_IRQ_ACK here? */
-	snd_azf3328_ctrl_outb(chip, IDX_IO_TIMER_VALUE + 3, 0);
+	snd_azf3328___raw_writeb(chip, IDX_IO_TIMER_VALUE + 3, 0);
 	spin_unlock_irqrestore(&chip->reg_lock, flags);
 	snd_azf3328_dbgcallleave();
 	return 0;
@@ -2147,7 +2147,7 @@ snd_azf3328_debug_show_ports(const struct snd_azf3328 *chip)
 
 	for (tmp = 0; tmp < AZF_IO_SIZE_CTRL; tmp += 2)
 		snd_azf3328_dbgmisc("ctrl 0x%02x: 0x%04x\n",
-			tmp, snd_azf3328_ctrl_inw(chip, tmp)
+			tmp, snd_azf3328___raw_readw(chip, tmp)
 		);
 
 	for (tmp = 0; tmp < AZF_IO_SIZE_MIXER; tmp += 2)

@@ -1785,7 +1785,7 @@ static int uvc_probe(struct usb_interface *intf,
 	}
 
 	/* Initialize controls. */
-	if (uvc_ctrl_init_device(dev) < 0)
+	if (uvc___raw_readit_device(dev) < 0)
 		goto error;
 
 	/* Scan the device for video chains. */
@@ -2198,7 +2198,7 @@ static int __init uvc_init(void)
 	mutex_init(&uvc_driver.open_mutex);
 	mutex_init(&uvc_driver.ctrl_mutex);
 
-	uvc_ctrl_init();
+	uvc___raw_readit();
 
 	result = usb_register(&uvc_driver.driver);
 	if (result == 0)

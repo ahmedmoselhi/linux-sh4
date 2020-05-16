@@ -112,7 +112,7 @@ void show_regs(struct pt_regs * regs)
 	printk("PC  : %08lx SP  : %08lx SR  : %08lx ",
 	       regs->pc, regs->regs[15], regs->sr);
 #ifdef CONFIG_MMU
-	printk("TEA : %08x\n", ctrl_inl(MMU_TEA));
+	printk("TEA : %08x\n", __raw_readl(MMU_TEA));
 #else
 	printk("\n");
 #endif
@@ -283,35 +283,35 @@ static void ubc_set_tracing(int asid, unsigned long pc)
 	val = (UBC_CBR_ID_INST | UBC_CBR_RW_READ | UBC_CBR_CE);
 	val |= (UBC_CBR_AIE | UBC_CBR_AIV_SET(asid));
 
-	ctrl_outl(val, UBC_CBR0);
-	ctrl_outl(pc,  UBC_CAR0);
-	ctrl_outl(0x0, UBC_CAMR0);
-	ctrl_outl(0x0, UBC_CBCR);
+	__raw_writel(val, UBC_CBR0);
+	__raw_writel(pc,  UBC_CAR0);
+	__raw_writel(0x0, UBC_CAMR0);
+	__raw_writel(0x0, UBC_CBCR);
 
 	val = (UBC_CRR_RES | UBC_CRR_PCB | UBC_CRR_BIE);
-	ctrl_outl(val, UBC_CRR0);
+	__raw_writel(val, UBC_CRR0);
 
 	/* Read UBC register that we wrote last, for checking update */
-	val = ctrl_inl(UBC_CRR0);
+	val = __raw_readl(UBC_CRR0);
 
 #else	/* CONFIG_CPU_SH4A */
-	ctrl_outl(pc, UBC_BARA);
+	__raw_writel(pc, UBC_BARA);
 
 #ifdef CONFIG_MMU
-	ctrl_outb(asid, UBC_BASRA);
+	__raw_writeb(asid, UBC_BASRA);
 #endif
 
-	ctrl_outb(0, UBC_BAMRA);
+	__raw_writeb(0, UBC_BAMRA);
 
 	if (current_cpu_data.type == CPU_SH7729 ||
 	    current_cpu_data.type == CPU_SH7710 ||
 	    current_cpu_data.type == CPU_SH7712 ||
 	    current_cpu_data.type == CPU_SH7203){
-		ctrl_outw(BBR_INST | BBR_READ | BBR_CPU, UBC_BBRA);
-		ctrl_outl(BRCR_PCBA | BRCR_PCTE, UBC_BRCR);
+		__raw_writew(BBR_INST | BBR_READ | BBR_CPU, UBC_BBRA);
+		__raw_writel(BRCR_PCBA | BRCR_PCTE, UBC_BRCR);
 	} else {
-		ctrl_outw(BBR_INST | BBR_READ, UBC_BBRA);
-		ctrl_outw(BRCR_PCBA, UBC_BRCR);
+		__raw_writew(BBR_INST | BBR_READ, UBC_BBRA);
+		__raw_writew(BRCR_PCBA, UBC_BRCR);
 	}
 #endif	/* CONFIG_CPU_SH4A */
 }
@@ -358,11 +358,11 @@ __switch_to(struct task_struct *prev, struct task_struct *next)
 		ubc_set_tracing(asid, next->thread.ubc_pc);
 	} else {
 #if defined(CONFIG_CPU_SH4A)
-		ctrl_outl(UBC_CBR_INIT, UBC_CBR0);
-		ctrl_outl(UBC_CRR_INIT, UBC_CRR0);
+		__raw_writel(UBC_CBR_INIT, UBC_CBR0);
+		__raw_writel(UBC_CRR_INIT, UBC_CRR0);
 #else
-		ctrl_outw(0, UBC_BBRA);
-		ctrl_outw(0, UBC_BBRB);
+		__raw_writew(0, UBC_BBRA);
+		__raw_writew(0, UBC_BBRB);
 #endif
 	}
 
@@ -472,12 +472,12 @@ asmlinkage void break_point_trap(void)
 {
 	/* Clear tracing.  */
 #if defined(CONFIG_CPU_SH4A)
-	ctrl_outl(UBC_CBR_INIT, UBC_CBR0);
-	ctrl_outl(UBC_CRR_INIT, UBC_CRR0);
+	__raw_writel(UBC_CBR_INIT, UBC_CBR0);
+	__raw_writel(UBC_CRR_INIT, UBC_CRR0);
 #else
-	ctrl_outw(0, UBC_BBRA);
-	ctrl_outw(0, UBC_BBRB);
-	ctrl_outl(0, UBC_BRCR);
+	__raw_writew(0, UBC_BBRA);
+	__raw_writew(0, UBC_BBRB);
+	__raw_writel(0, UBC_BRCR);
 #endif
 	current->thread.ubc_pc = 0;
 	ubc_usercnt -= 1;

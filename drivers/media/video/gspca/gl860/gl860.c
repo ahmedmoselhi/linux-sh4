@@ -483,7 +483,7 @@ static void sd_callback(struct gspca_dev *gspca_dev)
 		u8 upsideDown;
 
 		/* Probe sensor orientation */
-		ctrl_in(gspca_dev, 0xc0, 2, 0x0000, 0x0000, 1, (void *)&state);
+		__raw_read(gspca_dev, 0xc0, 2, 0x0000, 0x0000, 1, (void *)&state);
 
 		/* C8/40 means upside-down (looking backwards) */
 		/* D8/50 means right-up (looking onwards) */
@@ -636,7 +636,7 @@ int fetch_validx(struct gspca_dev *gspca_dev, struct validx *tbl, int len)
 
 	for (n = 0; n < len; n++) {
 		if (tbl[n].idx != 0xffff)
-			ctrl_out(gspca_dev, 0x40, 1, tbl[n].val,
+			__raw_write(gspca_dev, 0x40, 1, tbl[n].val,
 					tbl[n].idx, 0, NULL);
 		else if (tbl[n].val == 0xffff)
 			break;
@@ -651,7 +651,7 @@ int keep_on_fetching_validx(struct gspca_dev *gspca_dev, struct validx *tbl,
 {
 	while (++n < len) {
 		if (tbl[n].idx != 0xffff)
-			ctrl_out(gspca_dev, 0x40, 1, tbl[n].val, tbl[n].idx,
+			__raw_write(gspca_dev, 0x40, 1, tbl[n].val, tbl[n].idx,
 					0, NULL);
 		else if (tbl[n].val == 0xffff)
 			break;
@@ -667,7 +667,7 @@ void fetch_idxdata(struct gspca_dev *gspca_dev, struct idxdata *tbl, int len)
 
 	for (n = 0; n < len; n++) {
 		if (memcmp(tbl[n].data, "\xff\xff\xff", 3) != 0)
-			ctrl_out(gspca_dev, 0x40, 3, 0x7a00, tbl[n].idx,
+			__raw_write(gspca_dev, 0x40, 3, 0x7a00, tbl[n].idx,
 					3, tbl[n].data);
 		else
 			msleep(tbl[n].idx);
@@ -684,33 +684,33 @@ static int gl860_guess_sensor(struct gspca_dev *gspca_dev,
 		sd->sensor = ID_MI1320;
 
 	if (sd->sensor == 0xff) {
-		ctrl_in(gspca_dev, 0xc0, 2, 0x0000, 0x0004, 1, &probe);
-		ctrl_in(gspca_dev, 0xc0, 2, 0x0000, 0x0004, 1, &probe);
+		__raw_read(gspca_dev, 0xc0, 2, 0x0000, 0x0004, 1, &probe);
+		__raw_read(gspca_dev, 0xc0, 2, 0x0000, 0x0004, 1, &probe);
 
-		ctrl_out(gspca_dev, 0x40, 1, 0x0000, 0x0000, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0x0000, 0x0000, 0, NULL);
 		msleep(3);
-		ctrl_out(gspca_dev, 0x40, 1, 0x0010, 0x0010, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0x0010, 0x0010, 0, NULL);
 		msleep(3);
-		ctrl_out(gspca_dev, 0x40, 1, 0x0008, 0x00c0, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0x0008, 0x00c0, 0, NULL);
 		msleep(3);
-		ctrl_out(gspca_dev, 0x40, 1, 0x0001, 0x00c1, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0x0001, 0x00c1, 0, NULL);
 		msleep(3);
-		ctrl_out(gspca_dev, 0x40, 1, 0x0001, 0x00c2, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0x0001, 0x00c2, 0, NULL);
 		msleep(3);
-		ctrl_out(gspca_dev, 0x40, 1, 0x0020, 0x0006, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0x0020, 0x0006, 0, NULL);
 		msleep(3);
-		ctrl_out(gspca_dev, 0x40, 1, 0x006a, 0x000d, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0x006a, 0x000d, 0, NULL);
 		msleep(56);
 
 		nOV = 0;
 		for (ntry = 0; ntry < 4; ntry++) {
-			ctrl_out(gspca_dev, 0x40, 1, 0x0040, 0x0000, 0, NULL);
+			__raw_write(gspca_dev, 0x40, 1, 0x0040, 0x0000, 0, NULL);
 			msleep(3);
-			ctrl_out(gspca_dev, 0x40, 1, 0x0063, 0x0006, 0, NULL);
+			__raw_write(gspca_dev, 0x40, 1, 0x0063, 0x0006, 0, NULL);
 			msleep(3);
-			ctrl_out(gspca_dev, 0x40, 1, 0x7a00, 0x8030, 0, NULL);
+			__raw_write(gspca_dev, 0x40, 1, 0x7a00, 0x8030, 0, NULL);
 			msleep(10);
-			ctrl_in(gspca_dev, 0xc0, 2, 0x7a00, 0x8030, 1, &probe);
+			__raw_read(gspca_dev, 0xc0, 2, 0x7a00, 0x8030, 1, &probe);
 			PDEBUG(D_PROBE, "1st probe=%02x", probe);
 			if (probe == 0xff)
 				nOV++;
@@ -722,14 +722,14 @@ static int gl860_guess_sensor(struct gspca_dev *gspca_dev,
 
 			nb26 = nb96 = 0;
 			for (ntry = 0; ntry < 4; ntry++) {
-				ctrl_out(gspca_dev, 0x40, 1, 0x0040, 0x0000,
+				__raw_write(gspca_dev, 0x40, 1, 0x0040, 0x0000,
 						0, NULL);
 				msleep(3);
-				ctrl_out(gspca_dev, 0x40, 1, 0x6000, 0x800a,
+				__raw_write(gspca_dev, 0x40, 1, 0x6000, 0x800a,
 						0, NULL);
 				msleep(10);
 				/* Wait for 26(OV2640) or 96(OV9655) */
-				ctrl_in(gspca_dev, 0xc0, 2, 0x6000, 0x800a,
+				__raw_read(gspca_dev, 0xc0, 2, 0x6000, 0x800a,
 						1, &probe);
 
 				PDEBUG(D_PROBE, "2nd probe=%02x", probe);

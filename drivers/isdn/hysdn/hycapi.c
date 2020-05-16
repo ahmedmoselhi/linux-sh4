@@ -61,7 +61,7 @@ Kernel-Capi callback reset_ctr
 static void
 hycapi_reset_ctr(struct capi_ctr *ctrl)
 {
-	hycapictrl_info *cinfo = ctrl->driverdata;
+	hycapi__raw_readfo *cinfo = ctrl->driverdata;
 
 #ifdef HYCAPI_PRINTFNAMES
 	printk(KERN_NOTICE "HYCAPI hycapi_reset_ctr\n");
@@ -78,14 +78,14 @@ static void
 hycapi_remove_ctr(struct capi_ctr *ctrl)
 {
 	int i;
-	hycapictrl_info *cinfo = NULL;
+	hycapi__raw_readfo *cinfo = NULL;
 	hysdn_card *card = NULL;
 #ifdef HYCAPI_PRINTFNAMES
 	printk(KERN_NOTICE "HYCAPI hycapi_remove_ctr\n");
 #endif 
-	cinfo = (hycapictrl_info *)(ctrl->driverdata);
+	cinfo = (hycapi__raw_readfo *)(ctrl->driverdata);
 	if(!cinfo) {
-		printk(KERN_ERR "No hycapictrl_info set!");
+		printk(KERN_ERR "No hycapi__raw_readfo set!");
 		return;
 	}    
 	card = cinfo->card;
@@ -113,7 +113,7 @@ Queue a CAPI-message to the controller.
 static void
 hycapi_sendmsg_internal(struct capi_ctr *ctrl, struct sk_buff *skb)
 {
-	hycapictrl_info *cinfo = (hycapictrl_info *)(ctrl->driverdata);
+	hycapi__raw_readfo *cinfo = (hycapi__raw_readfo *)(ctrl->driverdata);
 	hysdn_card *card = cinfo->card;
 
 	spin_lock_irq(&cinfo->lock);
@@ -149,7 +149,7 @@ hycapi_register_internal(struct capi_ctr *ctrl, __u16 appl,
 			 capi_register_params *rp)
 {
 	char ExtFeatureDefaults[] = "49  /0/0/0/0,*/1,*/2,*/3,*/4,*/5,*/6,*/7,*/8,*/9,*";
-	hycapictrl_info *cinfo = (hycapictrl_info *)(ctrl->driverdata);
+	hycapi__raw_readfo *cinfo = (hycapi__raw_readfo *)(ctrl->driverdata);
 	hysdn_card *card = cinfo->card;
 	struct sk_buff *skb;
 	__u16 len;
@@ -221,7 +221,7 @@ hycapi_register_appl(struct capi_ctr *ctrl, __u16 appl,
 		     capi_register_params *rp)
 {
 	int MaxLogicalConnections = 0, MaxBDataBlocks = 0, MaxBDataLen = 0;
-	hycapictrl_info *cinfo = (hycapictrl_info *)(ctrl->driverdata);
+	hycapi__raw_readfo *cinfo = (hycapi__raw_readfo *)(ctrl->driverdata);
 	hysdn_card *card = cinfo->card;
 	int chk = _hycapi_appCheck(appl, ctrl->cnr);
 	if(chk < 0) {
@@ -258,7 +258,7 @@ Send down a CAPI_RELEASE to the controller.
 
 static void hycapi_release_internal(struct capi_ctr *ctrl, __u16 appl)
 {
-	hycapictrl_info *cinfo = (hycapictrl_info *)(ctrl->driverdata);
+	hycapi__raw_readfo *cinfo = (hycapi__raw_readfo *)(ctrl->driverdata);
 	hysdn_card *card = cinfo->card;
 	struct sk_buff *skb;
 	__u16 len;
@@ -319,7 +319,7 @@ Kill a single controller.
 
 int hycapi_capi_release(hysdn_card *card)
 {
-	hycapictrl_info *cinfo = card->hyctrlinfo;
+	hycapi__raw_readfo *cinfo = card->hyctrlinfo;
 	struct capi_ctr *ctrl;
 #ifdef HYCAPI_PRINTFNAMES
 	printk(KERN_NOTICE "hycapi_capi_release\n");
@@ -339,7 +339,7 @@ Stop CAPI-Output on a card. (e.g. during reboot)
 
 int hycapi_capi_stop(hysdn_card *card)
 {
-	hycapictrl_info *cinfo = card->hyctrlinfo;
+	hycapi__raw_readfo *cinfo = card->hyctrlinfo;
 	struct capi_ctr *ctrl;
 #ifdef HYCAPI_PRINTFNAMES
 	printk(KERN_NOTICE "hycapi_capi_stop\n");
@@ -370,7 +370,7 @@ static u16 hycapi_send_message(struct capi_ctr *ctrl, struct sk_buff *skb)
 	__u16 appl_id;
 	int _len, _len2;
 	__u8 msghead[64];
-	hycapictrl_info *cinfo = ctrl->driverdata;
+	hycapi__raw_readfo *cinfo = ctrl->driverdata;
 	u16 retval = CAPI_NOERROR;
 
 	appl_id = CAPIMSG_APPID(skb->data);
@@ -442,7 +442,7 @@ Informations provided in the /proc/capi-entries.
 static int hycapi_read_proc(char *page, char **start, off_t off,
 			    int count, int *eof, struct capi_ctr *ctrl)
 {
-	hycapictrl_info *cinfo = (hycapictrl_info *)(ctrl->driverdata);
+	hycapi__raw_readfo *cinfo = (hycapi__raw_readfo *)(ctrl->driverdata);
 	hysdn_card *card = cinfo->card;
 	int len = 0;
 	char *s;
@@ -498,7 +498,7 @@ static int hycapi_load_firmware(struct capi_ctr *ctrl, capiloaddata *data)
 
 static char *hycapi_procinfo(struct capi_ctr *ctrl)
 {
-	hycapictrl_info *cinfo = (hycapictrl_info *)(ctrl->driverdata);
+	hycapi__raw_readfo *cinfo = (hycapi__raw_readfo *)(ctrl->driverdata);
 #ifdef HYCAPI_PRINTFNAMES
 	printk(KERN_NOTICE "hycapi_proc_info\n");    
 #endif
@@ -527,7 +527,7 @@ void
 hycapi_rx_capipkt(hysdn_card * card, unsigned char *buf, unsigned short len)
 {
 	struct sk_buff *skb;
-	hycapictrl_info *cinfo = card->hyctrlinfo;
+	hycapi__raw_readfo *cinfo = card->hyctrlinfo;
 	struct capi_ctr *ctrl;
 	__u16 ApplId;
 	__u16 MsgLen, info;
@@ -631,7 +631,7 @@ internal queue.
 
 void hycapi_tx_capiack(hysdn_card * card)
 {
-	hycapictrl_info *cinfo = card->hyctrlinfo;
+	hycapi__raw_readfo *cinfo = card->hyctrlinfo;
 #ifdef HYCAPI_PRINTFNAMES
 	printk(KERN_NOTICE "hycapi_tx_capiack\n");    
 #endif
@@ -659,7 +659,7 @@ This is called when polling for messages to SEND.
 struct sk_buff *
 hycapi_tx_capiget(hysdn_card *card)
 {
-	hycapictrl_info *cinfo = card->hyctrlinfo;
+	hycapi__raw_readfo *cinfo = card->hyctrlinfo;
 	if(!cinfo) {
 		return (struct sk_buff *)NULL;
 	}
@@ -706,7 +706,7 @@ Attach the card with its capi-ctrl.
 
 static void hycapi_fill_profile(hysdn_card *card)
 {
-	hycapictrl_info *cinfo = NULL;
+	hycapi__raw_readfo *cinfo = NULL;
 	struct capi_ctr *ctrl = NULL;
 	cinfo = card->hyctrlinfo;
 	if(!cinfo) return;
@@ -736,7 +736,7 @@ static void hycapi_fill_profile(hysdn_card *card)
 int 
 hycapi_capi_create(hysdn_card *card)
 {
-	hycapictrl_info *cinfo = NULL;
+	hycapi__raw_readfo *cinfo = NULL;
 	struct capi_ctr *ctrl = NULL;
 	int retval;
 #ifdef HYCAPI_PRINTFNAMES
@@ -746,7 +746,7 @@ hycapi_capi_create(hysdn_card *card)
 		return 1;
 	}
 	if (!card->hyctrlinfo) {
-		cinfo = kzalloc(sizeof(hycapictrl_info), GFP_ATOMIC);
+		cinfo = kzalloc(sizeof(hycapi__raw_readfo), GFP_ATOMIC);
 		if (!cinfo) {
 			printk(KERN_WARNING "HYSDN: no memory for capi-ctrl.\n");
 			return -ENOMEM;

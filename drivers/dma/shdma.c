@@ -48,12 +48,12 @@
 #define SH_DMAC_CHAN_BASE(id) (dma_base_addr[id])
 static void sh_dmae_writel(struct sh_dmae_chan *sh_dc, u32 data, u32 reg)
 {
-	ctrl_outl(data, (SH_DMAC_CHAN_BASE(sh_dc->id) + reg));
+	__raw_writel(data, (SH_DMAC_CHAN_BASE(sh_dc->id) + reg));
 }
 
 static u32 sh_dmae_readl(struct sh_dmae_chan *sh_dc, u32 reg)
 {
-	return ctrl_inl((SH_DMAC_CHAN_BASE(sh_dc->id) + reg));
+	return __raw_readl((SH_DMAC_CHAN_BASE(sh_dc->id) + reg));
 }
 
 static void dmae_init(struct sh_dmae_chan *sh_chan)
@@ -176,8 +176,8 @@ static int dmae_set_dmars(struct sh_dmae_chan *sh_chan, u16 val)
 		return -EINVAL;
 	}
 
-	ctrl_outw((val << shift) |
-		(ctrl_inw(addr) & (shift ? 0xFF00 : 0x00FF)),
+	__raw_writew((val << shift) |
+		(__raw_readw(addr) & (shift ? 0xFF00 : 0x00FF)),
 		addr);
 
 	return 0;

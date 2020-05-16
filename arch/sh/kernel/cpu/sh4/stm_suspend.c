@@ -45,7 +45,7 @@ static struct stm_platform_suspend_t *platform_suspend;
 
 static unsigned long stm_read_intevt(void)
 {
-	return ctrl_inl(INTEVT);
+	return __raw_readl(INTEVT);
 }
 
 static int stm_suspend_enter(suspend_state_t state)

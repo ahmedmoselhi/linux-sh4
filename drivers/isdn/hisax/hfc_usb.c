@@ -175,8 +175,8 @@ typedef struct hfcusb_data {
 	int if_used;		/* used interface number */
 	int alt_used;		/* used alternate config */
 	int ctrl_paksize;	/* control pipe packet size */
-	int ctrl_in_pipe,	/* handles for control pipe */
-	    ctrl_out_pipe;
+	int __raw_read_pipe,	/* handles for control pipe */
+	    __raw_write_pipe;
 	int cfg_used;		/* configuration index used */
 	int vend_idx;		/* vendor found */
 	int b_mode[2];		/* B-channel mode */
@@ -186,7 +186,7 @@ typedef struct hfcusb_data {
 
 	/* control pipe background handling */
 	ctrl_buft ctrl_buff[HFC_CTRL_BUFSIZE];	/* buffer holding queued data */
-	volatile int ctrl_in_idx, ctrl_out_idx, ctrl_cnt;	/* input/output pointer + count */
+	volatile int __raw_read_idx, __raw_write_idx, ctrl_cnt;	/* input/output pointer + count */
 	struct urb *ctrl_urb;	/* transfer structure for control channel */
 
 	struct usb_ctrlrequest ctrl_write;	/* buffer for control write request */
@@ -222,14 +222,14 @@ static void
 ctrl_start_transfer(hfcusb_data * hfc)
 {
 	if (hfc->ctrl_cnt) {
-		hfc->ctrl_urb->pipe = hfc->ctrl_out_pipe;
+		hfc->ctrl_urb->pipe = hfc->__raw_write_pipe;
 		hfc->ctrl_urb->setup_packet = (u_char *) & hfc->ctrl_write;
 		hfc->ctrl_urb->transfer_buffer = NULL;
 		hfc->ctrl_urb->transfer_buffer_length = 0;
 		hfc->ctrl_write.wIndex =
-		    cpu_to_le16(hfc->ctrl_buff[hfc->ctrl_out_idx].hfc_reg);
+		    cpu_to_le16(hfc->ctrl_buff[hfc->__raw_write_idx].hfc_reg);
 		hfc->ctrl_write.wValue =
-		    cpu_to_le16(hfc->ctrl_buff[hfc->ctrl_out_idx].reg_val);
+		    cpu_to_le16(hfc->ctrl_buff[hfc->__raw_write_idx].reg_val);
 
 		usb_submit_urb(hfc->ctrl_urb, GFP_ATOMIC);	/* start transfer */
 	}
@@ -242,12 +242,12 @@ queue_control_request(hfcusb_data * hfc, __u8 reg, __u8 val, int action)
 
 	if (hfc->ctrl_cnt >= HFC_CTRL_BUFSIZE)
 		return (1);	/* no space left */
-	buf = &hfc->ctrl_buff[hfc->ctrl_in_idx];	/* pointer to new index */
+	buf = &hfc->ctrl_buff[hfc->__raw_read_idx];	/* pointer to new index */
 	buf->hfc_reg = reg;
 	buf->reg_val = val;
 	buf->action = action;
-	if (++hfc->ctrl_in_idx >= HFC_CTRL_BUFSIZE)
-		hfc->ctrl_in_idx = 0;	/* pointer wrap */
+	if (++hfc->__raw_read_idx >= HFC_CTRL_BUFSIZE)
+		hfc->__raw_read_idx = 0;	/* pointer wrap */
 	if (++hfc->ctrl_cnt == 1)
 		ctrl_start_transfer(hfc);
 	return (0);
@@ -261,10 +261,10 @@ ctrl_complete(struct urb *urb)
 
 	urb->dev = hfc->dev;
 	if (hfc->ctrl_cnt) {
-		buf = &hfc->ctrl_buff[hfc->ctrl_out_idx];
+		buf = &hfc->ctrl_buff[hfc->__raw_write_idx];
 		hfc->ctrl_cnt--;	/* decrement actual count */
-		if (++hfc->ctrl_out_idx >= HFC_CTRL_BUFSIZE)
-			hfc->ctrl_out_idx = 0;	/* pointer wrap */
+		if (++hfc->__raw_write_idx >= HFC_CTRL_BUFSIZE)
+			hfc->__raw_write_idx = 0;	/* pointer wrap */
 
 		ctrl_start_transfer(hfc);	/* start next transfer */
 	}
@@ -1185,7 +1185,7 @@ hfc_usb_init(hfcusb_data * hfc)
 	hfc->ctrl_write.wLength = 0;
 	usb_fill_control_urb(hfc->ctrl_urb,
 			     hfc->dev,
-			     hfc->ctrl_out_pipe,
+			     hfc->__raw_write_pipe,
 			     (u_char *) & hfc->ctrl_write,
 			     NULL, 0, ctrl_complete, hfc);
 	/* Init All Fifos */
@@ -1480,9 +1480,9 @@ hfc_usb_probe(struct usb_interface *intf, const struct usb_device_id *id)
 			context->iso_packet_size = iso_packet_size;
 
 			/* create the control pipes needed for register access */
-			context->ctrl_in_pipe =
+			context->__raw_read_pipe =
 			    usb_rcvctrlpipe(context->dev, 0);
-			context->ctrl_out_pipe =
+			context->__raw_write_pipe =
 			    usb_sndctrlpipe(context->dev, 0);
 			context->ctrl_urb = usb_alloc_urb(0, GFP_KERNEL);
 

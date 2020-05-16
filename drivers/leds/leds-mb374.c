@@ -37,7 +37,7 @@ static void mb374_led_epld_set(struct led_classdev *led_cdev, enum led_brightnes
 {
 	struct mb374_led *led_dev =
 		container_of(led_cdev, struct mb374_led, cdev);
-	ctrl_outl(1 << led_dev->u.bit, brightness ? EPLD_LED_SET : EPLD_LED_CLR);
+	__raw_writel(1 << led_dev->u.bit, brightness ? EPLD_LED_SET : EPLD_LED_CLR);
 }
 
 #define MB374_EPLD_LED(_n, _bit)				\

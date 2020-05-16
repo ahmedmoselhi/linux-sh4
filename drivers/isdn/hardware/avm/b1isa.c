@@ -39,7 +39,7 @@ MODULE_LICENSE("GPL");
 
 static void b1isa_remove(struct pci_dev *pdev)
 {
-	avmctrl_info *cinfo = pci_get_drvdata(pdev);
+	avm__raw_readfo *cinfo = pci_get_drvdata(pdev);
 	avmcard *card;
 
 	if (!cinfo)
@@ -62,7 +62,7 @@ static char *b1isa_procinfo(struct capi_ctr *ctrl);
 
 static int b1isa_probe(struct pci_dev *pdev)
 {
-	avmctrl_info *cinfo;
+	avm__raw_readfo *cinfo;
 	avmcard *card;
 	int retval;
 
@@ -148,7 +148,7 @@ static int b1isa_probe(struct pci_dev *pdev)
 
 static char *b1isa_procinfo(struct capi_ctr *ctrl)
 {
-	avmctrl_info *cinfo = (avmctrl_info *)(ctrl->driverdata);
+	avm__raw_readfo *cinfo = (avm__raw_readfo *)(ctrl->driverdata);
 
 	if (!cinfo)
 		return "";

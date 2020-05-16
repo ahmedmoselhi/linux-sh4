@@ -164,7 +164,7 @@ static inline void enable_mmu(void)
 		mmucr_init |= MMUCR_SE;
 #endif
 
-	ctrl_outl(mmucr_init, MMUCR);
+	__raw_writel(mmucr_init, MMUCR);
 	ctrl_barrier();
 
 	if (asid_cache(cpu) == NO_CONTEXT)
@@ -177,9 +177,9 @@ static inline void disable_mmu(void)
 {
 	unsigned long cr;
 
-	cr = ctrl_inl(MMUCR);
+	cr = __raw_readl(MMUCR);
 	cr &= ~MMU_CONTROL_INIT;
-	ctrl_outl(cr, MMUCR);
+	__raw_writel(cr, MMUCR);
 
 	ctrl_barrier();
 }

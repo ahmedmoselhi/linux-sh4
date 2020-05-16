@@ -663,7 +663,7 @@ static void smc_hardware_send_packet( struct net_device * dev )
 #if !defined(__H8300H__) && !defined(__H8300S__)
 		outw( *((word *)(buf + (length & 0xFFFFFFFC))),ioaddr +DATA_1);
 #else
-		ctrl_outw( *((word *)(buf + (length & 0xFFFFFFFC))),ioaddr +DATA_1);
+		__raw_writew( *((word *)(buf + (length & 0xFFFFFFFC))),ioaddr +DATA_1);
 #endif
 	}
 	else

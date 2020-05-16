@@ -144,7 +144,7 @@ void __uses_jump_to_uncached stm_hom_cache_init(void)
 	unsigned long ccr, flags;
 
 	jump_to_uncached();
-	ccr = ctrl_inl(CCR);
+	ccr = __raw_readl(CCR);
 	/*
 	 * Default CCR values .. enable the caches
 	 * and invalidate them immediately..
@@ -167,7 +167,7 @@ void __uses_jump_to_uncached stm_hom_cache_init(void)
 			for (addr = addrstart;
 			     addr < addrstart + waysize;
 			     addr += current_cpu_data.dcache.linesz)
-				ctrl_outl(0, addr);
+				__raw_writel(0, addr);
 
 			addrstart += current_cpu_data.dcache.way_incr;
 		} while (--ways);
@@ -184,7 +184,7 @@ void __uses_jump_to_uncached stm_hom_cache_init(void)
 	flags &= ~CCR_CACHE_ENABLE;
 #endif
 
-	ctrl_outl(flags, CCR);
+	__raw_writel(flags, CCR);
 	back_to_cached();
 }
 

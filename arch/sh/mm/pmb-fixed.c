@@ -22,7 +22,7 @@ static int __uses_jump_to_uncached fixed_pmb_init(void)
 
 	for (i = 0; i < PMB_ENTRY_MAX; i++) {
 		addr = PMB_DATA + (i << PMB_E_SHIFT);
-		data = ctrl_inl(addr);
+		data = __raw_readl(addr);
 		if (!(data & PMB_V))
 			continue;
 
@@ -35,7 +35,7 @@ static int __uses_jump_to_uncached fixed_pmb_init(void)
 			data &= ~(PMB_C | PMB_WT);
 #endif
 		}
-		ctrl_outl(data, addr);
+		__raw_writel(data, addr);
 	}
 
 	back_to_cached();

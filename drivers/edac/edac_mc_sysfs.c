@@ -125,7 +125,7 @@ static const char *edac_caps[] = {
 
 
 
-static ssize_t memctrl_int_store(void *ptr, const char *buffer, size_t count)
+static ssize_t mem__raw_readt_store(void *ptr, const char *buffer, size_t count)
 {
 	int *value = (int *)ptr;
 
@@ -455,7 +455,7 @@ static ssize_t mci_sdram_scrub_rate_store(struct mem_ctl_info *mci,
 
 	if (mci->set_sdram_scrub_rate) {
 
-		memctrl_int_store(&bandwidth, data, count);
+		mem__raw_readt_store(&bandwidth, data, count);
 
 		if (!(*mci->set_sdram_scrub_rate) (mci, &bandwidth)) {
 			edac_printk(KERN_DEBUG, EDAC_MC,

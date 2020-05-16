@@ -358,7 +358,7 @@ fail:
 	return NULL;
 }
 
-extern int bbc_envctrl_init(struct bbc_i2c_bus *bp);
+extern int bbc_env__raw_readit(struct bbc_i2c_bus *bp);
 extern void bbc_envctrl_cleanup(struct bbc_i2c_bus *bp);
 
 static int __devinit bbc_i2c_probe(struct of_device *op,
@@ -371,7 +371,7 @@ static int __devinit bbc_i2c_probe(struct of_device *op,
 	if (!bp)
 		return -EINVAL;
 
-	err = bbc_envctrl_init(bp);
+	err = bbc_env__raw_readit(bp);
 	if (err) {
 		free_irq(op->irqs[0], bp);
 		if (bp->i2c_bussel_reg)

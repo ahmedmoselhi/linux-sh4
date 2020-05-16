@@ -191,7 +191,7 @@ typedef struct HYSDN_CARD {
 
 	spinlock_t hysdn_lock;
 #ifdef CONFIG_HYSDN_CAPI
-	struct hycapictrl_info {
+	struct hycapi__raw_readfo {
 		char cardname[32];
 		spinlock_t lock;
 		int versionlen;
@@ -213,7 +213,7 @@ typedef struct HYSDN_CARD {
 } hysdn_card;
 
 #ifdef CONFIG_HYSDN_CAPI
-typedef struct hycapictrl_info hycapictrl_info;
+typedef struct hycapi__raw_readfo hycapi__raw_readfo;
 #endif /* CONFIG_HYSDN_CAPI */
 
 

@@ -495,14 +495,14 @@ static void __init sh_eth_init(void)
 	clk_enable(eth_clk);
 
 	/* reset sh-eth */
-	ctrl_outl(0x1, SH_ETH_ADDR + 0x0);
+	__raw_writel(0x1, SH_ETH_ADDR + 0x0);
 
 	/* set MAC addr */
-	ctrl_outl((mac[0] << 24) |
+	__raw_writel((mac[0] << 24) |
 		  (mac[1] << 16) |
 		  (mac[2] <<  8) |
 		  (mac[3] <<  0), SH_ETH_MAHR);
-	ctrl_outl((mac[4] <<  8) |
+	__raw_writel((mac[4] <<  8) |
 		  (mac[5] <<  0), SH_ETH_MALR);
 
 	clk_put(eth_clk);
@@ -530,7 +530,7 @@ static int __init arch_setup(void)
 	gpio_direction_output(GPIO_PTG1, 0);
 	gpio_direction_output(GPIO_PTG2, 0);
 	gpio_direction_output(GPIO_PTG3, 0);
-	ctrl_outw((ctrl_inw(PORT_HIZA) & ~(0x1 << 1)) , PORT_HIZA);
+	__raw_writew((__raw_readw(PORT_HIZA) & ~(0x1 << 1)) , PORT_HIZA);
 
 	/* enable SH-Eth */
 	gpio_request(GPIO_PTA1, NULL);
@@ -550,16 +550,16 @@ static int __init arch_setup(void)
 	gpio_request(GPIO_FN_LNKSTA,       NULL);
 
 	/* enable USB */
-	ctrl_outw(0x0000, 0xA4D80000);
-	ctrl_outw(0x0000, 0xA4D90000);
+	__raw_writew(0x0000, 0xA4D80000);
+	__raw_writew(0x0000, 0xA4D90000);
 	gpio_request(GPIO_PTB3,  NULL);
 	gpio_request(GPIO_PTB4,  NULL);
 	gpio_request(GPIO_PTB5,  NULL);
 	gpio_direction_input(GPIO_PTB3);
 	gpio_direction_output(GPIO_PTB4, 0);
 	gpio_direction_output(GPIO_PTB5, 0);
-	ctrl_outw(0x0600, 0xa40501d4);
-	ctrl_outw(0x0600, 0xa4050192);
+	__raw_writew(0x0600, 0xa40501d4);
+	__raw_writew(0x0600, 0xa4050192);
 
 	/* enable LCDC */
 	gpio_request(GPIO_FN_LCDD23,   NULL);
@@ -592,7 +592,7 @@ static int __init arch_setup(void)
 	gpio_request(GPIO_FN_LCDVSYN,  NULL);
 	gpio_request(GPIO_FN_LCDDON,   NULL);
 	gpio_request(GPIO_FN_LCDLCLK,  NULL);
-	ctrl_outw((ctrl_inw(PORT_HIZA) & ~0x0001), PORT_HIZA);
+	__raw_writew((__raw_readw(PORT_HIZA) & ~0x0001), PORT_HIZA);
 
 	gpio_request(GPIO_PTE6, NULL);
 	gpio_request(GPIO_PTU1, NULL);
@@ -604,7 +604,7 @@ static int __init arch_setup(void)
 	gpio_direction_output(GPIO_PTA2, 0);
 
 	/* I/O buffer drive ability is low */
-	ctrl_outw((ctrl_inw(IODRIVEA) & ~0x00c0) | 0x0040 , IODRIVEA);
+	__raw_writew((__raw_readw(IODRIVEA) & ~0x00c0) | 0x0040 , IODRIVEA);
 
 	if (gpio_get_value(GPIO_PTE6)) {
 		/* DVI */

@@ -407,37 +407,37 @@ struct be_cmd_resp_get_mac_addr {
 	u32 rsvd[23];
 };
 
-int beiscsi_cmd_eq_create(struct be_ctrl_info *ctrl,
+int beiscsi_cmd_eq_create(struct be___raw_readfo *ctrl,
 			  struct be_queue_info *eq, int eq_delay);
 
-int beiscsi_cmd_cq_create(struct be_ctrl_info *ctrl,
+int beiscsi_cmd_cq_create(struct be___raw_readfo *ctrl,
 			  struct be_queue_info *cq, struct be_queue_info *eq,
 			  bool sol_evts, bool no_delay,
 			  int num_cqe_dma_coalesce);
 
-int beiscsi_cmd_q_destroy(struct be_ctrl_info *ctrl, struct be_queue_info *q,
+int beiscsi_cmd_q_destroy(struct be___raw_readfo *ctrl, struct be_queue_info *q,
 			  int type);
-int be_poll_mcc(struct be_ctrl_info *ctrl);
-unsigned char mgmt_check_supported_fw(struct be_ctrl_info *ctrl);
-int be_cmd_get_mac_addr(struct be_ctrl_info *ctrl, u8 *mac_addr);
+int be_poll_mcc(struct be___raw_readfo *ctrl);
+unsigned char mgmt_check_supported_fw(struct be___raw_readfo *ctrl);
+int be_cmd_get_mac_addr(struct be___raw_readfo *ctrl, u8 *mac_addr);
 
 /*ISCSI Functuions */
-int be_cmd_fw_initialize(struct be_ctrl_info *ctrl);
+int be_cmd_fw_initialize(struct be___raw_readfo *ctrl);
 
 struct be_mcc_wrb *wrb_from_mbox(struct be_dma_mem *mbox_mem);
 
-int be_mbox_notify(struct be_ctrl_info *ctrl);
+int be_mbox_notify(struct be___raw_readfo *ctrl);
 
-int be_cmd_create_default_pdu_queue(struct be_ctrl_info *ctrl,
+int be_cmd_create_default_pdu_queue(struct be___raw_readfo *ctrl,
 				    struct be_queue_info *cq,
 				    struct be_queue_info *dq, int length,
 				    int entry_size);
 
-int be_cmd_iscsi_post_sgl_pages(struct be_ctrl_info *ctrl,
+int be_cmd_iscsi_post_sgl_pages(struct be___raw_readfo *ctrl,
 				struct be_dma_mem *q_mem, u32 page_offset,
 				u32 num_pages);
 
-int be_cmd_wrbq_create(struct be_ctrl_info *ctrl, struct be_dma_mem *q_mem,
+int be_cmd_wrbq_create(struct be___raw_readfo *ctrl, struct be_dma_mem *q_mem,
 		       struct be_queue_info *wrbq);
 
 struct be_default_pdu_context {

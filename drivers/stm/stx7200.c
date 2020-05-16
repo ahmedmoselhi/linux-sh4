@@ -431,7 +431,7 @@ void __init stx7200_early_device_init(void)
 	 * Enable them all here. Without this, USB 1.1 doesn't work,
 	 * as it needs a 48MHz clock which is separate from the USB 2
 	 * clock which is derived from the SATA clock. */
-	ctrl_outl(0, 0xFD701048);
+	__raw_writel(0, 0xFD701048);
 
 	/* Configure the ST40 RTC to source its clock from clockgenB.
 	 * In theory this should be board specific, but so far nobody

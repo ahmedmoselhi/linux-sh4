@@ -224,24 +224,24 @@ static void common(struct gspca_dev *gspca_dev)
 {
 	s32 n; /* reserved for FETCH macros */
 
-	ctrl_out(gspca_dev, 0x40, 3, 0x0000, 0x0200, 22, s000);
-	ctrl_out(gspca_dev, 0x40, 1, 0x0041, 0x0000, 0, NULL);
-	ctrl_out(gspca_dev, 0x40, 3, 0xba00, 0x0200, 32, s001);
+	__raw_write(gspca_dev, 0x40, 3, 0x0000, 0x0200, 22, s000);
+	__raw_write(gspca_dev, 0x40, 1, 0x0041, 0x0000, 0, NULL);
+	__raw_write(gspca_dev, 0x40, 3, 0xba00, 0x0200, 32, s001);
 	n = fetch_validx(gspca_dev, tbl_common, ARRAY_SIZE(tbl_common));
-	ctrl_out(gspca_dev, 0x40, 3, 0xba00, 0x0200, 48, s002);
-	ctrl_out(gspca_dev, 0x40, 3, 0xba00, 0x0200, 48, s003);
-	ctrl_out(gspca_dev, 0x40, 3, 0xba00, 0x0200, 16, s004);
-	ctrl_out(gspca_dev, 0x40, 3, 0xba00, 0x0200, 48, s005);
-	ctrl_out(gspca_dev, 0x40, 3, 0xba00, 0x0200, 44, s006);
+	__raw_write(gspca_dev, 0x40, 3, 0xba00, 0x0200, 48, s002);
+	__raw_write(gspca_dev, 0x40, 3, 0xba00, 0x0200, 48, s003);
+	__raw_write(gspca_dev, 0x40, 3, 0xba00, 0x0200, 16, s004);
+	__raw_write(gspca_dev, 0x40, 3, 0xba00, 0x0200, 48, s005);
+	__raw_write(gspca_dev, 0x40, 3, 0xba00, 0x0200, 44, s006);
 	keep_on_fetching_validx(gspca_dev, tbl_common,
 					ARRAY_SIZE(tbl_common), n);
-	ctrl_out(gspca_dev, 0x40, 3, 0xba00, 0x0200, 52, s007);
-	ctrl_out(gspca_dev, 0x40, 3, 0xba00, 0x0200, 48, s008);
-	ctrl_out(gspca_dev, 0x40, 3, 0xba00, 0x0200, 48, s009);
-	ctrl_out(gspca_dev, 0x40, 3, 0xba00, 0x0200, 56, s010);
+	__raw_write(gspca_dev, 0x40, 3, 0xba00, 0x0200, 52, s007);
+	__raw_write(gspca_dev, 0x40, 3, 0xba00, 0x0200, 48, s008);
+	__raw_write(gspca_dev, 0x40, 3, 0xba00, 0x0200, 48, s009);
+	__raw_write(gspca_dev, 0x40, 3, 0xba00, 0x0200, 56, s010);
 	keep_on_fetching_validx(gspca_dev, tbl_common,
 					ARRAY_SIZE(tbl_common), n);
-	ctrl_out(gspca_dev, 0x40, 3, 0xba00, 0x0200, 40, s011);
+	__raw_write(gspca_dev, 0x40, 3, 0xba00, 0x0200, 40, s011);
 	keep_on_fetching_validx(gspca_dev, tbl_common,
 					ARRAY_SIZE(tbl_common), n);
 }
@@ -253,7 +253,7 @@ static int mi1320_init_at_startup(struct gspca_dev *gspca_dev)
 
 	common(gspca_dev);
 
-/*	ctrl_out(gspca_dev, 0x40, 11, 0x0000, 0x0000, 0, NULL); */
+/*	__raw_write(gspca_dev, 0x40, 11, 0x0000, 0x0000, 0, NULL); */
 
 	return 0;
 }
@@ -296,7 +296,7 @@ static int mi1320_sensor_settings(struct gspca_dev *gspca_dev)
 {
 	s32 reso = gspca_dev->cam.cam_mode[(s32) gspca_dev->curr_mode].priv;
 
-	ctrl_out(gspca_dev, 0x40, 5, 0x0001, 0x0000, 0, NULL);
+	__raw_write(gspca_dev, 0x40, 5, 0x0001, 0x0000, 0, NULL);
 
 	fetch_validx(gspca_dev, tbl_sensor_settings_common,
 				ARRAY_SIZE(tbl_sensor_settings_common));
@@ -305,25 +305,25 @@ static int mi1320_sensor_settings(struct gspca_dev *gspca_dev)
 	case IMAGE_1280:
 		fetch_validx(gspca_dev, tbl_sensor_settings_1280,
 					ARRAY_SIZE(tbl_sensor_settings_1280));
-		ctrl_out(gspca_dev, 0x40, 3, 0xba00, 0x0200, 64, tbl_1280[0]);
-		ctrl_out(gspca_dev, 0x40, 3, 0xba00, 0x0200, 40, tbl_1280[1]);
-		ctrl_out(gspca_dev, 0x40, 3, 0x0000, 0x0200, 12, tbl_1280[2]);
+		__raw_write(gspca_dev, 0x40, 3, 0xba00, 0x0200, 64, tbl_1280[0]);
+		__raw_write(gspca_dev, 0x40, 3, 0xba00, 0x0200, 40, tbl_1280[1]);
+		__raw_write(gspca_dev, 0x40, 3, 0x0000, 0x0200, 12, tbl_1280[2]);
 		break;
 
 	case IMAGE_800:
 		fetch_validx(gspca_dev, tbl_sensor_settings_800,
 					ARRAY_SIZE(tbl_sensor_settings_800));
-		ctrl_out(gspca_dev, 0x40, 3, 0xba00, 0x0200, 64, tbl_800[0]);
-		ctrl_out(gspca_dev, 0x40, 3, 0xba00, 0x0200, 40, tbl_800[1]);
-		ctrl_out(gspca_dev, 0x40, 3, 0x0000, 0x0200, 12, tbl_800[2]);
+		__raw_write(gspca_dev, 0x40, 3, 0xba00, 0x0200, 64, tbl_800[0]);
+		__raw_write(gspca_dev, 0x40, 3, 0xba00, 0x0200, 40, tbl_800[1]);
+		__raw_write(gspca_dev, 0x40, 3, 0x0000, 0x0200, 12, tbl_800[2]);
 		break;
 
 	default:
 		fetch_validx(gspca_dev, tbl_sensor_settings_640,
 					ARRAY_SIZE(tbl_sensor_settings_640));
-		ctrl_out(gspca_dev, 0x40, 3, 0xba00, 0x0200, 60, tbl_640[0]);
-		ctrl_out(gspca_dev, 0x40, 3, 0xba00, 0x0200, 40, tbl_640[1]);
-		ctrl_out(gspca_dev, 0x40, 3, 0x0000, 0x0200, 12, tbl_640[2]);
+		__raw_write(gspca_dev, 0x40, 3, 0xba00, 0x0200, 60, tbl_640[0]);
+		__raw_write(gspca_dev, 0x40, 3, 0xba00, 0x0200, 40, tbl_640[1]);
+		__raw_write(gspca_dev, 0x40, 3, 0x0000, 0x0200, 12, tbl_640[2]);
 		break;
 	}
 	return 0;
@@ -367,10 +367,10 @@ int mi1320_camera_settings(struct gspca_dev *gspca_dev)
 		sd->vold.AC50Hz = freq;
 
 		freq = 2 * (freq == 0);
-		ctrl_out(gspca_dev, 0x40, 1, 0xba00, 0x00f0, 0, NULL);
-		ctrl_out(gspca_dev, 0x40, 1, 0xba02, 0x00f1, 0, NULL);
-		ctrl_out(gspca_dev, 0x40, 1, 0xba00       , 0x005b, 0, NULL);
-		ctrl_out(gspca_dev, 0x40, 1, 0xba01 + freq, 0x00f1, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0xba00, 0x00f0, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0xba02, 0x00f1, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0xba00       , 0x005b, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0xba01 + freq, 0x00f1, 0, NULL);
 	}
 
 	if (wbal != sd->vold.whitebal) {
@@ -380,35 +380,35 @@ int mi1320_camera_settings(struct gspca_dev *gspca_dev)
 
 		for (i = 0; i < 2; i++) {
 			if (wbal == 0) { /* Normal light */
-				ctrl_out(gspca_dev, 0x40, 1,
+				__raw_write(gspca_dev, 0x40, 1,
 						0x0010, 0x0010, 0, NULL);
-				ctrl_out(gspca_dev, 0x40, 1,
+				__raw_write(gspca_dev, 0x40, 1,
 						0x0003, 0x00c1, 0, NULL);
-				ctrl_out(gspca_dev, 0x40, 1,
+				__raw_write(gspca_dev, 0x40, 1,
 						0x0042, 0x00c2, 0, NULL);
-				ctrl_out(gspca_dev, 0x40, 3,
+				__raw_write(gspca_dev, 0x40, 3,
 						0xba00, 0x0200, 48, dat_wbalNL);
 			}
 
 			if (wbal == 1) { /* Low light */
-				ctrl_out(gspca_dev, 0x40, 1,
+				__raw_write(gspca_dev, 0x40, 1,
 						0x0010, 0x0010, 0, NULL);
-				ctrl_out(gspca_dev, 0x40, 1,
+				__raw_write(gspca_dev, 0x40, 1,
 						0x0004, 0x00c1, 0, NULL);
-				ctrl_out(gspca_dev, 0x40, 1,
+				__raw_write(gspca_dev, 0x40, 1,
 						0x0043, 0x00c2, 0, NULL);
-				ctrl_out(gspca_dev, 0x40, 3,
+				__raw_write(gspca_dev, 0x40, 3,
 						0xba00, 0x0200, 48, dat_wbalLL);
 			}
 
 			if (wbal == 2) { /* Back light */
-				ctrl_out(gspca_dev, 0x40, 1,
+				__raw_write(gspca_dev, 0x40, 1,
 						0x0010, 0x0010, 0, NULL);
-				ctrl_out(gspca_dev, 0x40, 1,
+				__raw_write(gspca_dev, 0x40, 1,
 						0x0003, 0x00c1, 0, NULL);
-				ctrl_out(gspca_dev, 0x40, 1,
+				__raw_write(gspca_dev, 0x40, 1,
 						0x0042, 0x00c2, 0, NULL);
-				ctrl_out(gspca_dev, 0x40, 3,
+				__raw_write(gspca_dev, 0x40, 3,
 						0xba00, 0x0200, 44, dat_wbalBL);
 			}
 		}
@@ -420,10 +420,10 @@ int mi1320_camera_settings(struct gspca_dev *gspca_dev)
 			bright = 0;
 
 		bright = tbl_bright[bright];
-		ctrl_out(gspca_dev, 0x40, 1, 0xba00, 0x00f0, 0, NULL);
-		ctrl_out(gspca_dev, 0x40, 1, 0xba01, 0x00f1, 0, NULL);
-		ctrl_out(gspca_dev, 0x40, 1, 0xba00 + bright, 0x0034, 0, NULL);
-		ctrl_out(gspca_dev, 0x40, 1, 0xba00 + bright, 0x00f1, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0xba00, 0x00f0, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0xba01, 0x00f1, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0xba00 + bright, 0x0034, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0xba00 + bright, 0x00f1, 0, NULL);
 	}
 
 	if (sat != sd->vold.saturation) {
@@ -432,10 +432,10 @@ int mi1320_camera_settings(struct gspca_dev *gspca_dev)
 			sat = 0;
 
 		sat = tbl_sat[sat];
-		ctrl_out(gspca_dev, 0x40, 1, 0xba00, 0x00f0, 0, NULL);
-		ctrl_out(gspca_dev, 0x40, 1, 0xba01, 0x00f1, 0, NULL);
-		ctrl_out(gspca_dev, 0x40, 1, 0xba00      , 0x0025, 0, NULL);
-		ctrl_out(gspca_dev, 0x40, 1, 0xba00 + sat, 0x00f1, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0xba00, 0x00f0, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0xba01, 0x00f1, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0xba00      , 0x0025, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0xba00 + sat, 0x00f1, 0, NULL);
 	}
 
 	if (sharp != sd->vold.sharpness) {
@@ -443,10 +443,10 @@ int mi1320_camera_settings(struct gspca_dev *gspca_dev)
 		if (sharp < 0 || sharp > sd->vmax.sharpness)
 			sharp = 0;
 
-		ctrl_out(gspca_dev, 0x40, 1, 0xba00, 0x00f0, 0, NULL);
-		ctrl_out(gspca_dev, 0x40, 1, 0xba01, 0x00f1, 0, NULL);
-		ctrl_out(gspca_dev, 0x40, 1, 0xba00        , 0x0005, 0, NULL);
-		ctrl_out(gspca_dev, 0x40, 1, 0xba00 + sharp, 0x00f1, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0xba00, 0x00f0, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0xba01, 0x00f1, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0xba00        , 0x0005, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0xba00 + sharp, 0x00f1, 0, NULL);
 	}
 
 	if (hue != sd->vold.hue) {
@@ -458,10 +458,10 @@ int mi1320_camera_settings(struct gspca_dev *gspca_dev)
 		else
 			sd->swapRB = 0;
 
-		ctrl_out(gspca_dev, 0x40, 1, 0xba00, 0x00f0, 0, NULL);
-		ctrl_out(gspca_dev, 0x40, 1, 0xba01, 0x00f1, 0, NULL);
-		ctrl_out(gspca_dev, 0x40, 1, 0xba70, 0x00e2, 0, NULL);
-		ctrl_out(gspca_dev, 0x40, 1, 0xba00 + hue * (hue < 6), 0x00f1,
+		__raw_write(gspca_dev, 0x40, 1, 0xba00, 0x00f0, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0xba01, 0x00f1, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0xba70, 0x00e2, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0xba00 + hue * (hue < 6), 0x00f1,
 							0, NULL);
 	}
 
@@ -472,10 +472,10 @@ int mi1320_camera_settings(struct gspca_dev *gspca_dev)
 
 		backlight = tbl_backlight[backlight];
 		for (i = 0; i < 2; i++) {
-			ctrl_out(gspca_dev, 0x40, 1, 0xba00, 0x00f0, 0, NULL);
-			ctrl_out(gspca_dev, 0x40, 1, 0xba01, 0x00f1, 0, NULL);
-			ctrl_out(gspca_dev, 0x40, 1, 0xba74, 0x0006, 0, NULL);
-			ctrl_out(gspca_dev, 0x40, 1, 0xba80 + backlight, 0x00f1,
+			__raw_write(gspca_dev, 0x40, 1, 0xba00, 0x00f0, 0, NULL);
+			__raw_write(gspca_dev, 0x40, 1, 0xba01, 0x00f1, 0, NULL);
+			__raw_write(gspca_dev, 0x40, 1, 0xba74, 0x0006, 0, NULL);
+			__raw_write(gspca_dev, 0x40, 1, 0xba80 + backlight, 0x00f1,
 								0, NULL);
 		}
 	}
@@ -483,10 +483,10 @@ int mi1320_camera_settings(struct gspca_dev *gspca_dev)
 	if (hue != sd->vold.hue) {
 		sd->vold.hue = hue;
 
-		ctrl_out(gspca_dev, 0x40, 1, 0xba00, 0x00f0, 0, NULL);
-		ctrl_out(gspca_dev, 0x40, 1, 0xba01, 0x00f1, 0, NULL);
-		ctrl_out(gspca_dev, 0x40, 1, 0xba70, 0x00e2, 0, NULL);
-		ctrl_out(gspca_dev, 0x40, 1, 0xba00 + hue * (hue < 6), 0x00f1,
+		__raw_write(gspca_dev, 0x40, 1, 0xba00, 0x00f0, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0xba01, 0x00f1, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0xba70, 0x00e2, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0xba00 + hue * (hue < 6), 0x00f1,
 							0, NULL);
 	}
 
@@ -496,8 +496,8 @@ int mi1320_camera_settings(struct gspca_dev *gspca_dev)
 		sd->vold.flip = flip;
 
 		dat_hvflip2[3] = flip + 2 * mirror;
-		ctrl_out(gspca_dev, 0x40, 3, 0xba00, 0x0200, 4, dat_hvflip1);
-		ctrl_out(gspca_dev, 0x40, 3, 0xba00, 0x0200, 4, dat_hvflip2);
+		__raw_write(gspca_dev, 0x40, 3, 0xba00, 0x0200, 4, dat_hvflip1);
+		__raw_write(gspca_dev, 0x40, 3, 0xba00, 0x0200, 4, dat_hvflip2);
 	}
 
 	if (gam != sd->vold.gamma) {
@@ -506,10 +506,10 @@ int mi1320_camera_settings(struct gspca_dev *gspca_dev)
 			gam = 0;
 
 		gam = 2 * gam;
-		ctrl_out(gspca_dev, 0x40, 1, 0xba00, 0x00f0, 0, NULL);
-		ctrl_out(gspca_dev, 0x40, 1, 0xba01, 0x00f1, 0, NULL);
-		ctrl_out(gspca_dev, 0x40, 1, 0xba04      , 0x003b, 0, NULL);
-		ctrl_out(gspca_dev, 0x40, 1, 0xba02 + gam, 0x00f1, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0xba00, 0x00f0, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0xba01, 0x00f1, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0xba04      , 0x003b, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0xba02 + gam, 0x00f1, 0, NULL);
 	}
 
 	if (cntr != sd->vold.contrast) {
@@ -517,11 +517,11 @@ int mi1320_camera_settings(struct gspca_dev *gspca_dev)
 		if (cntr < 0 || cntr > sd->vmax.contrast)
 			cntr = 0;
 
-		ctrl_out(gspca_dev, 0x40, 1, 0xba00, 0x00f0, 0, NULL);
-		ctrl_out(gspca_dev, 0x40, 1, 0xba01, 0x00f1, 0, NULL);
-		ctrl_out(gspca_dev, 0x40, 1, 0xba00 + tbl_cntr1[cntr], 0x0035,
+		__raw_write(gspca_dev, 0x40, 1, 0xba00, 0x00f0, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0xba01, 0x00f1, 0, NULL);
+		__raw_write(gspca_dev, 0x40, 1, 0xba00 + tbl_cntr1[cntr], 0x0035,
 							0, NULL);
-		ctrl_out(gspca_dev, 0x40, 1, 0xba00 + tbl_cntr2[cntr], 0x00f1,
+		__raw_write(gspca_dev, 0x40, 1, 0xba00 + tbl_cntr2[cntr], 0x00f1,
 							0, NULL);
 	}
 
@@ -530,7 +530,7 @@ int mi1320_camera_settings(struct gspca_dev *gspca_dev)
 
 static void mi1320_post_unset_alt(struct gspca_dev *gspca_dev)
 {
-	ctrl_out(gspca_dev, 0x40, 5, 0x0000, 0x0000, 0, NULL);
+	__raw_write(gspca_dev, 0x40, 5, 0x0000, 0x0000, 0, NULL);
 
 	fetch_validx(gspca_dev, tbl_post_unset_alt,
 				ARRAY_SIZE(tbl_post_unset_alt));

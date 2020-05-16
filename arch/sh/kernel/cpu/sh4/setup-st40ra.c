@@ -173,7 +173,7 @@ void __init plat_irq_setup_pins(int mode)
 	switch (mode) {
 	case IRQ_MODE_IRQ: /* individual interrupt mode for IRL3-0 */
 		register_intc_controller(&intc_desc_irlm);
-		ctrl_outw(ctrl_inw(INTC_ICR) | INTC_ICR_IRLM, INTC_ICR);
+		__raw_writew(__raw_readw(INTC_ICR) | INTC_ICR_IRLM, INTC_ICR);
 		break;
 	default:
 		BUG();

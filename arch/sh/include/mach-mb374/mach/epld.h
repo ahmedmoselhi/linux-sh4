@@ -38,12 +38,12 @@ extern inline int harp_has_intmask_setclr(void)
 
 extern inline void harp_set_vpp_on(void)
 {
-	ctrl_outl(1, EPLD_VPP);
+	__raw_writel(1, EPLD_VPP);
 }
 
 extern inline void harp_set_vpp_off(void)
 {
-	ctrl_outl(0, EPLD_VPP);
+	__raw_writel(0, EPLD_VPP);
 }
 
 void harp_init_irq(void);

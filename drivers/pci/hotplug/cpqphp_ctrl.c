@@ -95,11 +95,11 @@ static u8 handle_switch_change(u8 change, struct controller * ctrl)
 
 			rc++;
 
-			temp_word = ctrl->ctrl_int_comp >> 16;
+			temp_word = ctrl->__raw_readt_comp >> 16;
 			func->presence_save = (temp_word >> hp_slot) & 0x01;
 			func->presence_save |= (temp_word >> (hp_slot + 7)) & 0x02;
 
-			if (ctrl->ctrl_int_comp & (0x1L << hp_slot)) {
+			if (ctrl->__raw_readt_comp & (0x1L << hp_slot)) {
 				/*
 				 * Switch opened
 				 */
@@ -179,7 +179,7 @@ static u8 handle_presence_change(u16 change, struct controller * ctrl)
 			 * If not in button mode, nevermind
 			 */
 			if (func->switch_save && (ctrl->push_button == 1)) {
-				temp_word = ctrl->ctrl_int_comp >> 16;
+				temp_word = ctrl->__raw_readt_comp >> 16;
 				temp_byte = (temp_word >> hp_slot) & 0x01;
 				temp_byte |= (temp_word >> (hp_slot + 7)) & 0x02;
 
@@ -212,12 +212,12 @@ static u8 handle_presence_change(u16 change, struct controller * ctrl)
 				/* Switch is open, assume a presence change
 				 * Save the presence state
 				 */
-				temp_word = ctrl->ctrl_int_comp >> 16;
+				temp_word = ctrl->__raw_readt_comp >> 16;
 				func->presence_save = (temp_word >> hp_slot) & 0x01;
 				func->presence_save |= (temp_word >> (hp_slot + 7)) & 0x02;
 
-				if ((!(ctrl->ctrl_int_comp & (0x010000 << hp_slot))) ||
-				    (!(ctrl->ctrl_int_comp & (0x01000000 << hp_slot)))) {
+				if ((!(ctrl->__raw_readt_comp & (0x010000 << hp_slot))) ||
+				    (!(ctrl->__raw_readt_comp & (0x01000000 << hp_slot)))) {
 					/* Present */
 					taskInfo->event_type = INT_PRESENCE_ON;
 				} else {
@@ -262,7 +262,7 @@ static u8 handle_power_fault(u8 change, struct controller * ctrl)
 
 			rc++;
 
-			if (ctrl->ctrl_int_comp & (0x00000100 << hp_slot)) {
+			if (ctrl->__raw_readt_comp & (0x00000100 << hp_slot)) {
 				/*
 				 * power fault Cleared
 				 */
@@ -888,7 +888,7 @@ int cpqhp_resource_sort_and_combine(struct pci_resource **head)
 }
 
 
-irqreturn_t cpqhp_ctrl_intr(int IRQ, void *data)
+irqreturn_t cpqhp___raw_readtr(int IRQ, void *data)
 {
 	struct controller *ctrl = data;
 	u8 schedule_flag = 0;
@@ -924,9 +924,9 @@ irqreturn_t cpqhp_ctrl_intr(int IRQ, void *data)
 
 	if (misc & 0x0008) {
 		/* General-interrupt-input interrupt Pending */
-		Diff = readl(ctrl->hpc_reg + INT_INPUT_CLEAR) ^ ctrl->ctrl_int_comp;
+		Diff = readl(ctrl->hpc_reg + INT_INPUT_CLEAR) ^ ctrl->__raw_readt_comp;
 
-		ctrl->ctrl_int_comp = readl(ctrl->hpc_reg + INT_INPUT_CLEAR);
+		ctrl->__raw_readt_comp = readl(ctrl->hpc_reg + INT_INPUT_CLEAR);
 
 		/* Clear the interrupt */
 		writel(Diff, ctrl->hpc_reg + INT_INPUT_CLEAR);
@@ -2024,11 +2024,11 @@ int cpqhp_process_SI(struct controller *ctrl, struct pci_func *func)
 		func->is_a_board = 1;
 
 		/* We have to save the presence info for these slots */
-		temp_word = ctrl->ctrl_int_comp >> 16;
+		temp_word = ctrl->__raw_readt_comp >> 16;
 		func->presence_save = (temp_word >> hp_slot) & 0x01;
 		func->presence_save |= (temp_word >> (hp_slot + 7)) & 0x02;
 
-		if (ctrl->ctrl_int_comp & (0x1L << hp_slot)) {
+		if (ctrl->__raw_readt_comp & (0x1L << hp_slot)) {
 			func->switch_save = 0;
 		} else {
 			func->switch_save = 0x10;
@@ -2054,12 +2054,12 @@ int cpqhp_process_SI(struct controller *ctrl, struct pci_func *func)
 			func->is_a_board = 0;
 
 			/* We have to save the presence info for these slots */
-			temp_word = ctrl->ctrl_int_comp >> 16;
+			temp_word = ctrl->__raw_readt_comp >> 16;
 			func->presence_save = (temp_word >> hp_slot) & 0x01;
 			func->presence_save |=
 			(temp_word >> (hp_slot + 7)) & 0x02;
 
-			if (ctrl->ctrl_int_comp & (0x1L << hp_slot)) {
+			if (ctrl->__raw_readt_comp & (0x1L << hp_slot)) {
 				func->switch_save = 0;
 			} else {
 				func->switch_save = 0x10;

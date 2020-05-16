@@ -1143,7 +1143,7 @@ static int vidioc_g_input(struct file *file, void *priv, unsigned int *i)
 {
 	struct au0828_fh *fh = priv;
 	struct au0828_dev *dev = fh->dev;
-	*i = dev->ctrl_input;
+	*i = dev->__raw_readput;
 	return 0;
 }
 
@@ -1159,7 +1159,7 @@ static int vidioc_s_input(struct file *file, void *priv, unsigned int index)
 		return -EINVAL;
 	if (AUVI_INPUT(index).type == 0)
 		return -EINVAL;
-	dev->ctrl_input = index;
+	dev->__raw_readput = index;
 
 	switch (AUVI_INPUT(index).type) {
 	case AU0828_VMUX_SVIDEO:

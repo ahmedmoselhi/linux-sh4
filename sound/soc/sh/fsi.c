@@ -128,12 +128,12 @@ static int __fsi_reg_write(u32 reg, u32 data)
 	/* valid data area is 24bit */
 	data &= 0x00ffffff;
 
-	return ctrl_outl(data, reg);
+	return __raw_writel(data, reg);
 }
 
 static u32 __fsi_reg_read(u32 reg)
 {
-	return ctrl_inl(reg);
+	return __raw_readl(reg);
 }
 
 static int __fsi_reg_mask_set(u32 reg, u32 mask, u32 data)

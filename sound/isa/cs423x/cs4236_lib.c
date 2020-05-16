@@ -117,14 +117,14 @@ static unsigned char snd_cs4236_ext_map[18] = {
  *
  */
 
-static void snd_cs4236_ctrl_out(struct snd_wss *chip,
+static void snd_cs4236___raw_write(struct snd_wss *chip,
 				unsigned char reg, unsigned char val)
 {
 	outb(reg, chip->cport + 3);
 	outb(chip->cimage[reg] = val, chip->cport + 4);
 }
 
-static unsigned char snd_cs4236_ctrl_in(struct snd_wss *chip, unsigned char reg)
+static unsigned char snd_cs4236___raw_read(struct snd_wss *chip, unsigned char reg)
 {
 	outb(reg, chip->cport + 3);
 	return inb(chip->cport + 4);
@@ -226,7 +226,7 @@ static void snd_cs4236_suspend(struct snd_wss *chip)
 	for (reg = 0; reg < 18; reg++)
 		chip->eimage[reg] = snd_cs4236_ext_in(chip, CS4236_I23VAL(reg));
 	for (reg = 2; reg < 9; reg++)
-		chip->cimage[reg] = snd_cs4236_ctrl_in(chip, reg);
+		chip->cimage[reg] = snd_cs4236___raw_read(chip, reg);
 	spin_unlock_irqrestore(&chip->reg_lock, flags);
 }
 
@@ -256,7 +256,7 @@ static void snd_cs4236_resume(struct snd_wss *chip)
 		case 7:
 			break;
 		default:
-			snd_cs4236_ctrl_out(chip, reg, chip->cimage[reg]);
+			snd_cs4236___raw_write(chip, reg, chip->cimage[reg]);
 		}
 	}
 	spin_unlock_irqrestore(&chip->reg_lock, flags);
@@ -305,10 +305,10 @@ int snd_cs4236_create(struct snd_card *card,
 				   idx, inb(chip->cport + idx));
 		for (idx = 0; idx < 9; idx++)
 			snd_printk(KERN_DEBUG "C%i = 0x%x\n",
-				   idx, snd_cs4236_ctrl_in(chip, idx));
+				   idx, snd_cs4236___raw_read(chip, idx));
 	}
 #endif
-	ver1 = snd_cs4236_ctrl_in(chip, 1);
+	ver1 = snd_cs4236___raw_read(chip, 1);
 	ver2 = snd_cs4236_ext_in(chip, CS4236_VERSION);
 	snd_printdd("CS4236: [0x%lx] C1 (version) = 0x%x, ext = 0x%x\n", cport, ver1, ver2);
 	if (ver1 != ver2) {
@@ -317,18 +317,18 @@ int snd_cs4236_create(struct snd_card *card,
 		snd_device_free(card, chip);
 		return -ENODEV;
 	}
-	snd_cs4236_ctrl_out(chip, 0, 0x00);
-	snd_cs4236_ctrl_out(chip, 2, 0xff);
-	snd_cs4236_ctrl_out(chip, 3, 0x00);
-	snd_cs4236_ctrl_out(chip, 4, 0x80);
-	snd_cs4236_ctrl_out(chip, 5, ((IEC958_AES1_CON_PCM_CODER & 3) << 6) | IEC958_AES0_CON_EMPHASIS_NONE);
-	snd_cs4236_ctrl_out(chip, 6, IEC958_AES1_CON_PCM_CODER >> 2);
-	snd_cs4236_ctrl_out(chip, 7, 0x00);
+	snd_cs4236___raw_write(chip, 0, 0x00);
+	snd_cs4236___raw_write(chip, 2, 0xff);
+	snd_cs4236___raw_write(chip, 3, 0x00);
+	snd_cs4236___raw_write(chip, 4, 0x80);
+	snd_cs4236___raw_write(chip, 5, ((IEC958_AES1_CON_PCM_CODER & 3) << 6) | IEC958_AES0_CON_EMPHASIS_NONE);
+	snd_cs4236___raw_write(chip, 6, IEC958_AES1_CON_PCM_CODER >> 2);
+	snd_cs4236___raw_write(chip, 7, 0x00);
 	/* 0x8c for C8 is valid for Turtle Beach Malibu - the IEC-958 output */
 	/* is working with this setup, other hardware should have */
 	/* different signal paths and this value should be selectable */
 	/* in the future */
-	snd_cs4236_ctrl_out(chip, 8, 0x8c);
+	snd_cs4236___raw_write(chip, 8, 0x8c);
 	chip->rate_constraint = snd_cs4236_xrate;
 	chip->set_playback_format = snd_cs4236_playback_format;
 	chip->set_capture_format = snd_cs4236_capture_format;
@@ -479,7 +479,7 @@ static int snd_cs4236_put_singlec(struct snd_kcontrol *kcontrol, struct snd_ctl_
 	spin_lock_irqsave(&chip->reg_lock, flags);
 	val = (chip->cimage[reg] & ~(mask << shift)) | val;
 	change = val != chip->cimage[reg];
-	snd_cs4236_ctrl_out(chip, reg, val);
+	snd_cs4236___raw_write(chip, reg, val);
 	spin_unlock_irqrestore(&chip->reg_lock, flags);
 	return change;
 }
@@ -887,11 +887,11 @@ static int snd_cs4236_get_iec958_switch(struct snd_kcontrol *kcontrol, struct sn
 	printk(KERN_DEBUG "get valid: ALT = 0x%x, C3 = 0x%x, C4 = 0x%x, "
 	       "C5 = 0x%x, C6 = 0x%x, C8 = 0x%x\n",
 			snd_wss_in(chip, CS4231_ALT_FEATURE_1),
-			snd_cs4236_ctrl_in(chip, 3),
-			snd_cs4236_ctrl_in(chip, 4),
-			snd_cs4236_ctrl_in(chip, 5),
-			snd_cs4236_ctrl_in(chip, 6),
-			snd_cs4236_ctrl_in(chip, 8));
+			snd_cs4236___raw_read(chip, 3),
+			snd_cs4236___raw_read(chip, 4),
+			snd_cs4236___raw_read(chip, 5),
+			snd_cs4236___raw_read(chip, 6),
+			snd_cs4236___raw_read(chip, 8));
 #endif
 	spin_unlock_irqrestore(&chip->reg_lock, flags);
 	return 0;
@@ -912,11 +912,11 @@ static int snd_cs4236_put_iec958_switch(struct snd_kcontrol *kcontrol, struct sn
 	val = (chip->image[CS4231_ALT_FEATURE_1] & ~0x0e) | (0<<2) | (enable << 1);
 	change = val != chip->image[CS4231_ALT_FEATURE_1];
 	snd_wss_out(chip, CS4231_ALT_FEATURE_1, val);
-	val = snd_cs4236_ctrl_in(chip, 4) | 0xc0;
-	snd_cs4236_ctrl_out(chip, 4, val);
+	val = snd_cs4236___raw_read(chip, 4) | 0xc0;
+	snd_cs4236___raw_write(chip, 4, val);
 	udelay(100);
 	val &= ~0x40;
-	snd_cs4236_ctrl_out(chip, 4, val);
+	snd_cs4236___raw_write(chip, 4, val);
 	spin_unlock_irqrestore(&chip->reg_lock, flags);
 	snd_wss_mce_down(chip);
 	mutex_unlock(&chip->mce_mutex);
@@ -925,11 +925,11 @@ static int snd_cs4236_put_iec958_switch(struct snd_kcontrol *kcontrol, struct sn
 	printk(KERN_DEBUG "set valid: ALT = 0x%x, C3 = 0x%x, C4 = 0x%x, "
 	       "C5 = 0x%x, C6 = 0x%x, C8 = 0x%x\n",
 			snd_wss_in(chip, CS4231_ALT_FEATURE_1),
-			snd_cs4236_ctrl_in(chip, 3),
-			snd_cs4236_ctrl_in(chip, 4),
-			snd_cs4236_ctrl_in(chip, 5),
-			snd_cs4236_ctrl_in(chip, 6),
-			snd_cs4236_ctrl_in(chip, 8));
+			snd_cs4236___raw_read(chip, 3),
+			snd_cs4236___raw_read(chip, 4),
+			snd_cs4236___raw_read(chip, 5),
+			snd_cs4236___raw_read(chip, 6),
+			snd_cs4236___raw_read(chip, 8));
 #endif
 	return change;
 }

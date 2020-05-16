@@ -659,7 +659,7 @@ struct amd8111e_tx_dr{
 
 	__le16 tx_flags;
 
-	__le16 tag_ctrl_info;
+	__le16 tag___raw_readfo;
 
 	__le16 tag_ctrl_cmd;
 
@@ -674,7 +674,7 @@ struct amd8111e_rx_dr{
 
 	__le16 msg_count; /* Received message len */
 
-	__le16 tag_ctrl_info;
+	__le16 tag___raw_readfo;
 
 	__le16 buff_count;  /* Len of the buffer pointed by descriptor. */
 

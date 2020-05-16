@@ -501,7 +501,7 @@ static void c4_handle_rx(avmcard *card)
 {
 	avmcard_dmainfo *dma = card->dma;
 	struct capi_ctr *ctrl;
-	avmctrl_info *cinfo;
+	avm__raw_readfo *cinfo;
 	struct sk_buff *skb;
 	void *p = dma->recvbuf.dmabuf;
 	u32 ApplId, MsgLen, DataB3Len, NCCI, WindowSize;
@@ -676,7 +676,7 @@ static irqreturn_t c4_handle_interrupt(avmcard *card)
 			return IRQ_HANDLED;
 		printk(KERN_ERR "%s: unexpected reset\n", card->name);
                 for (i=0; i < card->nr_controllers; i++) {
-			avmctrl_info *cinfo = &card->ctrlinfo[i];
+			avm__raw_readfo *cinfo = &card->ctrlinfo[i];
 			memset(cinfo->version, 0, sizeof(cinfo->version));
 			spin_lock_irqsave(&card->lock, flags);
 			capilib_release(&cinfo->ncci_head);
@@ -851,7 +851,7 @@ static int c4_send_config(avmcard *card, capiloaddatapart * config)
 
 static int c4_load_firmware(struct capi_ctr *ctrl, capiloaddata *data)
 {
-	avmctrl_info *cinfo = (avmctrl_info *)(ctrl->driverdata);
+	avm__raw_readfo *cinfo = (avm__raw_readfo *)(ctrl->driverdata);
 	avmcard *card = cinfo->card;
 	int retval;
 
@@ -895,8 +895,8 @@ static int c4_load_firmware(struct capi_ctr *ctrl, capiloaddata *data)
 
 static void c4_reset_ctr(struct capi_ctr *ctrl)
 {
-	avmcard *card = ((avmctrl_info *)(ctrl->driverdata))->card;
-	avmctrl_info *cinfo;
+	avmcard *card = ((avm__raw_readfo *)(ctrl->driverdata))->card;
+	avm__raw_readfo *cinfo;
 	u_int i;
 	unsigned long flags;
 
@@ -917,7 +917,7 @@ static void c4_reset_ctr(struct capi_ctr *ctrl)
 static void c4_remove(struct pci_dev *pdev)
 {
 	avmcard *card = pci_get_drvdata(pdev);
-	avmctrl_info *cinfo;
+	avm__raw_readfo *cinfo;
 	u_int i;
 
 	if (!card)
@@ -945,7 +945,7 @@ static void c4_register_appl(struct capi_ctr *ctrl,
 				u16 appl,
 				capi_register_params *rp)
 {
-	avmctrl_info *cinfo = (avmctrl_info *)(ctrl->driverdata);
+	avm__raw_readfo *cinfo = (avm__raw_readfo *)(ctrl->driverdata);
 	avmcard *card = cinfo->card;
 	struct sk_buff *skb;
 	int want = rp->level3cnt;
@@ -988,7 +988,7 @@ static void c4_register_appl(struct capi_ctr *ctrl,
 
 static void c4_release_appl(struct capi_ctr *ctrl, u16 appl)
 {
-	avmctrl_info *cinfo = (avmctrl_info *)(ctrl->driverdata);
+	avm__raw_readfo *cinfo = (avm__raw_readfo *)(ctrl->driverdata);
 	avmcard *card = cinfo->card;
 	unsigned long flags;
 	struct sk_buff *skb;
@@ -1024,7 +1024,7 @@ static void c4_release_appl(struct capi_ctr *ctrl, u16 appl)
 
 static u16 c4_send_message(struct capi_ctr *ctrl, struct sk_buff *skb)
 {
-	avmctrl_info *cinfo = (avmctrl_info *)(ctrl->driverdata);
+	avm__raw_readfo *cinfo = (avm__raw_readfo *)(ctrl->driverdata);
 	avmcard *card = cinfo->card;
 	u16 retval = CAPI_NOERROR;
 	unsigned long flags;
@@ -1048,7 +1048,7 @@ static u16 c4_send_message(struct capi_ctr *ctrl, struct sk_buff *skb)
 
 static char *c4_procinfo(struct capi_ctr *ctrl)
 {
-	avmctrl_info *cinfo = (avmctrl_info *)(ctrl->driverdata);
+	avm__raw_readfo *cinfo = (avm__raw_readfo *)(ctrl->driverdata);
 
 	if (!cinfo)
 		return "";
@@ -1065,7 +1065,7 @@ static char *c4_procinfo(struct capi_ctr *ctrl)
 static int c4_read_proc(char *page, char **start, off_t off,
         		int count, int *eof, struct capi_ctr *ctrl)
 {
-	avmctrl_info *cinfo = (avmctrl_info *)(ctrl->driverdata);
+	avm__raw_readfo *cinfo = (avm__raw_readfo *)(ctrl->driverdata);
 	avmcard *card = cinfo->card;
 	u8 flag;
 	int len = 0;
@@ -1136,7 +1136,7 @@ static int c4_add_card(struct capicardparams *p, struct pci_dev *dev,
 		       int nr_controllers)
 {
 	avmcard *card;
-	avmctrl_info *cinfo;
+	avm__raw_readfo *cinfo;
 	int retval;
 	int i;
 

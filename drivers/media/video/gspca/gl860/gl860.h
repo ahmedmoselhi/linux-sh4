@@ -24,8 +24,8 @@
 #define MODULE_NAME "gspca_gl860"
 #define DRIVER_VERSION "0.9d10"
 
-#define ctrl_in  gl860_RTx
-#define ctrl_out gl860_RTx
+#define __raw_read  gl860_RTx
+#define __raw_write gl860_RTx
 
 #define ID_MI1320   1
 #define ID_OV2640   2

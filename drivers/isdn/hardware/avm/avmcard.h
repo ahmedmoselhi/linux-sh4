@@ -59,7 +59,7 @@ typedef struct avmcard_dmainfo {
 	struct pci_dev      *pcidev;
 } avmcard_dmainfo;
 
-typedef	struct avmctrl_info {
+typedef	struct avm__raw_readfo {
 	char cardname[32];
 	
 	int versionlen;
@@ -72,7 +72,7 @@ typedef	struct avmctrl_info {
 	struct capi_ctr  capi_ctrl;
 	
 	struct list_head ncci_head;
-} avmctrl_info;
+} avm__raw_readfo;
 
 typedef struct avmcard {
 	char name[32];
@@ -93,7 +93,7 @@ typedef struct avmcard {
 	volatile u32 csr;
 	avmcard_dmainfo *dma;
 
-	struct avmctrl_info *ctrlinfo;
+	struct avm__raw_readfo *ctrlinfo;
 
 	u_int nr_controllers;
 	u_int nlogcontr;
@@ -553,7 +553,7 @@ void b1_register_appl(struct capi_ctr *ctrl, u16 appl,
 				capi_register_params *rp);
 void b1_release_appl(struct capi_ctr *ctrl, u16 appl);
 u16  b1_send_message(struct capi_ctr *ctrl, struct sk_buff *skb);
-void b1_parse_version(avmctrl_info *card);
+void b1_parse_version(avm__raw_readfo *card);
 irqreturn_t b1_interrupt(int interrupt, void *devptr);
 
 int b1ctl_read_proc(char *page, char **start, off_t off,

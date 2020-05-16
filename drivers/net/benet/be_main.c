@@ -1987,7 +1987,7 @@ static void be_ctrl_cleanup(struct be_adapter *adapter)
 			mem->va, mem->dma);
 }
 
-static int be_ctrl_init(struct be_adapter *adapter)
+static int be___raw_readit(struct be_adapter *adapter)
 {
 	struct be_dma_mem *mbox_mem_alloc = &adapter->mbox_mem_alloced;
 	struct be_dma_mem *mbox_mem_align = &adapter->mbox_mem;
@@ -2139,7 +2139,7 @@ static int __devinit be_probe(struct pci_dev *pdev,
 		}
 	}
 
-	status = be_ctrl_init(adapter);
+	status = be___raw_readit(adapter);
 	if (status)
 		goto free_netdev;
 

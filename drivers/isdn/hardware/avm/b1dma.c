@@ -443,7 +443,7 @@ static void queue_pollack(avmcard *card)
 
 static void b1dma_handle_rx(avmcard *card)
 {
-	avmctrl_info *cinfo = &card->ctrlinfo[0];
+	avm__raw_readfo *cinfo = &card->ctrlinfo[0];
 	avmcard_dmainfo *dma = card->dma;
 	struct capi_ctr *ctrl = &cinfo->capi_ctrl;
 	struct sk_buff *skb;
@@ -700,7 +700,7 @@ static void b1dma_send_init(avmcard *card)
 
 int b1dma_load_firmware(struct capi_ctr *ctrl, capiloaddata *data)
 {
-	avmctrl_info *cinfo = (avmctrl_info *)(ctrl->driverdata);
+	avm__raw_readfo *cinfo = (avm__raw_readfo *)(ctrl->driverdata);
 	avmcard *card = cinfo->card;
 	int retval;
 
@@ -749,7 +749,7 @@ int b1dma_load_firmware(struct capi_ctr *ctrl, capiloaddata *data)
 
 void b1dma_reset_ctr(struct capi_ctr *ctrl)
 {
-	avmctrl_info *cinfo = (avmctrl_info *)(ctrl->driverdata);
+	avm__raw_readfo *cinfo = (avm__raw_readfo *)(ctrl->driverdata);
 	avmcard *card = cinfo->card;
 	unsigned long flags;
 
@@ -768,7 +768,7 @@ void b1dma_register_appl(struct capi_ctr *ctrl,
 				u16 appl,
 				capi_register_params *rp)
 {
-	avmctrl_info *cinfo = (avmctrl_info *)(ctrl->driverdata);
+	avm__raw_readfo *cinfo = (avm__raw_readfo *)(ctrl->driverdata);
 	avmcard *card = cinfo->card;
 	struct sk_buff *skb;
 	int want = rp->level3cnt;
@@ -803,7 +803,7 @@ void b1dma_register_appl(struct capi_ctr *ctrl,
 
 void b1dma_release_appl(struct capi_ctr *ctrl, u16 appl)
 {
-	avmctrl_info *cinfo = (avmctrl_info *)(ctrl->driverdata);
+	avm__raw_readfo *cinfo = (avm__raw_readfo *)(ctrl->driverdata);
 	avmcard *card = cinfo->card;
 	struct sk_buff *skb;
 	void *p;
@@ -834,7 +834,7 @@ void b1dma_release_appl(struct capi_ctr *ctrl, u16 appl)
 
 u16 b1dma_send_message(struct capi_ctr *ctrl, struct sk_buff *skb)
 {
-	avmctrl_info *cinfo = (avmctrl_info *)(ctrl->driverdata);
+	avm__raw_readfo *cinfo = (avm__raw_readfo *)(ctrl->driverdata);
 	avmcard *card = cinfo->card;
 	u16 retval = CAPI_NOERROR;
 
@@ -858,7 +858,7 @@ u16 b1dma_send_message(struct capi_ctr *ctrl, struct sk_buff *skb)
 int b1dmactl_read_proc(char *page, char **start, off_t off,
         		int count, int *eof, struct capi_ctr *ctrl)
 {
-	avmctrl_info *cinfo = (avmctrl_info *)(ctrl->driverdata);
+	avm__raw_readfo *cinfo = (avm__raw_readfo *)(ctrl->driverdata);
 	avmcard *card = cinfo->card;
 	u8 flag;
 	int len = 0;

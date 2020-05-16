@@ -19,7 +19,7 @@
 
 static void mb411_led_set(struct led_classdev *led_cdev, enum led_brightness brightness)
 {
-	ctrl_outl(EPLD_LED, brightness ? EPLD_LED_ON : EPLD_LED_OFF);
+	__raw_writel(EPLD_LED, brightness ? EPLD_LED_ON : EPLD_LED_OFF);
 }
 
 static struct led_classdev mb411_led = {

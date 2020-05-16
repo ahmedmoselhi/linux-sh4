@@ -327,7 +327,7 @@ static ssize_t instance_ce_count_show(struct edac_device_instance *instance,
 #define to_instance_attr(a) container_of(a,struct instance_attribute,attr)
 
 /* DEVICE instance kobject release() function */
-static void edac_device_ctrl_instance_release(struct kobject *kobj)
+static void edac_device___raw_readstance_release(struct kobject *kobj)
 {
 	struct edac_device_instance *instance;
 
@@ -402,7 +402,7 @@ static struct instance_attribute *device_instance_attr[] = {
 
 /* The 'ktype' for each edac_dev 'instance' */
 static struct kobj_type ktype_instance_ctrl = {
-	.release = edac_device_ctrl_instance_release,
+	.release = edac_device___raw_readstance_release,
 	.sysfs_ops = &device_instance_ops,
 	.default_attrs = (struct attribute **)device_instance_attr,
 };
@@ -695,7 +695,7 @@ static void edac_device_delete_instance(struct edac_device_ctl_info *edac_dev,
 		edac_device_delete_block(edac_dev, &instance->blocks[i]);
 
 	/* unregister this instance's kobject, SEE:
-	 *	edac_device_ctrl_instance_release() for callback operation
+	 *	edac_device___raw_readstance_release() for callback operation
 	 */
 	kobject_put(&instance->kobj);
 }

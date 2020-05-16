@@ -256,5 +256,5 @@ void __init plat_irq_setup(void)
 
 	/* IRL0-3 are simply connected to ILC remote outputs 1-4 */
 	/* Disable encoded interrupts */
-	ctrl_outw(ctrl_inw(INTC_ICR) | INTC_ICR_IRLM, INTC_ICR);
+	__raw_writew(__raw_readw(INTC_ICR) | INTC_ICR_IRLM, INTC_ICR);
 }

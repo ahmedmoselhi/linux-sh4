@@ -213,7 +213,7 @@ i.	PCI_DEVICE macro used
 
 		- Henrik Kretzschmar <henne@nachtwindheim.de>
 ii.	All compiler warnings removed
-iii.	megasas_ctrl_info struct reverted to 3.02 release
+iii.	megasas___raw_readfo struct reverted to 3.02 release
 iv.	Default value of megasas_dbg_lvl set to 0
 v.	Removing in megasas_exit the sysfs entry created for megasas_dbg_lvl
 vi.	In megasas_teardown_frame_pool(), cmd->frame was passed instead of

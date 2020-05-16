@@ -39,7 +39,7 @@ MODULE_LICENSE("GPL");
 
 static void b1pcmcia_remove_ctr(struct capi_ctr *ctrl)
 {
-	avmctrl_info *cinfo = (avmctrl_info *)(ctrl->driverdata);
+	avm__raw_readfo *cinfo = (avm__raw_readfo *)(ctrl->driverdata);
 	avmcard *card = cinfo->card;
 	unsigned int port = card->port;
 
@@ -60,7 +60,7 @@ static char *b1pcmcia_procinfo(struct capi_ctr *ctrl);
 static int b1pcmcia_add_card(unsigned int port, unsigned irq,
 			     enum avmcardtype cardtype)
 {
-	avmctrl_info *cinfo;
+	avm__raw_readfo *cinfo;
 	avmcard *card;
 	char *cardname;
 	int retval;
@@ -140,7 +140,7 @@ static int b1pcmcia_add_card(unsigned int port, unsigned irq,
 
 static char *b1pcmcia_procinfo(struct capi_ctr *ctrl)
 {
-	avmctrl_info *cinfo = (avmctrl_info *)(ctrl->driverdata);
+	avm__raw_readfo *cinfo = (avm__raw_readfo *)(ctrl->driverdata);
 
 	if (!cinfo)
 		return "";

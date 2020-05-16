@@ -192,9 +192,9 @@ static int beiscsi_enable_pci(struct pci_dev *pcidev)
 	return 0;
 }
 
-static int be_ctrl_init(struct beiscsi_hba *phba, struct pci_dev *pdev)
+static int be___raw_readit(struct beiscsi_hba *phba, struct pci_dev *pdev)
 {
-	struct be_ctrl_info *ctrl = &phba->ctrl;
+	struct be___raw_readfo *ctrl = &phba->ctrl;
 	struct be_dma_mem *mbox_mem_alloc = &ctrl->mbox_mem_alloced;
 	struct be_dma_mem *mbox_mem_align = &ctrl->mbox_mem;
 	int status = 0;
@@ -282,7 +282,7 @@ static irqreturn_t be_isr(int irq, void *dev_id)
 	struct be_queue_info *cq;
 	unsigned long flags, index;
 	unsigned int num_eq_processed;
-	struct be_ctrl_info *ctrl;
+	struct be___raw_readfo *ctrl;
 	int isr;
 
 	phba = dev_id;
@@ -2331,7 +2331,7 @@ static void free_wrb_handles(struct beiscsi_hba *phba)
 static void hwi_cleanup(struct beiscsi_hba *phba)
 {
 	struct be_queue_info *q;
-	struct be_ctrl_info *ctrl = &phba->ctrl;
+	struct be___raw_readfo *ctrl = &phba->ctrl;
 	struct hwi_controller *phwi_ctrlr;
 	struct hwi_context_memory *phwi_context;
 	int i;
@@ -2370,7 +2370,7 @@ static int hwi_init_port(struct beiscsi_hba *phba)
 	struct hwi_controller *phwi_ctrlr;
 	struct hwi_context_memory *phwi_context;
 	unsigned int def_pdu_ring_sz;
-	struct be_ctrl_info *ctrl = &phba->ctrl;
+	struct be___raw_readfo *ctrl = &phba->ctrl;
 	int status;
 
 	def_pdu_ring_sz =
@@ -2651,7 +2651,7 @@ static int hba_setup_cid_tbls(struct beiscsi_hba *phba)
 
 static unsigned char hwi_enable_intr(struct beiscsi_hba *phba)
 {
-	struct be_ctrl_info *ctrl = &phba->ctrl;
+	struct be___raw_readfo *ctrl = &phba->ctrl;
 	struct hwi_controller *phwi_ctrlr;
 	struct hwi_context_memory *phwi_context;
 	struct be_queue_info *eq;
@@ -2684,7 +2684,7 @@ static unsigned char hwi_enable_intr(struct beiscsi_hba *phba)
 
 static void hwi_disable_intr(struct beiscsi_hba *phba)
 {
-	struct be_ctrl_info *ctrl = &phba->ctrl;
+	struct be___raw_readfo *ctrl = &phba->ctrl;
 
 	u8 __iomem *addr = ctrl->pcicfg + PCICFG_MEMBAR_CTRL_INT_CTRL_OFFSET;
 	u32 reg = ioread32(addr);
@@ -3215,10 +3215,10 @@ static int __devinit beiscsi_dev_probe(struct pci_dev *pcidev,
 	}
 
 	pci_set_drvdata(pcidev, phba);
-	ret = be_ctrl_init(phba, pcidev);
+	ret = be___raw_readit(phba, pcidev);
 	if (ret) {
 		shost_printk(KERN_ERR, phba->shost, "beiscsi_dev_probe-"
-				"Failed in be_ctrl_init\n");
+				"Failed in be___raw_readit\n");
 		goto hba_free;
 	}
 

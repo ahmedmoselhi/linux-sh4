@@ -853,7 +853,7 @@ static void dib7000m_set_channel(struct dib7000m_state *state, struct dvb_fronte
 	/* P_timf_alpha = 6, P_corm_alpha=6, P_corm_thres=0x80 */
 	dib7000m_write_word(state, 26, (6 << 12) | (6 << 8) | 0x80);
 
-	/* P_ctrl_inh_cor=0, P_ctrl_alpha_cor=4, P_ctrl_inh_isi=1, P_ctrl_alpha_isi=3, P_ctrl_inh_cor4=1, P_ctrl_alpha_cor4=3 */
+	/* P___raw_readh_cor=0, P_ctrl_alpha_cor=4, P___raw_readh_isi=1, P_ctrl_alpha_isi=3, P___raw_readh_cor4=1, P_ctrl_alpha_cor4=3 */
 	dib7000m_write_word(state, 29, (0 << 14) | (4 << 10) | (1 << 9) | (3 << 5) | (1 << 4) | (0x3));
 
 	/* P_ctrl_freeze_pha_shift=0, P_ctrl_pha_off_max=3 */
@@ -1007,7 +1007,7 @@ static int dib7000m_tune(struct dvb_frontend *demod, struct dvb_frontend_paramet
 	msleep(45);
 
 	dib7000m_set_power_mode(state, DIB7000M_POWER_COR4_CRY_ESRAM_MOUT_NUD);
-	/* P_ctrl_inh_cor=0, P_ctrl_alpha_cor=4, P_ctrl_inh_isi=0, P_ctrl_alpha_isi=3, P_ctrl_inh_cor4=1, P_ctrl_alpha_cor4=3 */
+	/* P___raw_readh_cor=0, P_ctrl_alpha_cor=4, P___raw_readh_isi=0, P_ctrl_alpha_isi=3, P___raw_readh_cor4=1, P_ctrl_alpha_cor4=3 */
 	ret |= dib7000m_write_word(state, 29, (0 << 14) | (4 << 10) | (0 << 9) | (3 << 5) | (1 << 4) | (0x3));
 
 	// never achieved a lock before - wait for timfreq to update

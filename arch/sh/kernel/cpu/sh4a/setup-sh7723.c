@@ -537,7 +537,7 @@ void __init plat_early_device_setup(void)
 void __uses_jump_to_uncached l2_cache_init(void)
 {
 	/* Enable L2 cache */
-	ctrl_outl(L2_CACHE_ENABLE, RAMCR);
+	__raw_writel(L2_CACHE_ENABLE, RAMCR);
 }
 
 enum {

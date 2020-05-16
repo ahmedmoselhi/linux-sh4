@@ -69,9 +69,9 @@ void __init h8300_timer_setup(void)
 	setup_irq(_16IRQ, &timer16_irq);
 
 	/* initalize timer */
-	ctrl_outb(0, TSTR);
-	ctrl_outb(CCLR0 | div, _16BASE + TCR);
-	ctrl_outw(cnt, _16BASE + GRA);
+	__raw_writeb(0, TSTR);
+	__raw_writeb(CCLR0 | div, _16BASE + TCR);
+	__raw_writew(cnt, _16BASE + GRA);
 	ctrl_bset(4 + CONFIG_H8300_TIMER16_CH, TISRA);
 	ctrl_bset(CONFIG_H8300_TIMER16_CH, TSTR);
 }

@@ -19236,14 +19236,14 @@ fmovm_err:
 fmovm_ctrl:
 	mov.b		EXC_EXTWORD(%a6),%d0	# fetch reg select bits
 	cmpi.b		%d0,&0x9c		# fpcr & fpsr & fpiar ?
-	beq.w		fctrl_in_7		# yes
+	beq.w		f__raw_read_7		# yes
 	cmpi.b		%d0,&0x98		# fpcr & fpsr ?
-	beq.w		fctrl_in_6		# yes
+	beq.w		f__raw_read_6		# yes
 	cmpi.b		%d0,&0x94		# fpcr & fpiar ?
-	beq.b		fctrl_in_5		# yes
+	beq.b		f__raw_read_5		# yes
 
 # fmovem.l #<data>, fpsr/fpiar
-fctrl_in_3:
+f__raw_read_3:
 	mov.l		EXC_EXTWPTR(%a6),%a0	# fetch instruction addr
 	addq.l		&0x4,EXC_EXTWPTR(%a6)	# incr instruction ptr
 	bsr.l		_imem_read_long		# fetch FPSR from mem
@@ -19263,7 +19263,7 @@ fctrl_in_3:
 	rts
 
 # fmovem.l #<data>, fpcr/fpiar
-fctrl_in_5:
+f__raw_read_5:
 	mov.l		EXC_EXTWPTR(%a6),%a0	# fetch instruction addr
 	addq.l		&0x4,EXC_EXTWPTR(%a6)	# incr instruction ptr
 	bsr.l		_imem_read_long		# fetch FPCR from mem
@@ -19283,7 +19283,7 @@ fctrl_in_5:
 	rts
 
 # fmovem.l #<data>, fpcr/fpsr
-fctrl_in_6:
+f__raw_read_6:
 	mov.l		EXC_EXTWPTR(%a6),%a0	# fetch instruction addr
 	addq.l		&0x4,EXC_EXTWPTR(%a6)	# incr instruction ptr
 	bsr.l		_imem_read_long		# fetch FPCR from mem
@@ -19303,7 +19303,7 @@ fctrl_in_6:
 	rts
 
 # fmovem.l #<data>, fpcr/fpsr/fpiar
-fctrl_in_7:
+f__raw_read_7:
 	mov.l		EXC_EXTWPTR(%a6),%a0	# fetch instruction addr
 	addq.l		&0x4,EXC_EXTWPTR(%a6)	# incr instruction ptr
 	bsr.l		_imem_read_long		# fetch FPCR from mem

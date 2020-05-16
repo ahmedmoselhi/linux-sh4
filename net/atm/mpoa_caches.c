@@ -30,7 +30,7 @@ static in_cache_entry *in_cache_get(__be32 dst_ip,
 	read_lock_bh(&client->ingress_lock);
 	entry = client->in_cache;
 	while(entry != NULL){
-		if( entry->ctrl_info.in_dst_ip == dst_ip ){
+		if( entry->__raw_readfo.in_dst_ip == dst_ip ){
 			atomic_inc(&entry->use);
 			read_unlock_bh(&client->ingress_lock);
 			return entry;
@@ -51,7 +51,7 @@ static in_cache_entry *in_cache_get_with_mask(__be32 dst_ip,
 	read_lock_bh(&client->ingress_lock);
 	entry = client->in_cache;
 	while(entry != NULL){
-		if((entry->ctrl_info.in_dst_ip & mask)  == (dst_ip & mask )){
+		if((entry->__raw_readfo.in_dst_ip & mask)  == (dst_ip & mask )){
 			atomic_inc(&entry->use);
 			read_unlock_bh(&client->ingress_lock);
 			return entry;
@@ -106,12 +106,12 @@ static in_cache_entry *in_cache_add_entry(__be32 dst_ip,
 	client->in_cache = entry;
 
 	memcpy(entry->MPS_ctrl_ATM_addr, client->mps_ctrl_addr, ATM_ESA_LEN);
-	entry->ctrl_info.in_dst_ip = dst_ip;
+	entry->__raw_readfo.in_dst_ip = dst_ip;
 	do_gettimeofday(&(entry->tv));
 	entry->retry_time = client->parameters.mpc_p4;
 	entry->count = 1;
 	entry->entry_state = INGRESS_INVALID;
-	entry->ctrl_info.holding_time = HOLDING_TIME_DEFAULT;
+	entry->__raw_readfo.holding_time = HOLDING_TIME_DEFAULT;
 	atomic_inc(&entry->use);
 
 	write_unlock_bh(&client->ingress_lock);
@@ -132,9 +132,9 @@ static int cache_hit(in_cache_entry *entry, struct mpoa_client *mpc)
 	if(entry->entry_state == INGRESS_REFRESHING){
 		if(entry->count > mpc->parameters.mpc_p1){
 			msg.type = SND_MPOA_RES_RQST;
-			msg.content.in_info = entry->ctrl_info;
+			msg.content.in_info = entry->__raw_readfo;
 			memcpy(msg.MPS_ctrl, mpc->mps_ctrl_addr, ATM_ESA_LEN);
-			qos = atm_mpoa_search_qos(entry->ctrl_info.in_dst_ip);
+			qos = atm_mpoa_search_qos(entry->__raw_readfo.in_dst_ip);
 			if (qos != NULL) msg.qos = qos->qos;
 			msg_to_mpoad(&msg, mpc);
 			do_gettimeofday(&(entry->reply_wait));
@@ -151,12 +151,12 @@ static int cache_hit(in_cache_entry *entry, struct mpoa_client *mpc)
 	if( entry->count > mpc->parameters.mpc_p1 &&
 	    entry->entry_state == INGRESS_INVALID){
 		dprintk("mpoa: (%s) mpoa_caches.c: threshold exceeded for ip %pI4, sending MPOA res req\n",
-			mpc->dev->name, &entry->ctrl_info.in_dst_ip);
+			mpc->dev->name, &entry->__raw_readfo.in_dst_ip);
 		entry->entry_state = INGRESS_RESOLVING;
 		msg.type =  SND_MPOA_RES_RQST;
 		memcpy(msg.MPS_ctrl, mpc->mps_ctrl_addr, ATM_ESA_LEN );
-		msg.content.in_info = entry->ctrl_info;
-		qos = atm_mpoa_search_qos(entry->ctrl_info.in_dst_ip);
+		msg.content.in_info = entry->__raw_readfo;
+		qos = atm_mpoa_search_qos(entry->__raw_readfo.in_dst_ip);
 		if (qos != NULL) msg.qos = qos->qos;
 		msg_to_mpoad( &msg, mpc);
 		do_gettimeofday(&(entry->reply_wait));
@@ -186,7 +186,7 @@ static void in_cache_remove_entry(in_cache_entry *entry,
 
 	vcc = entry->shortcut;
 	dprintk("mpoa: mpoa_caches.c: removing an ingress entry, ip = %pI4\n",
-		&entry->ctrl_info.in_dst_ip);
+		&entry->__raw_readfo.in_dst_ip);
 
 	if (entry->prev != NULL)
 		entry->prev->next = entry->next;
@@ -229,9 +229,9 @@ static void clear_count_and_expired(struct mpoa_client *client)
 		entry->count=0;
 		next_entry = entry->next;
 		if((now.tv_sec - entry->tv.tv_sec)
-		   > entry->ctrl_info.holding_time){
+		   > entry->__raw_readfo.holding_time){
 			dprintk("mpoa: mpoa_caches.c: holding time expired, ip = %pI4\n",
-				&entry->ctrl_info.in_dst_ip);
+				&entry->__raw_readfo.in_dst_ip);
 			client->in_ops->remove_entry(entry, client);
 		}
 		entry = next_entry;
@@ -274,8 +274,8 @@ static void check_resolving_entries(struct mpoa_client *client)
 				memset(&(entry->hold_down),0,sizeof(struct timeval));
 				msg.type = SND_MPOA_RES_RTRY;
 				memcpy(msg.MPS_ctrl, client->mps_ctrl_addr, ATM_ESA_LEN);
-				msg.content.in_info = entry->ctrl_info;
-				qos = atm_mpoa_search_qos(entry->ctrl_info.in_dst_ip);
+				msg.content.in_info = entry->__raw_readfo;
+				qos = atm_mpoa_search_qos(entry->__raw_readfo.in_dst_ip);
 				if (qos != NULL) msg.qos = qos->qos;
 				msg_to_mpoad(&msg, client);
 				do_gettimeofday(&(entry->reply_wait));
@@ -299,7 +299,7 @@ static void refresh_entries(struct mpoa_client *client)
 	while( entry != NULL ){
 		if( entry->entry_state == INGRESS_RESOLVED ){
 			if(!(entry->refresh_time))
-				entry->refresh_time = (2*(entry->ctrl_info.holding_time))/3;
+				entry->refresh_time = (2*(entry->__raw_readfo.holding_time))/3;
 			if( (now.tv_sec - entry->reply_wait.tv_sec) > entry->refresh_time ){
 				dprintk("mpoa: mpoa_caches.c: refreshing an entry.\n");
 				entry->entry_state = INGRESS_REFRESHING;
@@ -328,7 +328,7 @@ static eg_cache_entry *eg_cache_get_by_cache_id(__be32 cache_id, struct mpoa_cli
 	read_lock_irq(&mpc->egress_lock);
 	entry = mpc->eg_cache;
 	while(entry != NULL){
-		if(entry->ctrl_info.cache_id == cache_id){
+		if(entry->__raw_readfo.cache_id == cache_id){
 			atomic_inc(&entry->use);
 			read_unlock_irq(&mpc->egress_lock);
 			return entry;
@@ -349,7 +349,7 @@ static eg_cache_entry *eg_cache_get_by_tag(__be32 tag, struct mpoa_client *mpc)
 	read_lock_irqsave(&mpc->egress_lock, flags);
 	entry = mpc->eg_cache;
 	while (entry != NULL){
-		if (entry->ctrl_info.tag == tag) {
+		if (entry->__raw_readfo.tag == tag) {
 			atomic_inc(&entry->use);
 			read_unlock_irqrestore(&mpc->egress_lock, flags);
 			return entry;
@@ -469,12 +469,12 @@ static eg_cache_entry *eg_cache_add_entry(struct k_message *msg, struct mpoa_cli
 	client->eg_cache = entry;
 
 	memcpy(entry->MPS_ctrl_ATM_addr, client->mps_ctrl_addr, ATM_ESA_LEN);
-	entry->ctrl_info = msg->content.eg_info;
+	entry->__raw_readfo = msg->content.eg_info;
 	do_gettimeofday(&(entry->tv));
 	entry->entry_state = EGRESS_RESOLVED;
-	dprintk("mpoa: mpoa_caches.c: new_eg_cache_entry cache_id %lu\n", ntohl(entry->ctrl_info.cache_id));
+	dprintk("mpoa: mpoa_caches.c: new_eg_cache_entry cache_id %lu\n", ntohl(entry->__raw_readfo.cache_id));
 	dprintk("mpoa: mpoa_caches.c: mps_ip = %pI4\n",
-		&entry->ctrl_info.mps_ip);
+		&entry->__raw_readfo.mps_ip);
 	atomic_inc(&entry->use);
 
 	write_unlock_irq(&client->egress_lock);
@@ -487,7 +487,7 @@ static void update_eg_cache_entry(eg_cache_entry * entry, uint16_t holding_time)
 {
 	do_gettimeofday(&(entry->tv));
 	entry->entry_state = EGRESS_RESOLVED;
-	entry->ctrl_info.holding_time = holding_time;
+	entry->__raw_readfo.holding_time = holding_time;
 
 	return;
 }
@@ -505,10 +505,10 @@ static void clear_expired(struct mpoa_client *client)
 	while(entry != NULL){
 		next_entry = entry->next;
 		if((now.tv_sec - entry->tv.tv_sec)
-		   > entry->ctrl_info.holding_time){
+		   > entry->__raw_readfo.holding_time){
 			msg.type = SND_EGRESS_PURGE;
-			msg.content.eg_info = entry->ctrl_info;
-			dprintk("mpoa: mpoa_caches.c: egress_cache: holding time expired, cache_id = %lu.\n",ntohl(entry->ctrl_info.cache_id));
+			msg.content.eg_info = entry->__raw_readfo;
+			dprintk("mpoa: mpoa_caches.c: egress_cache: holding time expired, cache_id = %lu.\n",ntohl(entry->__raw_readfo.cache_id));
 			msg_to_mpoad(&msg, client);
 			client->eg_ops->remove_entry(entry, client);
 		}

@@ -144,7 +144,7 @@ static const int dma_elem_type[] = {
  * size, except if a bigger memory size is specified explicitly as a kernel
  * parameter.
  */
-static int ctrl_init(struct omapfb_device *fbdev)
+static int __raw_readit(struct omapfb_device *fbdev)
 {
 	int r;
 	int i;
@@ -1733,7 +1733,7 @@ static int omapfb_do_probe(struct platform_device *pdev,
 
 	init_state++;
 
-	r = ctrl_init(fbdev);
+	r = __raw_readit(fbdev);
 	if (r)
 		goto cleanup;
 	if (fbdev->ctrl->mmap != NULL)
